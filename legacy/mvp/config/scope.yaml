@@ -1,0 +1,36 @@
+program: REPLACE_ME
+allowed_hosts:
+  - app.example.com
+  - api.example.com
+excluded_hosts:
+  - support.example.com
+  - status.example.com
+
+limits:
+  passive_only: true
+  max_pages_per_recording: 100
+
+privacy:
+  redact_headers:
+    - authorization
+    - cookie
+    - set-cookie
+    - x-api-key
+    - proxy-authorization
+  redact_query_parameters:
+    - token
+    - access_token
+    - api_key
+    - key
+    - code
+    - password
+  redact_json_keys:
+    - password
+    - passwd
+    - secret
+    - token
+    - access_token
+    - refresh_token
+    - api_key
+    - email
+    - phone

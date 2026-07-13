@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.invalid/schemas/candidate.schema.json",
+  "title": "Bug Bounty Candidate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "candidate_id",
+    "program_handle",
+    "asset_ref",
+    "risk_tier",
+    "hypothesis",
+    "baseline_request_ref",
+    "actor_account",
+    "mutation",
+    "owned_object_refs",
+    "expected_secure_outcome",
+    "request_budget",
+    "stop_conditions",
+    "confidence"
+  ],
+  "properties": {
+    "candidate_id": {"type": "string"},
+    "program_handle": {"type": "string"},
+    "asset_ref": {"type": "string"},
+    "risk_tier": {
+      "type": "string",
+      "enum": ["tier_0_offline", "tier_1_owned_read_only", "tier_2_owned_reversible_write", "tier_3_sensitive"]
+    },
+    "hypothesis": {"type": "string"},
+    "baseline_request_ref": {"type": "string"},
+    "actor_account": {"type": "string", "enum": ["account-a", "account-b"]},
+    "mutation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["location", "field", "from_owned_ref", "to_owned_ref"],
+      "properties": {
+        "location": {"type": "string", "enum": ["path", "query", "header", "json"]},
+        "field": {"type": "string"},
+        "from_owned_ref": {"type": ["string", "null"]},
+        "to_owned_ref": {"type": "string"}
+      }
+    },
+    "owned_object_refs": {
+      "type": "array",
+      "items": {"type": "string"},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "expected_secure_outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowed_statuses", "forbidden_canaries"],
+      "properties": {
+        "allowed_statuses": {
+          "type": "array",
+          "items": {"type": "integer"},
+          "minItems": 1
+        },
+        "forbidden_canaries": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    },
+    "request_budget": {"type": "integer", "minimum": 0, "maximum": 3},
+    "stop_conditions": {
+      "type": "array",
+      "items": {"type": "string"},
+      "minItems": 1
+    },
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+  }
+}

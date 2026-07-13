@@ -1,0 +1,90 @@
+version: 2
+
+program:
+  platform: hackerone
+  handle: REPLACE_ME
+  display_name: REPLACE_ME
+  policy_source: official_api
+  policy_hash_sha256: REPLACE_AFTER_SYNC
+  policy_accepted_at: null
+  policy_accepted_by: null
+
+network:
+  # Nur diese Ziele dürfen Gegenstand von Sicherheitstests sein.
+  targets:
+    - scheme: https
+      host: app.example.com
+      ports: [443]
+      path_prefixes: ["/"]
+    - scheme: https
+      host: api.example.com
+      ports: [443]
+      path_prefixes: ["/api/"]
+
+  # Für Login, CDN oder normale Darstellung notwendige Hosts. Sie dürfen geladen,
+  # aber niemals mutiert, analysiert oder als Finding-Ziel verwendet werden.
+  supporting_hosts:
+    - scheme: https
+      host: cdn.example.net
+      ports: [443]
+      allowed_methods: [GET, HEAD, OPTIONS]
+      capture: metadata_only
+    - scheme: https
+      host: login.example-idp.com
+      ports: [443]
+      allowed_methods: [GET, POST]
+      capture: none
+
+  deny_by_default: true
+  allow_plain_http: false
+  follow_redirects: false
+  block_service_workers_during_capture: true
+
+capture:
+  persist_unredacted_traffic: false
+  persist_response_bodies: selective
+  allowed_body_content_types:
+    - application/json
+    - application/problem+json
+    - text/plain
+  max_body_bytes: 262144
+  binary_handling: hash_only
+  websocket_capture: target_only
+  stable_pseudonyms: true
+  local_hmac_key_ref: keychain://bugbounty/pseudonym-key
+  quarantine_unknown_identity_data: true
+
+accounts:
+  - id: account-a
+    role: owner
+    secret_ref: keychain://bugbounty/REPLACE_ME/account-a
+    email_alias_ref: keychain://bugbounty/REPLACE_ME/account-a-email
+  - id: account-b
+    role: outsider
+    secret_ref: keychain://bugbounty/REPLACE_ME/account-b
+    email_alias_ref: keychain://bugbounty/REPLACE_ME/account-b-email
+
+budgets:
+  global_requests_per_minute: 3
+  max_concurrency: 1
+  max_requests_per_candidate: 3
+  max_state_changes_per_candidate: 1
+  stop_after_first_positive_signal: true
+  cool_down_seconds_after_error: 30
+  stop_statuses: [429, 503]
+
+forbidden:
+  - denial_of_service
+  - brute_force
+  - credential_stuffing
+  - social_engineering
+  - captcha_bypass
+  - unknown_user_object_access
+  - race_testing
+  - unrestricted_fuzzing
+  - arbitrary_file_payloads
+  - out_of_scope_redirects
+
+policy_drift:
+  block_campaign_when_policy_hash_changes: true
+  require_new_acceptance: true

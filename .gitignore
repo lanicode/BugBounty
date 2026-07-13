@@ -1,0 +1,66 @@
+# Dependencies and build
+node_modules/
+dist/
+coverage/
+.nyc_output/
+*.tsbuildinfo
+
+# Python legacy
+.venv/
+__pycache__/
+*.py[cod]
+
+# Secrets and auth state
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.token
+auth-state/
+profiles/
+**/profile/
+keychain-export/
+secrets/
+.secret-store/
+
+# Traffic and evidence
+*.har
+*.har.zip
+raw-traffic/
+input/
+output/
+evidence/
+quarantine/
+reports/generated/
+event-store/
+*.events
+*.events.enc
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+
+# Runtime and audit artifacts
+runtime/
+tmp/
+temp/
+logs/
+*.log
+audit/*.jsonl
+policy-acceptance/
+campaign-contracts/local/
+
+# Playwright
+playwright-report/
+test-results/
+blob-report/
+
+# OS and editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

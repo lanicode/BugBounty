@@ -1,0 +1,59 @@
+version: 1
+profile: maximum_automation_with_guardrails
+
+risk_tiers:
+  tier_0_offline:
+    auto_execute: true
+    examples:
+      - policy_parsing
+      - javascript_static_analysis
+      - endpoint_inventory
+      - account_traffic_diff
+      - report_drafting
+
+  tier_1_owned_read_only:
+    auto_execute_after_campaign_approval: true
+    constraints:
+      methods: [GET, HEAD, OPTIONS]
+      object_sources: [owned_registry]
+      mutations_per_request: 1
+      redirects: false
+      max_requests_per_candidate: 3
+      stop_on_unknown_identity_data: true
+
+  tier_2_owned_reversible_write:
+    auto_execute_after_campaign_approval: true
+    constraints:
+      methods: [POST, PUT, PATCH]
+      object_sources: [owned_registry]
+      reversible: true
+      rollback_required: true
+      mutations_per_request: 1
+      max_state_changes_per_candidate: 1
+      stop_on_unknown_identity_data: true
+
+  tier_3_sensitive:
+    auto_execute: false
+    requires_case_approval: true
+    examples:
+      - DELETE
+      - account_recovery
+      - email_change
+      - organization_invites
+      - role_escalation
+      - payments_or_credits
+      - uploads_and_downloads
+      - external_callbacks
+      - concurrency_or_races
+
+reporting:
+  create_draft_automatically: true
+  attach_redacted_evidence_automatically: true
+  submission_mode: batch_approval
+  auto_submit_minimum_confidence: disabled
+
+triage:
+  monitor_automatically: true
+  draft_responses_automatically: true
+  send_routine_acknowledgements: false
+  new_testing_requires_contract: true

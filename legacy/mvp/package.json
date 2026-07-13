@@ -1,0 +1,13 @@
+{
+  "name": "bugbounty-copilot-mvp",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "record:a": "node playwright/record.mjs account-a",
+    "record:b": "node playwright/record.mjs account-b"
+  },
+  "dependencies": {
+    "playwright": "^1.53.0",
+    "yaml": "^2.8.0"
+  }
+}

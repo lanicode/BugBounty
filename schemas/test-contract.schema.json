@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.invalid/schemas/test-contract.schema.json",
+  "title": "Campaign Test Contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_id",
+    "program_handle",
+    "policy_hash_sha256",
+    "valid_from",
+    "valid_until",
+    "approved_risk_tiers",
+    "account_refs",
+    "asset_refs",
+    "budgets",
+    "stop_conditions",
+    "approved_by",
+    "signature"
+  ],
+  "properties": {
+    "contract_id": {"type": "string"},
+    "program_handle": {"type": "string"},
+    "policy_hash_sha256": {"type": "string"},
+    "valid_from": {"type": "string", "format": "date-time"},
+    "valid_until": {"type": "string", "format": "date-time"},
+    "approved_risk_tiers": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["tier_0_offline", "tier_1_owned_read_only", "tier_2_owned_reversible_write"]
+      },
+      "uniqueItems": true
+    },
+    "account_refs": {
+      "type": "array",
+      "items": {"type": "string"},
+      "minItems": 2,
+      "uniqueItems": true
+    },
+    "asset_refs": {
+      "type": "array",
+      "items": {"type": "string"},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requests_per_minute", "max_concurrency", "max_requests_total"],
+      "properties": {
+        "requests_per_minute": {"type": "integer", "minimum": 1},
+        "max_concurrency": {"type": "integer", "minimum": 1, "maximum": 1},
+        "max_requests_total": {"type": "integer", "minimum": 1}
+      }
+    },
+    "stop_conditions": {
+      "type": "array",
+      "items": {"type": "string"},
+      "minItems": 1
+    },
+    "approved_by": {"type": "string"},
+    "signature": {"type": "string"}
+  }
+}

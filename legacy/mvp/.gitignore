@@ -1,0 +1,7 @@
+.venv/
+node_modules/
+input/**/*.har
+input/**/profile/
+output/
+reports/*.html
+.DS_Store
