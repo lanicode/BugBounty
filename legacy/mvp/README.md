@@ -1,3 +1,7 @@
+# ⚠️ UNSICHERE AUDIT-REFERENZ – NICHT FÜR LIVE-ZIELE VERWENDEN
+
+Dieser Demo-MVP ist ausdrücklich keine Sicherheitsgrenze: Er kann Out-of-Scope-Verkehr erst nach Versand beobachten und schreibt vor der Redaktion vollständige HAR-Daten. Er bleibt nur für das historische Audit erhalten. Für keine realen Ziele oder Konten starten.
+
 # Bug Bounty Copilot MVP
 
 Sicherer, passiver Startpunkt fuer autorisierte Bug-Bounty-Programme.

@@ -1,4 +1,6 @@
-# Bug-Bounty-Copilot v2 – Architektur-Blueprint
+# Bug-Bounty-Copilot v2 – Phase-1-Sicherheitskern
+
+Der deterministische Phase-1-Kern ist unter `packages/` implementiert. Er validiert und hasht Programmpolicies, blockiert Egress vor dem Request, redigiert vor jeder Persistierung, verschlüsselt lokale Events und verifiziert Audit-Hashketten. Er enthält absichtlich keinen Live-Recorder, keine aktiven Sicherheitstests und keine Plattform- oder LLM-Integration.
 
 Dieser Blueprint ersetzt den bisherigen Demo-MVP als Zielarchitektur. Er ist absichtlich noch kein autonomer Live-Scanner. Das Ziel ist maximale Automatisierung innerhalb schriftlich autorisierter Programme, eigener Testkonten, eigener Testobjekte und deterministisch erzwungener Grenzen.
 
@@ -55,4 +57,4 @@ Die KI darf Hypothesen und streng strukturierte Testvorschläge erzeugen. Sie er
 
 ## Wichtiger Status
 
-Dieser Blueprint enthält Policy- und Datenschemata, aber bewusst noch keinen Live-Test-Runner. Vor einem produktiven Einsatz müssen Policy-Tests, Egress-Tests, Datenschutztests und ein lokales Secret-Management implementiert und geprüft werden.
+Phase 1 ist eine getestete Sicherheitsgrundlage, aber weiterhin keine Freigabe für reale Ziele. Ownership Ledger, Plattform-Synchronisierung, Accounts und aktive Test-Tiers fehlen bewusst. Bedienung und Grenzen stehen in `docs/PHASE1_OPERATIONS.md`; das Threat Model steht in `docs/THREAT_MODEL.md`.

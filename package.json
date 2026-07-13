@@ -1,0 +1,44 @@
+{
+  "name": "bugbounty-copilot-security-core",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Fail-closed Phase-1 security core; no live scanning capabilities",
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint . --max-warnings 0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:egress": "vitest run tests/unit/egress tests/integration/egress-loopback.test.ts",
+    "doctor": "tsx apps/cli/index.ts doctor",
+    "validate": "tsx apps/cli/index.ts validate",
+    "policy:hash": "tsx apps/cli/index.ts policy:hash",
+    "policy:verify": "tsx apps/cli/index.ts policy:verify",
+    "audit:verify": "tsx apps/cli/index.ts audit:verify"
+  },
+  "dependencies": {
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "playwright": "1.61.1",
+    "yaml": "2.9.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "26.1.1",
+    "@vitest/coverage-v8": "4.1.10",
+    "eslint": "10.7.0",
+    "fast-check": "4.9.0",
+    "prettier": "3.9.5",
+    "tsx": "4.23.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.63.0",
+    "vitest": "4.1.10"
+  }
+}

@@ -1,5 +1,6 @@
 # Dependencies and build
 node_modules/
+.pnpm-store/
 dist/
 coverage/
 .nyc_output/
@@ -35,7 +36,7 @@ output/
 evidence/
 quarantine/
 reports/generated/
-event-store/
+/event-store/
 *.events
 *.events.enc
 *.sqlite
