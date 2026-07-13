@@ -1,0 +1,57 @@
+version: 2
+program:
+  platform: local
+  handle: authorized-local-test
+  display_name: Local Test Fixture
+  policy_source: fixture
+  policy_hash_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  policy_accepted_at: 2026-01-01T00:00:00Z
+  policy_accepted_by: local-tester
+network:
+  targets:
+    - scheme: https
+      host: api.example.test
+      ports: [443]
+      path_prefixes: [/api/]
+  supporting_hosts:
+    - scheme: https
+      host: cdn.example.test
+      ports: [443]
+      allowed_methods: [GET]
+      capture: metadata_only
+  blocked_hosts: [blocked.example.test]
+  deny_by_default: true
+  allow_plain_http: false
+  follow_redirects: false
+  block_service_workers_during_capture: true
+capture:
+  persist_unredacted_traffic: false
+  persist_response_bodies: selective
+  allowed_body_content_types: [application/json, text/plain]
+  max_body_bytes: 1024
+  binary_handling: hash_only
+  websocket_capture: disabled
+  stable_pseudonyms: true
+  local_hmac_key_ref: keychain://test/pseudonym
+  quarantine_unknown_identity_data: true
+accounts:
+  - id: account-a
+    role: owner
+    secret_ref: keychain://test/account-a
+    email_alias_ref: keychain://test/account-a-email
+  - id: account-b
+    role: outsider
+    secret_ref: keychain://test/account-b
+    email_alias_ref: keychain://test/account-b-email
+budgets:
+  global_requests_per_minute: 3
+  max_concurrency: 1
+  max_requests_per_candidate: 3
+  max_state_changes_per_candidate: 0
+  stop_after_first_positive_signal: true
+  cool_down_seconds_after_error: 30
+  stop_statuses: [429, 503]
+forbidden: [active_testing]
+policy_drift:
+  block_campaign_when_policy_hash_changes: true
+  require_new_acceptance: true

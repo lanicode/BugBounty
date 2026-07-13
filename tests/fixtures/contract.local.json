@@ -1,0 +1,18 @@
+{
+  "contract_id": "local-contract-1",
+  "program_handle": "authorized-local-test",
+  "policy_hash_sha256": "6f5ff09f974b6ca849462acfa792eea9ebb43854e8bf9196396f1978614126dc",
+  "valid_from": "2026-01-01T00:00:00Z",
+  "valid_until": "2027-01-01T00:00:00Z",
+  "approved_risk_tiers": ["tier_0_offline"],
+  "account_refs": ["account-a", "account-b"],
+  "asset_refs": ["asset-a"],
+  "budgets": {
+    "requests_per_minute": 3,
+    "max_concurrency": 1,
+    "max_requests_total": 3
+  },
+  "stop_conditions": ["unknown_identity"],
+  "approved_by": "local-tester",
+  "signature": "offline-test-signature"
+}
