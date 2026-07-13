@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "proposal_id",
+    "action",
+    "mode",
+    "workflow_ref",
+    "application_ref",
+    "account_ref",
+    "role",
+    "policy_hash_sha256",
+    "expected_revision",
+    "checkpoint_ref"
+  ],
+  "properties": {
+    "version": { "const": 1 },
+    "proposal_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "action": { "enum": ["provision", "resume", "retire"] },
+    "mode": { "const": "simulation" },
+    "workflow_ref": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "application_ref": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^local-app:[A-Za-z0-9_-]+$"
+    },
+    "account_ref": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "role": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "policy_hash_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "expected_revision": { "type": "integer", "minimum": 0 },
+    "checkpoint_ref": {
+      "type": ["string", "null"],
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    }
+  }
+}
