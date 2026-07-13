@@ -2,11 +2,11 @@
   "name": "bugbounty-copilot-security-core",
   "version": "1.0.0",
   "private": true,
-  "description": "Fail-closed Phase-1 security core; no live scanning capabilities",
+  "description": "Local fail-closed Bug Bounty Copilot control plane",
   "type": "module",
   "packageManager": "pnpm@11.7.0",
   "engines": {
-    "node": ">=20.19.0"
+    "node": ">=24.0.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
