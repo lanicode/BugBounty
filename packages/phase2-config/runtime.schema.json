@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "mode",
+    "external_integrations_enabled",
+    "allowed_platform_hosts",
+    "budgets",
+    "human_controls"
+  ],
+  "properties": {
+    "version": { "const": 1 },
+    "mode": { "enum": ["simulation", "external"] },
+    "external_integrations_enabled": { "type": "boolean", "default": false },
+    "allowed_platform_hosts": {
+      "type": "array",
+      "maxItems": 20,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 253 }
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_actions_total", "max_concurrency"],
+      "properties": {
+        "max_actions_total": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "max_concurrency": { "const": 1 }
+      }
+    },
+    "human_controls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "require_program_policy_acceptance",
+        "require_terms_acceptance",
+        "require_report_submission_approval"
+      ],
+      "properties": {
+        "require_program_policy_acceptance": { "const": true },
+        "require_terms_acceptance": { "const": true },
+        "require_report_submission_approval": { "const": true }
+      }
+    }
+  }
+}

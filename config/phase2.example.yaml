@@ -1,0 +1,11 @@
+version: 1
+mode: simulation
+external_integrations_enabled: false
+allowed_platform_hosts: []
+budgets:
+  max_actions_total: 20
+  max_concurrency: 1
+human_controls:
+  require_program_policy_acceptance: true
+  require_terms_acceptance: true
+  require_report_submission_approval: true

@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "proposal_id",
+    "action",
+    "mode",
+    "platform",
+    "target_url",
+    "method",
+    "required_secret_ref",
+    "human_checkpoint"
+  ],
+  "properties": {
+    "version": { "const": 1 },
+    "proposal_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "action": {
+      "enum": [
+        "program_read",
+        "policy_read",
+        "account_create_local",
+        "program_rules_accept",
+        "terms_accept",
+        "report_submit"
+      ]
+    },
+    "mode": { "enum": ["simulation", "external"] },
+    "platform": { "enum": ["local_mock", "hackerone"] },
+    "target_url": { "type": "string", "minLength": 1, "maxLength": 2048 },
+    "method": { "enum": ["GET", "POST"] },
+    "required_secret_ref": {
+      "type": ["string", "null"],
+      "pattern": "^keychain://[A-Za-z0-9._/-]+$"
+    },
+    "human_checkpoint": {
+      "enum": [
+        "not_required",
+        "program_policy_acceptance",
+        "terms_acceptance",
+        "report_submission_approval"
+      ]
+    }
+  }
+}
