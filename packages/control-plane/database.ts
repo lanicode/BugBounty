@@ -150,6 +150,108 @@ INSERT INTO system_state(key,value,revision,updated_at)
 VALUES ('global_kill_switch','engaged',0,'1970-01-01T00:00:00.000Z');
 `,
   }),
+  Object.freeze({
+    version: 2,
+    sql: `
+CREATE UNIQUE INDEX policy_versions_exact_binding
+ON policy_versions(program_id,version,policy_hash);
+CREATE UNIQUE INDEX campaigns_program_binding
+ON campaigns(id,program_id);
+CREATE UNIQUE INDEX identities_program_binding
+ON test_identities(id,program_id);
+CREATE TABLE policy_acceptances_v2 (
+  program_id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  policy_hash TEXT NOT NULL,
+  accepted_by TEXT NOT NULL,
+  accepted_at TEXT NOT NULL,
+  audit_reference TEXT NOT NULL UNIQUE,
+  PRIMARY KEY (program_id, version),
+  FOREIGN KEY (program_id, version, policy_hash)
+    REFERENCES policy_versions(program_id, version, policy_hash)
+    ON DELETE RESTRICT
+) STRICT;
+INSERT INTO policy_acceptances_v2(
+  program_id,version,policy_hash,accepted_by,accepted_at,audit_reference
+)
+SELECT a.program_id,a.version,a.policy_hash,a.accepted_by,a.accepted_at,a.audit_reference
+FROM policy_acceptances a
+JOIN policy_versions p
+  ON p.program_id=a.program_id
+ AND p.version=a.version
+ AND p.policy_hash=a.policy_hash
+JOIN approvals q
+  ON q.kind='program_policy_acceptance'
+ AND q.status='accepted'
+ AND q.policy_version=a.version
+ AND q.policy_hash=a.policy_hash
+ AND q.summary='Accept ' || a.program_id || ' policy version ' || CAST(a.version AS TEXT)
+ AND q.decided_by=a.accepted_by
+ AND q.decided_at=a.accepted_at
+ AND q.audit_reference=a.audit_reference;
+CREATE TABLE migration_v2_guard (
+  valid INTEGER NOT NULL CHECK (valid=1)
+) STRICT;
+INSERT INTO migration_v2_guard(valid)
+SELECT CASE
+  WHEN (SELECT count(*) FROM policy_acceptances_v2) =
+       (SELECT count(*) FROM policy_acceptances)
+  THEN 1 ELSE 0 END;
+DROP TABLE migration_v2_guard;
+DROP TABLE policy_acceptances;
+ALTER TABLE policy_acceptances_v2 RENAME TO policy_acceptances;
+UPDATE campaigns
+SET state='paused',revision=revision+1,human_approved_by=NULL,
+    human_approved_at=NULL,kill_switch_status='engaged'
+WHERE state IN ('approved','running_simulation');
+UPDATE system_state
+SET value='engaged',revision=revision+1,
+    updated_at='2026-07-13T00:00:00.000Z'
+WHERE key='global_kill_switch';
+CREATE TRIGGER campaigns_exact_policy_insert
+BEFORE INSERT ON campaigns BEGIN
+  SELECT RAISE(ABORT,'CAMPAIGN_POLICY_BINDING_INVALID')
+  WHERE NOT EXISTS (
+    SELECT 1 FROM policy_versions p
+    WHERE p.program_id=NEW.program_id
+      AND p.version=NEW.policy_version
+      AND p.policy_hash=NEW.policy_hash
+  );
+END;
+CREATE TRIGGER campaigns_exact_policy_update
+BEFORE UPDATE OF program_id,policy_version,policy_hash ON campaigns BEGIN
+  SELECT RAISE(ABORT,'CAMPAIGN_POLICY_BINDING_INVALID')
+  WHERE NOT EXISTS (
+    SELECT 1 FROM policy_versions p
+    WHERE p.program_id=NEW.program_id
+      AND p.version=NEW.policy_version
+      AND p.policy_hash=NEW.policy_hash
+  );
+END;
+CREATE TRIGGER owned_objects_exact_bindings_insert
+BEFORE INSERT ON owned_objects BEGIN
+  SELECT RAISE(ABORT,'OWNED_OBJECT_BINDING_INVALID')
+  WHERE NOT EXISTS (
+    SELECT 1 FROM campaigns c
+    WHERE c.id=NEW.campaign_id AND c.program_id=NEW.program_id
+  ) OR NOT EXISTS (
+    SELECT 1 FROM test_identities i
+    WHERE i.id=NEW.account_id AND i.program_id=NEW.program_id
+  );
+END;
+CREATE TRIGGER owned_objects_exact_bindings_update
+BEFORE UPDATE OF program_id,campaign_id,account_id ON owned_objects BEGIN
+  SELECT RAISE(ABORT,'OWNED_OBJECT_BINDING_INVALID')
+  WHERE NOT EXISTS (
+    SELECT 1 FROM campaigns c
+    WHERE c.id=NEW.campaign_id AND c.program_id=NEW.program_id
+  ) OR NOT EXISTS (
+    SELECT 1 FROM test_identities i
+    WHERE i.id=NEW.account_id AND i.program_id=NEW.program_id
+  );
+END;
+`,
+  }),
 ]);
 
 export const CONTROL_PLANE_SCHEMA_VERSION = MIGRATIONS.length;
@@ -188,9 +290,14 @@ export class ControlPlaneDatabase {
 
   private static initialize(database: DatabaseSync): ControlPlaneDatabase {
     const instance = new ControlPlaneDatabase(database);
-    instance.configure();
-    instance.migrate();
-    return instance;
+    try {
+      instance.configure();
+      instance.migrate();
+      return instance;
+    } catch (error) {
+      database.close();
+      throw error;
+    }
   }
 
   public close(): void {

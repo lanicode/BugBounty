@@ -19,6 +19,7 @@ import type {
   SimulationOrchestrator,
   SimulationSummary,
 } from "../simulation/orchestrator.js";
+import { SIMULATION_CONFIRMATION_ORDER } from "../simulation/orchestrator.js";
 import { errorCode, SecurityError } from "../shared/errors.js";
 import {
   DASHBOARD_CSS,
@@ -42,14 +43,7 @@ const SECURITY_HEADERS = Object.freeze({
   "x-frame-options": "DENY",
 });
 
-const CONFIRMATION_KEYS = Object.freeze([
-  "acceptPolicyV1",
-  "acceptPolicyV2",
-  "approveCampaignV1",
-  "approveCampaignV2",
-  "clearKillSwitch",
-  "queueReportReview",
-]);
+const CONFIRMATION_KEYS = SIMULATION_CONFIRMATION_ORDER;
 
 export interface DashboardDependencies {
   readonly store: ControlPlaneStore;
@@ -165,6 +159,12 @@ export async function startDashboardServer(
         sendJson(response, 200, result);
         return;
       }
+      case "/api/approvals/decide": {
+        const input = parseApprovalDecisionRequest(body, timestamp(now));
+        const approval = dependencies.store.decideApproval(input);
+        sendJson(response, 200, { approval });
+        return;
+      }
     }
   }
 
@@ -247,8 +247,10 @@ function buildDashboardState(
   const identities = dependencies.store.listIdentities();
   const ownedObjects = dependencies.store.listOwnedObjects();
   const reports = dependencies.store.listReportDrafts();
+  const auditEntries = dependencies.store.listAuditEntries();
   const killSwitchActive = dependencies.store.isKillSwitchActive();
   const demo = dependencies.demo.snapshot();
+  const simulationReview = dependencies.simulation.preview();
   const policyDiffs = makePolicyDiffs(
     programs.map(({ id }) => id),
     dependencies.store,
@@ -267,6 +269,7 @@ function buildDashboardState(
         : "ready",
     generatedAt,
     csrfToken,
+    simulationReview,
     killSwitch: { active: killSwitchActive },
     counts: {
       programs: programs.length,
@@ -312,9 +315,17 @@ function buildDashboardState(
       id: approval.id,
       kind: approval.kind,
       summary: approval.summary,
+      technicalDetails: approval.technicalDetails,
       impact: approval.impact,
+      policyVersion: approval.policyVersion,
+      policyHash: approval.policyHash,
       status: approval.status,
+      decidedAt: approval.decidedAt,
+      decidedBy: approval.decidedBy,
+      userAction: approval.userAction,
       auditReference: approval.auditReference,
+      payloadHash: approval.payloadHash,
+      revision: approval.revision,
     })),
     identities: identities.map((identity) => ({
       id: identity.id,
@@ -352,11 +363,11 @@ function buildDashboardState(
                 `${program.id}: ${program.ruleAcceptanceStatus}; Hash ${program.currentPolicyHash ?? "nicht gesetzt"}`,
             ),
       auditLog:
-        approvals.length === 0
-          ? ["Bodyfreies Control-Plane-Audit aktiv; noch keine Freigaben."]
-          : approvals.map(
-              (approval) =>
-                `${approval.auditReference}: ${approval.kind} / ${approval.status}`,
+        auditEntries.length === 0
+          ? ["Bodyfreies Control-Plane-Audit aktiv; noch keine Einträge."]
+          : auditEntries.map(
+              (entry) =>
+                `${entry.occurredAt}: ${entry.action} / ${entry.decision} / ${entry.reasonCode}`,
             ),
       requestBudgets:
         campaigns.length === 0
@@ -412,6 +423,10 @@ function makePolicyDiffs(
           ({ field, before: previous, after: next }) =>
             `${field}: ${String(previous)} → ${String(next)}`,
         ),
+        changedRules: {
+          added: diff.changedRules.added,
+          removed: diff.changedRules.removed,
+        },
         unclearRules: diff.unclearRules.current,
       });
     }
@@ -448,9 +463,57 @@ function isPostRoute(pathname: string): boolean {
   return (
     pathname === "/api/programs/import" ||
     pathname === "/api/simulation/run" ||
+    pathname === "/api/approvals/decide" ||
     pathname === "/api/kill-switch/engage" ||
     pathname === "/api/kill-switch/clear"
   );
+}
+
+function parseApprovalDecisionRequest(
+  value: unknown,
+  at: string,
+): Parameters<ControlPlaneStore["decideApproval"]>[0] {
+  assertExactObject(
+    value,
+    [
+      "actor",
+      "decision",
+      "expectedPayloadHash",
+      "expectedRevision",
+      "id",
+      "userAction",
+    ],
+    "DASHBOARD_APPROVAL_DECISION_INVALID",
+  );
+  const actor = value["actor"];
+  const decision = value["decision"];
+  const expectedPayloadHash = value["expectedPayloadHash"];
+  const expectedRevision = value["expectedRevision"];
+  const id = value["id"];
+  const userAction = value["userAction"];
+  if (
+    typeof actor !== "string" ||
+    !ACTOR.test(actor) ||
+    (decision !== "accepted" && decision !== "rejected") ||
+    typeof expectedPayloadHash !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(expectedPayloadHash) ||
+    expectedRevision !== 0 ||
+    typeof id !== "string" ||
+    !/^[A-Za-z0-9_-]{1,128}$/u.test(id) ||
+    typeof userAction !== "string" ||
+    userAction.trim().length === 0 ||
+    userAction.length > 500
+  )
+    throw new SecurityError("DASHBOARD_APPROVAL_DECISION_INVALID");
+  return Object.freeze({
+    id,
+    expectedRevision,
+    expectedPayloadHash,
+    decision,
+    actor,
+    userAction: userAction.trim(),
+    at,
+  });
 }
 
 function assertMutationHeaders(
@@ -568,11 +631,13 @@ function parseSimulationRequest(
 ): HumanSimulationEvidence {
   assertExactObject(
     value,
-    ["actor", "confirmations"],
+    ["actor", "confirmations", "confirmationTimes", "reviewDigest"],
     "DASHBOARD_SIMULATION_CONFIRMATIONS_INVALID",
   );
   const actor = value["actor"];
   const confirmations = value["confirmations"];
+  const confirmationTimes = value["confirmationTimes"];
+  const reviewDigest = value["reviewDigest"];
   if (typeof actor !== "string" || !ACTOR.test(actor))
     throw new SecurityError("DASHBOARD_SIMULATION_ACTOR_INVALID");
   assertExactObject(
@@ -582,10 +647,18 @@ function parseSimulationRequest(
   );
   if (CONFIRMATION_KEYS.some((key) => confirmations[key] !== true))
     throw new SecurityError("DASHBOARD_SIMULATION_CONFIRMATIONS_INVALID");
+  assertExactObject(
+    confirmationTimes,
+    CONFIRMATION_KEYS,
+    "DASHBOARD_SIMULATION_CONFIRMATIONS_INVALID",
+  );
+  if (typeof reviewDigest !== "string" || !/^[a-f0-9]{64}$/u.test(reviewDigest))
+    throw new SecurityError("DASHBOARD_SIMULATION_CONFIRMATIONS_INVALID");
   return Object.freeze({
-    version: 1,
+    version: 2,
     actor,
     confirmedAt,
+    reviewDigest,
     confirmations: Object.freeze({
       clearKillSwitch: true,
       acceptPolicyV1: true,
@@ -594,7 +667,49 @@ function parseSimulationRequest(
       approveCampaignV2: true,
       queueReportReview: true,
     }),
+    confirmationTimes: Object.freeze({
+      clearKillSwitch: requireStringField(
+        confirmationTimes,
+        "clearKillSwitch",
+        "DASHBOARD_SIMULATION_CONFIRMATIONS_INVALID",
+      ),
+      acceptPolicyV1: requireStringField(
+        confirmationTimes,
+        "acceptPolicyV1",
+        "DASHBOARD_SIMULATION_CONFIRMATIONS_INVALID",
+      ),
+      approveCampaignV1: requireStringField(
+        confirmationTimes,
+        "approveCampaignV1",
+        "DASHBOARD_SIMULATION_CONFIRMATIONS_INVALID",
+      ),
+      acceptPolicyV2: requireStringField(
+        confirmationTimes,
+        "acceptPolicyV2",
+        "DASHBOARD_SIMULATION_CONFIRMATIONS_INVALID",
+      ),
+      approveCampaignV2: requireStringField(
+        confirmationTimes,
+        "approveCampaignV2",
+        "DASHBOARD_SIMULATION_CONFIRMATIONS_INVALID",
+      ),
+      queueReportReview: requireStringField(
+        confirmationTimes,
+        "queueReportReview",
+        "DASHBOARD_SIMULATION_CONFIRMATIONS_INVALID",
+      ),
+    }),
   });
+}
+
+function requireStringField(
+  value: Readonly<Record<string, unknown>>,
+  key: string,
+  code: string,
+): string {
+  const field = value[key];
+  if (typeof field !== "string") throw new SecurityError(code);
+  return field;
 }
 
 function parseKillSwitchRequest(value: unknown): { readonly actor: string } {

@@ -86,4 +86,125 @@ describe("ApprovalQueue", () => {
       }),
     ).toThrow("APPROVAL_KILL_SWITCH");
   });
+
+  it("hydrates persisted approvals only when their payload remains intact", () => {
+    const source = queueWithOpenItem();
+    const open = source.queue.get("approval-1");
+    expect(open).toBeDefined();
+    const hydrated = new ApprovalQueue(open === undefined ? [] : [open]);
+    expect(
+      hydrated.decide({
+        id: "approval-1",
+        expectedRevision: 0,
+        expectedPayloadHash: source.hash,
+        decision: "accepted",
+        actor: "local-reviewer",
+        userAction: "persisted_click_accept",
+        at: NOW,
+        killSwitchActive: false,
+      }).status,
+    ).toBe("accepted");
+    expect(
+      () =>
+        new ApprovalQueue(
+          open === undefined
+            ? []
+            : [{ ...open, summary: "tampered persisted summary" }],
+        ),
+    ).toThrow("APPROVAL_INTEGRITY_INVALID");
+    expect(
+      () =>
+        new ApprovalQueue(
+          open === undefined
+            ? []
+            : [
+                {
+                  ...open,
+                  status: "accepted",
+                  decidedAt: "2026-07-13T11:00:00.000Z",
+                  decidedBy: "local-reviewer",
+                  userAction: "clicked_accept",
+                  revision: 1,
+                },
+              ],
+        ),
+    ).toThrow("APPROVAL_INTEGRITY_INVALID");
+  });
+
+  it("rejects secret-like material in approval text", () => {
+    const queue = new ApprovalQueue();
+    expect(() =>
+      queue.enqueue({
+        id: "approval-sensitive",
+        kind: "privacy_alert",
+        summary: "accidental pass".concat("word=placeholder-value"),
+        technicalDetails: "Local test",
+        impact: "Blocked",
+        policyVersion: null,
+        policyHash: null,
+        createdAt: NOW,
+        auditReference: "audit:approval-sensitive",
+      }),
+    ).toThrow("APPROVAL_SENSITIVE_MATERIAL");
+  });
+
+  it("rejects non-boolean kill state, invalid decisions, backdating, and secret user actions", () => {
+    for (const killSwitchActive of [undefined, null, 0, "false"]) {
+      const { queue, hash } = queueWithOpenItem();
+      expect(() =>
+        queue.decide({
+          id: "approval-1",
+          expectedRevision: 0,
+          expectedPayloadHash: hash,
+          decision: "accepted",
+          actor: "local-reviewer",
+          userAction: "clicked_accept",
+          at: NOW,
+          killSwitchActive: killSwitchActive as unknown as boolean,
+        }),
+      ).toThrow("APPROVAL_KILL_SWITCH");
+    }
+
+    const invalidDecision = queueWithOpenItem();
+    expect(() =>
+      invalidDecision.queue.decide({
+        id: "approval-1",
+        expectedRevision: 0,
+        expectedPayloadHash: invalidDecision.hash,
+        decision: "approved" as "accepted",
+        actor: "local-reviewer",
+        userAction: "clicked_accept",
+        at: NOW,
+        killSwitchActive: false,
+      }),
+    ).toThrow("APPROVAL_DECISION_INVALID");
+
+    const backdated = queueWithOpenItem();
+    expect(() =>
+      backdated.queue.decide({
+        id: "approval-1",
+        expectedRevision: 0,
+        expectedPayloadHash: backdated.hash,
+        decision: "accepted",
+        actor: "local-reviewer",
+        userAction: "clicked_accept",
+        at: "2026-07-13T11:59:59.000Z",
+        killSwitchActive: false,
+      }),
+    ).toThrow("APPROVAL_DECISION_INVALID");
+
+    const sensitive = queueWithOpenItem();
+    expect(() =>
+      sensitive.queue.decide({
+        id: "approval-1",
+        expectedRevision: 0,
+        expectedPayloadHash: sensitive.hash,
+        decision: "accepted",
+        actor: "local-reviewer",
+        userAction: "Cookie: sid=".concat("local-session-value"),
+        at: NOW,
+        killSwitchActive: false,
+      }),
+    ).toThrow("APPROVAL_SENSITIVE_MATERIAL");
+  });
 });

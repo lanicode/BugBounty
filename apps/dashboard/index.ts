@@ -14,6 +14,7 @@ import {
   type RunningDemoSaasServer,
 } from "../../packages/demo-saas/index.js";
 import { SimulationOrchestrator } from "../../packages/simulation/index.js";
+import { MacOSKeychainSecretStore } from "../../packages/secret-store/index.js";
 import { errorCode } from "../../packages/shared/errors.js";
 
 async function main(): Promise<void> {
@@ -23,6 +24,11 @@ async function main(): Promise<void> {
     resolve(runtimeRoot, "control-plane.sqlite"),
   );
   const store = new ControlPlaneStore(database);
+  store.setKillSwitch(
+    true,
+    `system-startup-${String(process.pid)}`,
+    new Date().toISOString(),
+  );
   const demo = new DemoSaas(() => new Date());
   let demoServer: RunningDemoSaasServer | undefined;
   let dashboardServer: RunningDashboardServer | undefined;
@@ -44,6 +50,9 @@ async function main(): Promise<void> {
       store,
       demo,
       resolve(runtimeRoot, "event-store"),
+      new MacOSKeychainSecretStore(),
+      (version) =>
+        `keychain://bugbounty-copilot/event-store-v${String(version)}`,
       () => new Date(),
     );
     dashboardServer = await startDashboardServer(

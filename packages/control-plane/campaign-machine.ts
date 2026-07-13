@@ -1,8 +1,16 @@
+import { canonicalJson, sha256 } from "../shared/canonical.js";
 import { SecurityError } from "../shared/errors.js";
 import type { CampaignRecord, CampaignState } from "./types.js";
 
+const SAFE_METADATA_METHODS: ReadonlySet<unknown> = new Set([
+  "GET",
+  "HEAD",
+  "OPTIONS",
+]);
+
 export type CampaignEvent =
   | { readonly kind: "approve"; readonly actor: string; readonly at: string }
+  | { readonly kind: "block" }
   | { readonly kind: "cancel" }
   | { readonly kind: "complete" }
   | { readonly kind: "pause" }
@@ -23,12 +31,34 @@ export interface CampaignGuardContext {
   readonly now: string;
 }
 
+export function campaignApprovalDigest(campaign: CampaignRecord): string {
+  return sha256(
+    canonicalJson({
+      programId: campaign.programId,
+      policyVersion: campaign.policyVersion,
+      policyHash: campaign.policyHash,
+      approvedAssets: campaign.approvedAssets,
+      approvedRiskTiers: campaign.approvedRiskTiers,
+      accountRefs: campaign.accountRefs,
+      allowedActionClasses: campaign.allowedActionClasses,
+      contract: campaign.contract,
+    }),
+  );
+}
+
 export function transitionCampaign(
   campaign: CampaignRecord,
   event: CampaignEvent,
   context: CampaignGuardContext,
 ): CampaignRecord {
   assertTimestamp(context.now);
+  if (typeof context.killSwitchActive !== "boolean")
+    throw new SecurityError("CAMPAIGN_KILL_SWITCH");
+  if (
+    typeof context.externalActionRequested !== "boolean" ||
+    typeof context.externalIntegrationsEnabled !== "boolean"
+  )
+    throw new SecurityError("CAMPAIGN_CONFIG_INVALID");
   let state: CampaignState;
   let approval = {
     humanApprovedBy: campaign.humanApprovedBy,
@@ -69,11 +99,13 @@ export function transitionCampaign(
         throw new SecurityError("CAMPAIGN_TRANSITION_BLOCKED");
       assertTimestamp(event.at);
       state = "paused";
+      approval = { humanApprovedBy: null, humanApprovedAt: null };
       lastPolicyCheckAt = event.at;
       break;
     case "pause":
       requireState(campaign.state, "running_simulation");
       state = "paused";
+      approval = { humanApprovedBy: null, humanApprovedAt: null };
       break;
     case "resume_requested":
       requireState(campaign.state, "paused");
@@ -84,11 +116,19 @@ export function transitionCampaign(
     case "complete":
       requireState(campaign.state, "running_simulation");
       state = "completed";
+      approval = { humanApprovedBy: null, humanApprovedAt: null };
       break;
     case "cancel":
       if (campaign.state === "completed" || campaign.state === "cancelled")
         throw new SecurityError("CAMPAIGN_TRANSITION_BLOCKED");
       state = "cancelled";
+      approval = { humanApprovedBy: null, humanApprovedAt: null };
+      break;
+    case "block":
+      if (campaign.state === "completed" || campaign.state === "cancelled")
+        throw new SecurityError("CAMPAIGN_TRANSITION_BLOCKED");
+      state = "blocked";
+      approval = { humanApprovedBy: null, humanApprovedAt: null };
       break;
   }
   return deepFreeze({
@@ -103,21 +143,55 @@ export function transitionCampaign(
 
 export function validateCampaignContract(campaign: CampaignRecord): void {
   const contract = campaign.contract;
+  const validFrom = Date.parse(contract.validFrom);
+  const validUntil = Date.parse(contract.validUntil);
   if (
     contract.policyHash !== campaign.policyHash ||
     contract.allowedHosts.length === 0 ||
+    contract.allowedHosts.some((host) => !isMetadataHost(host)) ||
+    contract.excludedHosts.some((host) => !isMetadataHost(host)) ||
+    overlaps(contract.allowedHosts, contract.excludedHosts) ||
+    campaign.approvedAssets.length === 0 ||
+    !sameList(contract.allowedHosts, campaign.approvedAssets) ||
     contract.maxRequests < 1 ||
     contract.maxRequests > 10_000 ||
+    !Number.isSafeInteger(contract.maxRequests) ||
     contract.requestsPerMinute < 1 ||
     contract.requestsPerMinute > contract.maxRequests ||
+    !Number.isSafeInteger(contract.requestsPerMinute) ||
     !sameValue(contract.maxConcurrency, 1) ||
     !sameValue(contract.writeActionsAllowed, false) ||
+    !sameValue(contract.rollbackRequired, true) ||
     !sameList(contract.allowedRiskTiers, ["tier_0_offline"]) ||
     !sameList(campaign.allowedActionClasses, ["offline_simulation"]) ||
     !sameList(campaign.approvedRiskTiers, ["tier_0_offline"]) ||
-    Date.parse(contract.validFrom) >= Date.parse(contract.validUntil)
+    contract.allowedMethods.length === 0 ||
+    contract.allowedMethods.some(
+      (method) => !SAFE_METADATA_METHODS.has(method),
+    ) ||
+    !contract.humanCheckpoints.includes("policy_acceptance") ||
+    !contract.humanCheckpoints.includes("campaign_approval") ||
+    !Number.isFinite(validFrom) ||
+    !Number.isFinite(validUntil) ||
+    validFrom >= validUntil
   )
     throw new SecurityError("CAMPAIGN_CONTRACT_INVALID");
+}
+
+function isMetadataHost(value: string): boolean {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 253 &&
+    /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/u.test(
+      value,
+    )
+  );
+}
+
+function overlaps(left: readonly string[], right: readonly string[]): boolean {
+  const rightValues = new Set(right);
+  return left.some((value) => rightValues.has(value));
 }
 
 function sameValue(actual: unknown, expected: unknown): boolean {
@@ -135,9 +209,12 @@ function assertStartable(
 ): void {
   validateCampaignContract(campaign);
   assertPolicyAccepted(campaign, context);
-  if (!context.configurationValid)
+  const configurationValid: unknown = context.configurationValid;
+  const killSwitchActive: unknown = context.killSwitchActive;
+  if (configurationValid !== true)
     throw new SecurityError("CAMPAIGN_CONFIG_INVALID");
-  if (context.killSwitchActive) throw new SecurityError("CAMPAIGN_KILL_SWITCH");
+  if (killSwitchActive !== false)
+    throw new SecurityError("CAMPAIGN_KILL_SWITCH");
   if (context.externalActionRequested && !context.externalIntegrationsEnabled)
     throw new SecurityError("EXTERNAL_INTEGRATIONS_DISABLED");
   if (campaign.approvedAssets.length === 0)

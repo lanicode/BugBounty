@@ -171,4 +171,20 @@ lifecycle: active
 
     for (const invalid of invalidCases) expect(invalid).toThrow();
   });
+
+  it("rejects secret-like material in free text and URL queries", () => {
+    expect(() =>
+      parseJson({
+        description: "accidental api".concat("_key=placeholder-value"),
+      }),
+    ).toThrow("PROGRAM_IMPORT_SENSITIVE_MATERIAL");
+    expect(() =>
+      parseJson({ program_url: "http://127.0.0.1/program?ref=private" }),
+    ).toThrow("PROGRAM_IMPORT_URL_INVALID");
+    expect(() =>
+      parseJson({
+        allowed_assets: ["token=".concat("abcdefghijklmnop")],
+      }),
+    ).toThrow("PROGRAM_IMPORT_SENSITIVE_MATERIAL");
+  });
 });

@@ -1,5 +1,10 @@
 import { canonicalJson, sha256 } from "../shared/canonical.js";
 import { SecurityError } from "../shared/errors.js";
+import { ApprovalQueue } from "./approval-queue.js";
+import {
+  campaignApprovalDigest,
+  validateCampaignContract,
+} from "./campaign-machine.js";
 import { normalizePolicy, type NormalizedPolicy } from "./policy.js";
 import type { ControlPlaneDatabase } from "./database.js";
 import type {
@@ -10,6 +15,7 @@ import type {
   ReportDraftRecord,
   TestIdentityRecord,
 } from "./types.js";
+import { assertNoSensitiveMaterial } from "./sensitive.js";
 
 export interface StoredPolicyVersion {
   readonly programId: string;
@@ -21,6 +27,16 @@ export interface StoredPolicyVersion {
     readonly acceptedAt: string;
     readonly auditReference: string;
   } | null;
+}
+
+export interface ControlPlaneAuditRecord {
+  readonly id: string;
+  readonly occurredAt: string;
+  readonly action: string;
+  readonly decision: string;
+  readonly reasonCode: string;
+  readonly objectReference: string | null;
+  readonly payloadHash: string;
 }
 
 export class ControlPlaneStore {
@@ -97,8 +113,22 @@ export class ControlPlaneStore {
     assertTimestamp(input.createdAt, "POLICY_TIMESTAMP_INVALID");
     if (!Number.isSafeInteger(input.version) || input.version < 1)
       throw new SecurityError("POLICY_VERSION_INVALID");
-    if (this.getProgram(input.programId) === undefined)
-      throw new SecurityError("PROGRAM_NOT_FOUND");
+    const program = this.getProgram(input.programId);
+    if (program === undefined) throw new SecurityError("PROGRAM_NOT_FOUND");
+    const expectedVersion = (program.currentPolicyVersion ?? 0) + 1;
+    if (input.version !== expectedVersion)
+      throw new SecurityError("POLICY_VERSION_NOT_SEQUENTIAL");
+    if (program.currentPolicyVersion !== null) {
+      const current = this.getPolicy(
+        input.programId,
+        program.currentPolicyVersion,
+      );
+      if (
+        current === undefined ||
+        Date.parse(input.createdAt) < Date.parse(current.createdAt)
+      )
+        throw new SecurityError("POLICY_VERSION_ORDER_INVALID");
+    }
     this.database.transaction(() => {
       this.database.run(
         `INSERT INTO policy_versions(
@@ -118,6 +148,16 @@ export class ControlPlaneStore {
         input.policy.policyHash,
         input.programId,
       );
+      this.database.run(
+        `UPDATE campaigns SET state='paused',revision=revision+1,
+          human_approved_by=NULL,human_approved_at=NULL,
+          last_policy_check_at=?
+         WHERE program_id=? AND state IN ('approved','running_simulation')
+           AND policy_hash<>?`,
+        input.createdAt,
+        input.programId,
+        input.policy.policyHash,
+      );
     });
     return freezePolicy({ ...input, acceptance: null });
   }
@@ -130,13 +170,39 @@ export class ControlPlaneStore {
     readonly acceptedAt: string;
     readonly auditReference: string;
   }): StoredPolicyVersion {
+    if (this.isKillSwitchActive())
+      throw new SecurityError("POLICY_ACCEPTANCE_KILL_SWITCH");
+    const program = this.getProgram(input.programId);
+    if (program === undefined) throw new SecurityError("PROGRAM_NOT_FOUND");
     const policy = this.getPolicy(input.programId, input.version);
     if (policy === undefined) throw new SecurityError("POLICY_NOT_FOUND");
     if (policy.policy.policyHash !== input.expectedPolicyHash)
       throw new SecurityError("POLICY_ACCEPTANCE_HASH_MISMATCH");
     assertActor(input.acceptedBy, "POLICY_ACCEPTOR_INVALID");
     assertTimestamp(input.acceptedAt, "POLICY_ACCEPTANCE_TIMESTAMP_INVALID");
+    if (Date.parse(input.acceptedAt) < Date.parse(policy.createdAt))
+      throw new SecurityError("POLICY_ACCEPTANCE_TIMESTAMP_INVALID");
     assertReference(input.auditReference, "AUDIT_REFERENCE_INVALID");
+    if (
+      program.currentPolicyVersion !== input.version ||
+      program.currentPolicyHash !== input.expectedPolicyHash
+    )
+      throw new SecurityError("POLICY_ACCEPTANCE_STALE");
+    const approval = this.listApprovals().find(
+      (candidate) =>
+        candidate.kind === "program_policy_acceptance" &&
+        candidate.status === "accepted" &&
+        candidate.summary ===
+          `Accept ${input.programId} policy version ${String(input.version)}` &&
+        candidate.policyVersion === input.version &&
+        candidate.policyHash === input.expectedPolicyHash &&
+        candidate.decidedBy === input.acceptedBy &&
+        candidate.decidedAt === input.acceptedAt &&
+        candidate.auditReference === input.auditReference,
+    );
+    if (approval === undefined)
+      throw new SecurityError("POLICY_ACCEPTANCE_EVIDENCE_REQUIRED");
+    new ApprovalQueue([approval]);
     this.database.transaction(() => {
       this.database.run(
         `INSERT INTO policy_acceptances(
@@ -172,9 +238,11 @@ export class ControlPlaneStore {
     version: number,
   ): StoredPolicyVersion | undefined {
     const row = this.database.get(
-      `SELECT p.*,a.accepted_by,a.accepted_at,a.audit_reference
+      `SELECT p.*,a.accepted_by,a.accepted_at,a.audit_reference,
+        a.policy_hash AS acceptance_policy_hash
        FROM policy_versions p LEFT JOIN policy_acceptances a
        ON p.program_id=a.program_id AND p.version=a.version
+        AND p.policy_hash=a.policy_hash
        WHERE p.program_id=? AND p.version=?`,
       programId,
       version,
@@ -186,9 +254,11 @@ export class ControlPlaneStore {
     return Object.freeze(
       this.database
         .all(
-          `SELECT p.*,a.accepted_by,a.accepted_at,a.audit_reference
+          `SELECT p.*,a.accepted_by,a.accepted_at,a.audit_reference,
+            a.policy_hash AS acceptance_policy_hash
            FROM policy_versions p LEFT JOIN policy_acceptances a
            ON p.program_id=a.program_id AND p.version=a.version
+            AND p.policy_hash=a.policy_hash
            WHERE p.program_id=? ORDER BY p.version`,
           programId,
         )
@@ -198,6 +268,14 @@ export class ControlPlaneStore {
 
   public insertCampaign(campaign: CampaignRecord): CampaignRecord {
     validateCampaign(campaign);
+    if (
+      campaign.state !== "draft" ||
+      campaign.revision !== 0 ||
+      campaign.humanApprovedBy !== null ||
+      campaign.humanApprovedAt !== null
+    )
+      throw new SecurityError("CAMPAIGN_INSERT_STATE_INVALID");
+    this.assertCampaignPersistenceBindings(campaign);
     this.database.run(
       `INSERT INTO campaigns(
         id,program_id,policy_version,policy_hash,approved_assets_json,
@@ -232,6 +310,12 @@ export class ControlPlaneStore {
     validateCampaign(campaign);
     if (campaign.revision !== expectedRevision + 1)
       throw new SecurityError("CAMPAIGN_REVISION_INVALID");
+    const current = this.getCampaign(campaign.id);
+    if (current?.revision !== expectedRevision)
+      throw new SecurityError("CAMPAIGN_REVISION_CONFLICT");
+    assertCampaignIdentityStable(current, campaign);
+    assertCampaignTransition(current, campaign);
+    this.assertCampaignPersistenceBindings(campaign);
     const result = this.database.run(
       `UPDATE campaigns SET policy_version=?,policy_hash=?,approved_assets_json=?,
        approved_risk_tiers_json=?,account_refs_json=?,allowed_action_classes_json=?,
@@ -310,6 +394,9 @@ export class ControlPlaneStore {
 
   public insertOwnedObject(object: OwnedObjectRecord): OwnedObjectRecord {
     validateOwnedObject(object);
+    if (this.isKillSwitchActive())
+      throw new SecurityError("CONTROL_PLANE_OBJECT_KILL_SWITCH");
+    this.assertOwnershipBindings(object);
     this.database.run(
       `INSERT INTO owned_objects(
         object_ref,protected_actual_id_ref,program_id,campaign_id,account_id,
@@ -342,6 +429,9 @@ export class ControlPlaneStore {
     readonly action: string;
     readonly now: string;
   }): OwnedObjectRecord {
+    assertTimestamp(input.now, "CONTROL_PLANE_OBJECT_TIME_INVALID");
+    if (this.isKillSwitchActive())
+      throw new SecurityError("CONTROL_PLANE_OBJECT_KILL_SWITCH");
     const row = this.database.get(
       "SELECT * FROM owned_objects WHERE object_ref=?",
       input.objectRef,
@@ -357,6 +447,7 @@ export class ControlPlaneStore {
       throw new SecurityError("CONTROL_PLANE_OBJECT_ACCOUNT_MISMATCH");
     if (object.policyHash !== input.policyHash)
       throw new SecurityError("CONTROL_PLANE_OBJECT_POLICY_MISMATCH");
+    this.assertOwnershipBindings(object);
     if (!object.allowedActions.includes(input.action))
       throw new SecurityError("CONTROL_PLANE_OBJECT_ACTION_BLOCKED");
     if (Date.parse(object.expiresAt) <= Date.parse(input.now))
@@ -373,6 +464,9 @@ export class ControlPlaneStore {
   }
 
   public persistApproval(record: ApprovalRecord): void {
+    new ApprovalQueue([record]);
+    if (record.status !== "open" || record.revision !== 0)
+      throw new SecurityError("APPROVAL_INSERT_STATE_INVALID");
     this.database.run(
       `INSERT INTO approvals(
         id,kind,summary,technical_details,impact,policy_version,policy_hash,
@@ -397,10 +491,11 @@ export class ControlPlaneStore {
     );
   }
 
-  public updateApproval(
+  private updateApproval(
     expectedRevision: number,
     record: ApprovalRecord,
   ): void {
+    new ApprovalQueue([record]);
     const result = this.database.run(
       `UPDATE approvals SET status=?,decided_at=?,decided_by=?,user_action=?,
        revision=? WHERE id=? AND revision=? AND payload_hash=?`,
@@ -422,6 +517,64 @@ export class ControlPlaneStore {
       this.database
         .all("SELECT * FROM approvals ORDER BY id")
         .map(approvalFromRow),
+    );
+  }
+
+  public decideApproval(input: {
+    readonly id: string;
+    readonly expectedRevision: number;
+    readonly expectedPayloadHash: string;
+    readonly decision: "accepted" | "rejected";
+    readonly actor: string;
+    readonly userAction: string;
+    readonly at: string;
+  }): ApprovalRecord {
+    return this.database.transaction(() => {
+      if (this.isKillSwitchActive())
+        throw new SecurityError("APPROVAL_KILL_SWITCH");
+      const row = this.database.get(
+        "SELECT * FROM approvals WHERE id=?",
+        input.id,
+      );
+      if (row === undefined) throw new SecurityError("APPROVAL_NOT_FOUND");
+      const current = approvalFromRow(row);
+      const queue = new ApprovalQueue([current]);
+      const decided = queue.decide({
+        ...input,
+        killSwitchActive: false,
+      });
+      this.updateApproval(current.revision, decided);
+      this.database.run(
+        `INSERT INTO control_plane_audit(
+          id,occurred_at,action,decision,reason_code,object_reference,payload_hash
+        ) VALUES(?,?,?,?,?,?,?)`,
+        `approval-${sha256(`${input.id}\u0000${input.at}\u0000${input.decision}`).slice(0, 32)}`,
+        input.at,
+        "approval_decision",
+        input.decision,
+        "HUMAN_APPROVAL_DECISION",
+        input.id,
+        decided.payloadHash,
+      );
+      return decided;
+    });
+  }
+
+  public listAuditEntries(): readonly ControlPlaneAuditRecord[] {
+    return Object.freeze(
+      this.database
+        .all("SELECT * FROM control_plane_audit ORDER BY occurred_at,id")
+        .map((row) =>
+          Object.freeze({
+            id: text(row, "id"),
+            occurredAt: text(row, "occurred_at"),
+            action: text(row, "action"),
+            decision: text(row, "decision"),
+            reasonCode: text(row, "reason_code"),
+            objectReference: nullableText(row, "object_reference"),
+            payloadHash: text(row, "payload_hash"),
+          }),
+        ),
     );
   }
 
@@ -465,6 +618,8 @@ export class ControlPlaneStore {
     actor: string,
     at: string,
   ): { readonly active: boolean; readonly revision: number } {
+    if (typeof active !== "boolean")
+      throw new SecurityError("KILL_SWITCH_VALUE_INVALID");
     assertActor(actor, "KILL_SWITCH_ACTOR_INVALID");
     assertTimestamp(at, "KILL_SWITCH_TIMESTAMP_INVALID");
     const value = active ? "engaged" : "clear";
@@ -535,6 +690,121 @@ export class ControlPlaneStore {
     }
     return Object.freeze({ active: true, revision });
   }
+
+  private assertCampaignPersistenceBindings(campaign: CampaignRecord): void {
+    validateCampaignContract(campaign);
+    const program = this.getProgram(campaign.programId);
+    if (program === undefined) throw new SecurityError("PROGRAM_NOT_FOUND");
+    const policy = this.getPolicy(campaign.programId, campaign.policyVersion);
+    if (policy === undefined)
+      throw new SecurityError("CAMPAIGN_POLICY_NOT_FOUND");
+    if (policy.policy.policyHash !== campaign.policyHash)
+      throw new SecurityError("CAMPAIGN_POLICY_HASH_MISMATCH");
+    if (
+      !["paused", "blocked", "cancelled", "completed"].includes(
+        campaign.state,
+      ) &&
+      (program.currentPolicyVersion !== campaign.policyVersion ||
+        program.currentPolicyHash !== campaign.policyHash)
+    )
+      throw new SecurityError("CAMPAIGN_POLICY_STALE");
+    const allowedAssets = new Set(policy.policy.allowedAssets);
+    if (
+      campaign.approvedAssets.length === 0 ||
+      campaign.approvedAssets.some((asset) => !allowedAssets.has(asset))
+    )
+      throw new SecurityError("CAMPAIGN_ASSET_UNKNOWN");
+    if (
+      canonicalJson([...campaign.contract.excludedHosts]) !==
+      canonicalJson([...policy.policy.excludedAssets])
+    )
+      throw new SecurityError("CAMPAIGN_EXCLUDED_ASSET_MISMATCH");
+    if (
+      campaign.contract.maxRequests >
+        policy.policy.requestLimits.maxRequestsTotal ||
+      campaign.contract.requestsPerMinute >
+        policy.policy.requestLimits.requestsPerMinute ||
+      campaign.contract.maxConcurrency >
+        policy.policy.requestLimits.maxConcurrency
+    )
+      throw new SecurityError("CAMPAIGN_POLICY_BUDGET_EXCEEDED");
+    if (
+      campaign.state === "awaiting_campaign_approval" ||
+      campaign.state === "approved" ||
+      campaign.state === "running_simulation"
+    ) {
+      if (policy.acceptance === null)
+        throw new SecurityError("CAMPAIGN_POLICY_NOT_ACCEPTED");
+    }
+    if (
+      campaign.state === "approved" ||
+      campaign.state === "running_simulation"
+    ) {
+      if (
+        campaign.humanApprovedBy === null ||
+        campaign.humanApprovedAt === null
+      )
+        throw new SecurityError("CAMPAIGN_HUMAN_APPROVAL_REQUIRED");
+      if (Date.parse(campaign.humanApprovedAt) < Date.parse(campaign.createdAt))
+        throw new SecurityError("CAMPAIGN_APPROVAL_TIME_INVALID");
+      const campaignApproval = this.listApprovals().find(
+        (approval) =>
+          approval.kind === "campaign_contract" &&
+          approval.status === "accepted" &&
+          approval.summary === `Approve ${campaign.id}` &&
+          approval.policyVersion === campaign.policyVersion &&
+          approval.policyHash === campaign.policyHash &&
+          approval.decidedBy === campaign.humanApprovedBy &&
+          approval.decidedAt === campaign.humanApprovedAt &&
+          approval.technicalDetails.includes(
+            `Campaign digest ${campaignApprovalDigest(campaign)}`,
+          ),
+      );
+      if (campaignApproval === undefined)
+        throw new SecurityError("CAMPAIGN_APPROVAL_EVIDENCE_REQUIRED");
+      new ApprovalQueue([campaignApproval]);
+      if (this.isKillSwitchActive() || campaign.killSwitchStatus !== "clear")
+        throw new SecurityError("CAMPAIGN_KILL_SWITCH");
+    }
+  }
+
+  private assertOwnershipBindings(object: OwnedObjectRecord): void {
+    const campaign = this.getCampaign(object.campaignId);
+    if (campaign === undefined)
+      throw new SecurityError("CONTROL_PLANE_OBJECT_CAMPAIGN_UNKNOWN");
+    this.assertCampaignPersistenceBindings(campaign);
+    const identityRow = this.database.get(
+      "SELECT * FROM test_identities WHERE id=?",
+      object.accountId,
+    );
+    if (identityRow === undefined)
+      throw new SecurityError("CONTROL_PLANE_OBJECT_ACCOUNT_UNKNOWN");
+    const identity = identityFromRow(identityRow);
+    if (
+      campaign.programId !== object.programId ||
+      identity.programId !== object.programId
+    )
+      throw new SecurityError("CONTROL_PLANE_OBJECT_PROGRAM_MISMATCH");
+    if (
+      identity.status !== "ready" ||
+      identity.humanActionRequired ||
+      identity.organizationRef !== object.tenantRef ||
+      !identity.ownedObjectRefs.includes(object.objectRef)
+    )
+      throw new SecurityError("CONTROL_PLANE_OBJECT_ACCOUNT_BINDING_INVALID");
+    if (
+      campaign.state !== "running_simulation" ||
+      campaign.policyHash !== object.policyHash ||
+      !campaign.accountRefs.includes(identity.id)
+    )
+      throw new SecurityError("CONTROL_PLANE_OBJECT_CAMPAIGN_BINDING_INVALID");
+    const policy = this.getPolicy(campaign.programId, campaign.policyVersion);
+    if (
+      policy?.policy.policyHash !== object.policyHash ||
+      policy.acceptance === null
+    )
+      throw new SecurityError("CONTROL_PLANE_OBJECT_POLICY_BINDING_INVALID");
+  }
 }
 
 type Row = Readonly<
@@ -542,7 +812,7 @@ type Row = Readonly<
 >;
 
 function programFromRow(row: Row): ProgramRecord {
-  return freezeProgram({
+  const program = freezeProgram({
     id: text(row, "id"),
     name: text(row, "name"),
     platform: enumText(row, "platform", ["manual", "local_mock"]),
@@ -577,6 +847,8 @@ function programFromRow(row: Row): ProgramRecord {
     ]),
     createdAt: text(row, "created_at"),
   });
+  validateProgram(program);
+  return program;
 }
 
 function policyFromRow(row: Row): StoredPolicyVersion {
@@ -621,6 +893,13 @@ function policyFromRow(row: Row): StoredPolicyVersion {
   )
     throw new SecurityError("CONTROL_PLANE_ROW_INVALID");
   const acceptedBy = nullableText(row, "accepted_by");
+  const acceptancePolicyHash = nullableText(row, "acceptance_policy_hash");
+  if (
+    (acceptedBy === null) !== (acceptancePolicyHash === null) ||
+    (acceptancePolicyHash !== null &&
+      acceptancePolicyHash !== policy.policyHash)
+  )
+    throw new SecurityError("CONTROL_PLANE_ROW_INVALID");
   return freezePolicy({
     programId: text(row, "program_id"),
     version: number(row, "version"),
@@ -638,7 +917,7 @@ function policyFromRow(row: Row): StoredPolicyVersion {
 }
 
 function campaignFromRow(row: Row): CampaignRecord {
-  return Object.freeze({
+  const campaign = Object.freeze({
     id: text(row, "id"),
     programId: text(row, "program_id"),
     policyVersion: number(row, "policy_version"),
@@ -670,10 +949,13 @@ function campaignFromRow(row: Row): CampaignRecord {
     killSwitchStatus: enumText(row, "kill_switch_status", ["clear", "engaged"]),
     createdAt: text(row, "created_at"),
   });
+  validateCampaign(campaign);
+  validateCampaignContract(campaign);
+  return campaign;
 }
 
 function identityFromRow(row: Row): TestIdentityRecord {
-  return Object.freeze({
+  const identity = Object.freeze({
     id: text(row, "id"),
     programId: text(row, "program_id"),
     role: enumText(row, "role", ["Owner", "Member", "External"]),
@@ -701,12 +983,14 @@ function identityFromRow(row: Row): TestIdentityRecord {
     organizationRef: nullableText(row, "organization_ref"),
     ownedObjectRefs: stringArray(row, "owned_object_refs_json"),
   });
+  validateIdentity(identity);
+  return identity;
 }
 
 function objectFromRow(row: Row): OwnedObjectRecord {
   if (number(row, "researcher_controlled") !== 1)
     throw new SecurityError("CONTROL_PLANE_ROW_INVALID");
-  return Object.freeze({
+  const object = Object.freeze({
     objectRef: text(row, "object_ref"),
     protectedActualIdRef: text(row, "protected_actual_id_ref"),
     programId: text(row, "program_id"),
@@ -722,10 +1006,12 @@ function objectFromRow(row: Row): OwnedObjectRecord {
     expiresAt: text(row, "expires_at"),
     policyHash: text(row, "policy_hash"),
   });
+  validateOwnedObject(object);
+  return object;
 }
 
 function approvalFromRow(row: Row): ApprovalRecord {
-  return Object.freeze({
+  const approval = Object.freeze({
     id: text(row, "id"),
     kind: enumText(row, "kind", [
       "program_policy_acceptance",
@@ -750,12 +1036,14 @@ function approvalFromRow(row: Row): ApprovalRecord {
     payloadHash: text(row, "payload_hash"),
     revision: number(row, "revision"),
   });
+  new ApprovalQueue([approval]);
+  return approval;
 }
 
 function reportFromRow(row: Row): ReportDraftRecord {
   if (number(row, "external_submission_performed") !== 0)
     throw new SecurityError("REPORT_EXTERNAL_STATE_INVALID");
-  return Object.freeze({
+  const report = Object.freeze({
     id: text(row, "id"),
     campaignId: text(row, "campaign_id"),
     title: text(row, "title"),
@@ -764,6 +1052,8 @@ function reportFromRow(row: Row): ReportDraftRecord {
     status: enumText(row, "status", ["draft", "queued_for_human_review"]),
     externalSubmissionPerformed: false,
   });
+  validateReport(report);
+  return report;
 }
 
 function validateProgram(program: ProgramRecord): void {
@@ -777,6 +1067,17 @@ function validateProgram(program: ProgramRecord): void {
     intersects(program.allowedAssets, program.excludedAssets)
   )
     throw new SecurityError("PROGRAM_INPUT_INVALID");
+  assertNoSensitiveMaterial(
+    [
+      program.name,
+      program.description,
+      program.notes,
+      program.programUrl,
+      ...program.allowedAssets,
+      ...program.excludedAssets,
+    ],
+    "PROGRAM_SENSITIVE_MATERIAL",
+  );
   let url: URL;
   try {
     url = new URL(program.programUrl);
@@ -787,6 +1088,7 @@ function validateProgram(program: ProgramRecord): void {
     !["https:", "http:"].includes(url.protocol) ||
     url.username !== "" ||
     url.password !== "" ||
+    url.search !== "" ||
     url.hash !== ""
   )
     throw new SecurityError("PROGRAM_URL_INVALID");
@@ -798,11 +1100,92 @@ function validateCampaign(campaign: CampaignRecord): void {
   assertTimestamp(campaign.createdAt, "CAMPAIGN_TIMESTAMP_INVALID");
   if (!/^[a-f0-9]{64}$/u.test(campaign.policyHash))
     throw new SecurityError("CAMPAIGN_POLICY_HASH_INVALID");
+  if (
+    campaign.accountRefs.length === 0 ||
+    new Set(campaign.accountRefs).size !== campaign.accountRefs.length
+  )
+    throw new SecurityError("CAMPAIGN_ACCOUNT_REFS_INVALID");
+  for (const accountRef of campaign.accountRefs)
+    assertId(accountRef, "CAMPAIGN_ACCOUNT_REFS_INVALID");
+}
+
+function assertCampaignIdentityStable(
+  current: CampaignRecord,
+  next: CampaignRecord,
+): void {
+  if (
+    current.id !== next.id ||
+    current.programId !== next.programId ||
+    current.createdAt !== next.createdAt
+  )
+    throw new SecurityError("CAMPAIGN_IDENTITY_MUTATION_BLOCKED");
+  const policyRebind =
+    current.state === "paused" && next.state === "awaiting_campaign_approval";
+  if (
+    !policyRebind &&
+    (current.policyVersion !== next.policyVersion ||
+      current.policyHash !== next.policyHash ||
+      canonicalJson(current.contract) !== canonicalJson(next.contract) ||
+      canonicalJson([...current.approvedAssets]) !==
+        canonicalJson([...next.approvedAssets]) ||
+      canonicalJson([...current.approvedRiskTiers]) !==
+        canonicalJson([...next.approvedRiskTiers]) ||
+      canonicalJson([...current.accountRefs]) !==
+        canonicalJson([...next.accountRefs]) ||
+      canonicalJson([...current.allowedActionClasses]) !==
+        canonicalJson([...next.allowedActionClasses]))
+  )
+    throw new SecurityError("CAMPAIGN_CONTRACT_MUTATION_BLOCKED");
+}
+
+function assertCampaignTransition(
+  current: CampaignRecord,
+  next: CampaignRecord,
+): void {
+  const transitions: Readonly<
+    Record<CampaignRecord["state"], readonly CampaignRecord["state"][]>
+  > = {
+    draft: [
+      "awaiting_policy_acceptance",
+      "awaiting_campaign_approval",
+      "blocked",
+      "cancelled",
+    ],
+    awaiting_policy_acceptance: [
+      "awaiting_campaign_approval",
+      "blocked",
+      "cancelled",
+    ],
+    awaiting_campaign_approval: ["approved", "blocked", "cancelled"],
+    approved: ["running_simulation", "paused", "blocked", "cancelled"],
+    running_simulation: ["paused", "blocked", "completed", "cancelled"],
+    paused: ["awaiting_campaign_approval", "blocked", "cancelled"],
+    blocked: ["cancelled"],
+    completed: [],
+    cancelled: [],
+  };
+  if (!transitions[current.state].includes(next.state))
+    throw new SecurityError("CAMPAIGN_TRANSITION_BLOCKED");
+  if (
+    next.state !== "approved" &&
+    next.state !== "running_simulation" &&
+    (next.humanApprovedBy !== null || next.humanApprovedAt !== null)
+  )
+    throw new SecurityError("CAMPAIGN_STALE_APPROVAL_BLOCKED");
 }
 
 function validateIdentity(identity: TestIdentityRecord): void {
   assertId(identity.id, "IDENTITY_ID_INVALID");
+  assertId(identity.programId, "IDENTITY_PROGRAM_INVALID");
   assertTimestamp(identity.createdAt, "IDENTITY_TIMESTAMP_INVALID");
+  for (const timestamp of [
+    identity.verifiedAt,
+    identity.suspendedAt,
+    identity.retiredAt,
+    identity.lastSuccessfulLoginAt,
+  ])
+    if (timestamp !== null)
+      assertTimestamp(timestamp, "IDENTITY_TIMESTAMP_INVALID");
   for (const reference of identity.secretReferences)
     if (!/^(?:keychain|secret):\/\/[A-Za-z0-9_./-]{1,240}$/u.test(reference))
       throw new SecurityError("IDENTITY_SECRET_REFERENCE_INVALID");
@@ -818,6 +1201,26 @@ function validateIdentity(identity: TestIdentityRecord): void {
       )
     )
       throw new SecurityError("IDENTITY_REFERENCE_INVALID");
+  for (const objectRef of identity.ownedObjectRefs)
+    assertId(objectRef, "IDENTITY_OWNED_OBJECT_REFERENCE_INVALID");
+  if (identity.organizationRef !== null)
+    assertId(
+      identity.organizationRef,
+      "IDENTITY_ORGANIZATION_REFERENCE_INVALID",
+    );
+  if (
+    (identity.status === "ready" &&
+      (identity.humanActionRequired || identity.verifiedAt === null)) ||
+    ((identity.status === "awaiting_manual_registration" ||
+      identity.status === "awaiting_email_verification" ||
+      identity.status === "awaiting_captcha" ||
+      identity.status === "awaiting_terms_acceptance" ||
+      identity.status === "session_expired" ||
+      identity.status === "suspended") &&
+      !identity.humanActionRequired) ||
+    (identity.status === "retired" && identity.retiredAt === null)
+  )
+    throw new SecurityError("IDENTITY_STATE_INVALID");
 }
 
 function validateOwnedObject(object: OwnedObjectRecord): void {
@@ -828,13 +1231,19 @@ function validateOwnedObject(object: OwnedObjectRecord): void {
     object.accountId,
   ])
     assertId(id, "OWNED_OBJECT_ID_INVALID");
+  assertId(object.tenantRef, "OWNED_OBJECT_TENANT_REFERENCE_INVALID");
   if (
+    !isTrue(object.researcherControlled) ||
     !/^protected-ref:[A-Za-z0-9_-]{1,160}$/u.test(
       object.protectedActualIdRef,
     ) ||
     !/^[a-f0-9]{64}$/u.test(object.canaryHmac) ||
     !/^[a-f0-9]{64}$/u.test(object.policyHash) ||
-    object.allowedActions.length === 0 ||
+    object.objectType !== "document" ||
+    canonicalJson([...object.allowedActions]) !==
+      canonicalJson(["offline_inspect"]) ||
+    !Number.isFinite(Date.parse(object.createdAt)) ||
+    !Number.isFinite(Date.parse(object.expiresAt)) ||
     Date.parse(object.expiresAt) <= Date.parse(object.createdAt)
   )
     throw new SecurityError("OWNED_OBJECT_INVALID");
@@ -850,6 +1259,10 @@ function validateReport(report: ReportDraftRecord): void {
     report.summary.length > 20_000
   )
     throw new SecurityError("REPORT_DRAFT_INVALID");
+  assertNoSensitiveMaterial(
+    [report.title, report.summary],
+    "REPORT_SENSITIVE_MATERIAL",
+  );
 }
 
 function assertId(value: string, code: string): void {

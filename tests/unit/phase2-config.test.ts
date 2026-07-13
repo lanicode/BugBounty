@@ -67,6 +67,37 @@ describe("phase 2 integration gate", () => {
     ).toMatchObject({ disableReason: "ADAPTER_UNAVAILABLE" });
   });
 
+  it("fails closed when capability probes throw", () => {
+    let adapterProbeCalls = 0;
+    expect(
+      resolvePhase2Runtime(externalConfig(), {
+        secretsAvailable: () => {
+          throw new Error("SECRET_STORE_UNAVAILABLE");
+        },
+        externalAdapterAvailable: () => {
+          adapterProbeCalls += 1;
+          return true;
+        },
+      }),
+    ).toMatchObject({
+      externalIntegrationsEnabled: false,
+      disableReason: "SECRETS_UNAVAILABLE",
+    });
+    expect(adapterProbeCalls).toBe(0);
+
+    expect(
+      resolvePhase2Runtime(externalConfig(), {
+        secretsAvailable: () => true,
+        externalAdapterAvailable: () => {
+          throw new Error("ADAPTER_PROBE_FAILED");
+        },
+      }),
+    ).toMatchObject({
+      externalIntegrationsEnabled: false,
+      disableReason: "ADAPTER_UNAVAILABLE",
+    });
+  });
+
   it("never enables external integrations during phase 2", () => {
     for (const mode of ["simulation", "external"] as const) {
       for (const configured of [false, true]) {

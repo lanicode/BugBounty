@@ -112,16 +112,17 @@ export const DASHBOARD_HTML = `<!doctype html>
 
       <div class="simulation-card">
         <h3>Vollständige lokale Simulation</h3>
-        <p>Jede Bestätigung ist eine ausdrückliche lokale Benutzeraktion. Es wird nichts extern eingereicht.</p>
+        <p>Prüfe das versions- und hashgebundene Review-Paket. Die Kontrollpunkte werden anschließend nur in der vorgegebenen Reihenfolge freigeschaltet; es wird nichts extern eingereicht.</p>
+        <div id="simulation-review" class="review-package" aria-live="polite">Review-Paket wird geladen …</div>
         <label for="simulation-actor">Lokaler Akteur</label>
         <input id="simulation-actor" value="local-dashboard-user" autocomplete="off">
         <div class="confirmation-grid">
-          <label><input id="confirm-clearKillSwitch" type="checkbox"> Kill Switch für diesen lokalen Lauf freigeben</label>
-          <label><input id="confirm-acceptPolicyV1" type="checkbox"> Policy Version 1 lokal akzeptieren</label>
-          <label><input id="confirm-approveCampaignV1" type="checkbox"> Kampagnenvertrag Version 1 freigeben</label>
-          <label><input id="confirm-acceptPolicyV2" type="checkbox"> Policy Version 2 nach Drift akzeptieren</label>
-          <label><input id="confirm-approveCampaignV2" type="checkbox"> Kampagnenvertrag Version 2 freigeben</label>
-          <label><input id="confirm-queueReportReview" type="checkbox"> Report nur zur lokalen Prüfung einreihen</label>
+          <label><input id="confirm-clearKillSwitch" type="checkbox" disabled> Kill Switch für diesen lokalen Lauf freigeben</label>
+          <label><input id="confirm-acceptPolicyV1" type="checkbox" disabled> Angezeigte Policy Version 1 samt Hash lokal akzeptieren</label>
+          <label><input id="confirm-approveCampaignV1" type="checkbox" disabled> Angezeigten Kampagnenvertrag Version 1 freigeben</label>
+          <label><input id="confirm-acceptPolicyV2" type="checkbox" disabled> Angezeigte Policy Version 2 nach geprüftem Drift-Diff akzeptieren</label>
+          <label><input id="confirm-approveCampaignV2" type="checkbox" disabled> Angezeigten Kampagnenvertrag Version 2 freigeben</label>
+          <label><input id="confirm-queueReportReview" type="checkbox" disabled> Report ausschließlich zur lokalen menschlichen Prüfung einreihen</label>
         </div>
         <button id="run-simulation" type="button" disabled>18-Schritte-Simulation starten</button>
         <pre id="simulation-result" class="result" aria-live="polite"></pre>
@@ -228,6 +229,7 @@ button.danger { color: #2d050b; border-color: var(--red); background: var(--red)
 .kill-card, .simulation-card { margin-top: 1rem; padding: 1rem; border: 1px solid var(--line); border-radius: 0.8rem; background: rgba(9, 24, 41, 0.82); }
 .large-status { color: var(--amber); font-size: 1.45rem; }
 .simulation-card { margin-top: 1.2rem; }
+.review-package { margin: 0.8rem 0; padding: 0.8rem; border-left: 3px solid var(--cyan); border-radius: 0.4rem; color: var(--muted); background: rgba(76, 227, 215, 0.06); white-space: pre-wrap; overflow-wrap: anywhere; }
 .confirmation-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.45rem 1rem; margin: 1rem 0; }
 .confirmation-grid label { display: flex; align-items: flex-start; gap: 0.55rem; margin: 0; padding: 0.65rem; border: 1px solid var(--line); border-radius: 0.55rem; background: rgba(19, 40, 68, 0.45); }
 .confirmation-grid input { width: auto; margin-top: 0.15rem; accent-color: var(--cyan); }
@@ -251,6 +253,10 @@ export const DASHBOARD_JAVASCRIPT = `
 "use strict";
 (function () {
   var csrfToken = "";
+  var reviewDigest = "";
+  var confirmationTimes = {};
+  var lastConfirmationMillis = 0;
+  var serverGeneratedMillis = 0;
   var confirmationNames = [
     "clearKillSwitch",
     "acceptPolicyV1",
@@ -310,8 +316,51 @@ export const DASHBOARD_JAVASCRIPT = `
     container.replaceChildren.apply(container, nodes);
   }
 
+  function renderApprovals(values) {
+    var container = element("approval-list");
+    var nodes = [];
+    values.forEach(function (record) {
+      var item = makeItem(record.summary, [
+        "Typ: " + record.kind + " · Status: " + record.status,
+        "Technische Details: " + record.technicalDetails,
+        "Policy: " + (record.policyVersion === null ? "keine" : "v" + record.policyVersion + " / " + record.policyHash),
+        record.impact,
+        "Audit: " + record.auditReference,
+        "Payload-Hash: " + record.payloadHash,
+        "Entscheidung: " + (record.decidedAt === null ? "ausstehend" : record.decidedBy + " um " + record.decidedAt + " / " + record.userAction)
+      ]);
+      if (record.status === "open") {
+        var accept = document.createElement("button");
+        accept.type = "button";
+        accept.textContent = "Ausdrücklich akzeptieren";
+        accept.addEventListener("click", function () {
+          void decideApproval(record, "accepted");
+        });
+        var reject = document.createElement("button");
+        reject.type = "button";
+        reject.className = "danger";
+        reject.textContent = "Ablehnen";
+        reject.addEventListener("click", function () {
+          void decideApproval(record, "rejected");
+        });
+        item.appendChild(accept);
+        item.appendChild(reject);
+      }
+      nodes.push(item);
+    });
+    if (nodes.length === 0) {
+      var empty = document.createElement("p");
+      empty.className = "empty";
+      empty.textContent = "Noch keine lokalen Datensätze.";
+      nodes.push(empty);
+    }
+    container.replaceChildren.apply(container, nodes);
+  }
+
   function render(state) {
     csrfToken = state.csrfToken;
+    reviewDigest = state.simulationReview.reviewDigest;
+    serverGeneratedMillis = Date.parse(state.generatedAt);
     setText("count-programs", state.counts.programs);
     setText("count-active-campaigns", state.counts.activeCampaigns);
     setText("count-paused-campaigns", state.counts.pausedCampaigns);
@@ -323,6 +372,54 @@ export const DASHBOARD_JAVASCRIPT = `
     setText("last-refresh", "Stand: " + state.generatedAt);
     setText("kill-status", state.killSwitch.active ? "AKTIV / BLOCKIERT" : "FREIGEGEBEN");
     setText("overview-kill-status", state.killSwitch.active ? "aktiv" : "frei");
+    setText(
+      "simulation-review",
+      "Review-Digest: " + state.simulationReview.reviewDigest +
+      "\\nPolicy v1: " + state.simulationReview.policyV1.hash +
+      " · Assets " + state.simulationReview.policyV1.allowedAssets.join(", ") +
+      " · ausgeschlossen " + state.simulationReview.policyV1.excludedAssets.join(", ") +
+      " · erlaubte Klassen " + state.simulationReview.policyV1.allowedTestClasses.join(", ") +
+      " · verbotene Klassen " + state.simulationReview.policyV1.forbiddenTestClasses.join(", ") +
+      " · Regeln " + state.simulationReview.policyV1.rules.join(", ") +
+      " · Limit " + state.simulationReview.policyV1.requestLimits.maxRequestsTotal +
+      "\\nKampagne v1: Digest " + state.simulationReview.campaignV1.approvalDigest +
+      " · Hosts " + state.simulationReview.campaignV1.contract.allowedHosts.join(", ") +
+      " · ausgeschlossen " + state.simulationReview.campaignV1.contract.excludedHosts.join(", ") +
+      " · Methoden " + state.simulationReview.campaignV1.contract.allowedMethods.join(", ") +
+      " · Konten " + state.simulationReview.campaignV1.accountRefs.join(", ") +
+      " · Aktionen " + state.simulationReview.campaignV1.allowedActionClasses.join(", ") +
+      " · Limits " + state.simulationReview.campaignV1.contract.maxRequests + "/" + state.simulationReview.campaignV1.contract.requestsPerMinute +
+      " · Write " + state.simulationReview.campaignV1.contract.writeActionsAllowed +
+      " · Rollback " + state.simulationReview.campaignV1.contract.rollbackRequired +
+      " · Checkpoints " + state.simulationReview.campaignV1.contract.humanCheckpoints.join(", ") +
+      " · Gueltigkeit " + state.simulationReview.campaignV1.contract.validFrom + " bis " + state.simulationReview.campaignV1.contract.validUntil +
+      "\\nPolicy-Drift: " + state.simulationReview.policyDiff.changedRequestLimits.join(", ") +
+      " · neue Verbote " + state.simulationReview.policyDiff.newlyForbiddenTestClasses.join(", ") +
+      " · neue Freigaben " + state.simulationReview.policyDiff.newlyAllowedTestClasses.join(", ") +
+      " · Regeln hinzugefuegt " + state.simulationReview.policyDiff.changedRulesAdded.join(", ") +
+      " · Regeln entfernt " + state.simulationReview.policyDiff.changedRulesRemoved.join(", ") +
+      "\\nPolicy v2: " + state.simulationReview.policyV2.hash +
+      " · Assets " + state.simulationReview.policyV2.allowedAssets.join(", ") +
+      " · ausgeschlossen " + state.simulationReview.policyV2.excludedAssets.join(", ") +
+      " · erlaubte Klassen " + state.simulationReview.policyV2.allowedTestClasses.join(", ") +
+      " · verbotene Klassen " + state.simulationReview.policyV2.forbiddenTestClasses.join(", ") +
+      " · Regeln " + state.simulationReview.policyV2.rules.join(", ") +
+      " · Limit " + state.simulationReview.policyV2.requestLimits.maxRequestsTotal +
+      " · unklar " + state.simulationReview.policyV2.unclearRules.join(", ") +
+      "\\nKampagne v2: Digest " + state.simulationReview.campaignV2.approvalDigest +
+      " · Hosts " + state.simulationReview.campaignV2.contract.allowedHosts.join(", ") +
+      " · ausgeschlossen " + state.simulationReview.campaignV2.contract.excludedHosts.join(", ") +
+      " · Methoden " + state.simulationReview.campaignV2.contract.allowedMethods.join(", ") +
+      " · Konten " + state.simulationReview.campaignV2.accountRefs.join(", ") +
+      " · Aktionen " + state.simulationReview.campaignV2.allowedActionClasses.join(", ") +
+      " · Limits " + state.simulationReview.campaignV2.contract.maxRequests + "/" + state.simulationReview.campaignV2.contract.requestsPerMinute +
+      " · Write " + state.simulationReview.campaignV2.contract.writeActionsAllowed +
+      " · Rollback " + state.simulationReview.campaignV2.contract.rollbackRequired +
+      " · Checkpoints " + state.simulationReview.campaignV2.contract.humanCheckpoints.join(", ") +
+      " · Gueltigkeit " + state.simulationReview.campaignV2.contract.validFrom + " bis " + state.simulationReview.campaignV2.contract.validUntil +
+      "\\nReport-Aktion: nur lokale Review-Warteschlange, keine Einreichung" +
+      "\\n\\nVollstaendiges hashgebundenes Review-Paket:\\n" + JSON.stringify(state.simulationReview, null, 2)
+    );
 
     renderList("program-list", state.programs, function (record) {
       return {
@@ -357,6 +454,8 @@ export const DASHBOARD_JAVASCRIPT = `
           "Neue Verbote: " + record.newlyForbiddenTestClasses.join(", "),
           "Neue Freigaben: " + record.newlyAllowedTestClasses.join(", "),
           "Geänderte Limits: " + record.changedRequestLimits.join(", "),
+          "Sonstige Regeln hinzugefügt: " + record.changedRules.added.join(", "),
+          "Sonstige Regeln entfernt: " + record.changedRules.removed.join(", "),
           "Unklare Regeln: " + record.unclearRules.join(", ")
         ]
       };
@@ -373,16 +472,7 @@ export const DASHBOARD_JAVASCRIPT = `
         ]
       };
     });
-    renderList("approval-list", state.approvals, function (record) {
-      return {
-        title: record.summary,
-        lines: [
-          "Typ: " + record.kind + " · Status: " + record.status,
-          record.impact,
-          "Audit: " + record.auditReference
-        ]
-      };
-    });
+    renderApprovals(state.approvals);
     renderList("identity-list", state.identities, function (record) {
       return {
         title: record.id + " · " + record.role,
@@ -425,6 +515,7 @@ export const DASHBOARD_JAVASCRIPT = `
     renderExpert("expert-adapters", state.expert.adapterStatus);
     renderExpert("expert-event-store", state.expert.eventStore);
     renderExpert("expert-config", state.expert.configurationDiagnosis);
+    updateConfirmationFlow();
 
     if (state.simulationStatus === "completed") element("run-simulation").disabled = true;
   }
@@ -460,6 +551,24 @@ export const DASHBOARD_JAVASCRIPT = `
     return readJson(response);
   }
 
+  async function decideApproval(record, decision) {
+    setText("simulation-result", "Lokale Freigabeentscheidung wird geprüft …");
+    try {
+      await postJson("/api/approvals/decide", {
+        id: record.id,
+        expectedRevision: record.revision,
+        expectedPayloadHash: record.payloadHash,
+        decision: decision,
+        actor: actor(),
+        userAction: "explicit_local_dashboard_" + decision
+      });
+      setText("simulation-result", "Freigabe wurde lokal " + (decision === "accepted" ? "akzeptiert." : "abgelehnt."));
+      await loadState();
+    } catch (error) {
+      setText("simulation-result", "Blockiert: " + (error instanceof Error ? error.message : "UNKNOWN"));
+    }
+  }
+
   function confirmationsComplete() {
     return confirmationNames.every(function (name) {
       return element("confirm-" + name).checked;
@@ -472,6 +581,24 @@ export const DASHBOARD_JAVASCRIPT = `
       values[name] = element("confirm-" + name).checked;
     });
     return values;
+  }
+
+  function confirmationTimesPayload() {
+    var values = {};
+    confirmationNames.forEach(function (name) {
+      values[name] = confirmationTimes[name];
+    });
+    return values;
+  }
+
+  function updateConfirmationFlow() {
+    confirmationNames.forEach(function (name, index) {
+      var input = element("confirm-" + name);
+      input.disabled = index === 0
+        ? reviewDigest.length !== 64
+        : !element("confirm-" + confirmationNames[index - 1]).checked;
+    });
+    element("run-simulation").disabled = !confirmationsComplete() || reviewDigest.length !== 64;
   }
 
   function actor() {
@@ -499,9 +626,21 @@ export const DASHBOARD_JAVASCRIPT = `
   element("import-source").value = JSON.stringify(sampleProgram(), null, 2);
   confirmationNames.forEach(function (name) {
     element("confirm-" + name).addEventListener("change", function () {
-      element("run-simulation").disabled = !confirmationsComplete();
+      var index = confirmationNames.indexOf(name);
+      if (element("confirm-" + name).checked) {
+        var now = Math.max(serverGeneratedMillis, lastConfirmationMillis + 1);
+        lastConfirmationMillis = now;
+        confirmationTimes[name] = new Date(now).toISOString();
+      } else {
+        confirmationNames.slice(index).forEach(function (laterName) {
+          element("confirm-" + laterName).checked = false;
+          delete confirmationTimes[laterName];
+        });
+      }
+      updateConfirmationFlow();
     });
   });
+  updateConfirmationFlow();
 
   element("import-program").addEventListener("click", async function () {
     setText("import-status", "Import läuft …");
@@ -524,7 +663,9 @@ export const DASHBOARD_JAVASCRIPT = `
     try {
       var summary = await postJson("/api/simulation/run", {
         actor: actor(),
-        confirmations: confirmationPayload()
+        confirmations: confirmationPayload(),
+        confirmationTimes: confirmationTimesPayload(),
+        reviewDigest: reviewDigest
       });
       setText(
         "simulation-result",

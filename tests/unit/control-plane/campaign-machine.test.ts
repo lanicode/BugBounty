@@ -98,6 +98,8 @@ describe("campaign state machine", () => {
       accepted,
     );
     expect(paused.state).toBe("paused");
+    expect(paused.humanApprovedBy).toBeNull();
+    expect(paused.humanApprovedAt).toBeNull();
     const awaiting = transitionCampaign(
       paused,
       { kind: "resume_requested" },
@@ -118,5 +120,98 @@ describe("campaign state machine", () => {
     expect(() =>
       transitionCampaign(invalid, { kind: "start_simulation" }, accepted),
     ).toThrow("CAMPAIGN_CONTRACT_INVALID");
+    const invalidDate = campaign({
+      state: "approved",
+      contract: {
+        ...campaign().contract,
+        validFrom: "not-a-time",
+        validUntil: "also-not-a-time",
+      },
+    });
+    expect(() =>
+      transitionCampaign(invalidDate, { kind: "start_simulation" }, accepted),
+    ).toThrow("CAMPAIGN_CONTRACT_INVALID");
+    const missingCheckpoint = campaign({
+      state: "approved",
+      contract: {
+        ...campaign().contract,
+        humanCheckpoints: ["campaign_approval"],
+      },
+    });
+    expect(() =>
+      transitionCampaign(
+        missingCheckpoint,
+        { kind: "start_simulation" },
+        accepted,
+      ),
+    ).toThrow("CAMPAIGN_CONTRACT_INVALID");
+    const extraHost = campaign({
+      state: "approved",
+      contract: {
+        ...campaign().contract,
+        allowedHosts: ["demo.local.test", "unapproved.test"],
+      },
+    });
+    expect(() =>
+      transitionCampaign(extraHost, { kind: "start_simulation" }, accepted),
+    ).toThrow("CAMPAIGN_CONTRACT_INVALID");
+  });
+
+  it("treats an unknown kill-switch value as engaged", () => {
+    const approved = campaign({
+      state: "approved",
+      revision: 2,
+      humanApprovedBy: "local-reviewer",
+      humanApprovedAt: NOW,
+    });
+    for (const value of [undefined, null, 0, "false"]) {
+      expect(() =>
+        transitionCampaign(
+          approved,
+          { kind: "start_simulation" },
+          {
+            ...accepted,
+            killSwitchActive: value as unknown as boolean,
+          },
+        ),
+      ).toThrow("CAMPAIGN_KILL_SWITCH");
+    }
+  });
+
+  it("rejects unknown external-integration booleans as invalid configuration", () => {
+    const approved = campaign({
+      state: "approved",
+      revision: 2,
+      humanApprovedBy: "local-reviewer",
+      humanApprovedAt: NOW,
+    });
+    for (const field of [
+      "externalActionRequested",
+      "externalIntegrationsEnabled",
+    ] as const)
+      for (const value of [undefined, null, 0, "false"]) {
+        expect(() =>
+          transitionCampaign(
+            approved,
+            { kind: "start_simulation" },
+            {
+              ...accepted,
+              [field]: value as unknown as boolean,
+            },
+          ),
+        ).toThrow("CAMPAIGN_CONFIG_INVALID");
+      }
+  });
+
+  it("supports an explicit safety block before cancellation", () => {
+    const blocked = transitionCampaign(campaign(), { kind: "block" }, accepted);
+    expect(blocked).toMatchObject({
+      state: "blocked",
+      humanApprovedBy: null,
+      humanApprovedAt: null,
+    });
+    expect(
+      transitionCampaign(blocked, { kind: "cancel" }, accepted).state,
+    ).toBe("cancelled");
   });
 });

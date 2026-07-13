@@ -3,6 +3,7 @@ import {
   AccountSimulationCoordinator,
   DisabledExternalAccountAdapter,
   MockLocalAccountApplication,
+  type AccountSimulationAdapter,
   type AccountSimulationProposal,
   type HumanCheckpointKind,
 } from "../../packages/account-simulation/workflow.js";
@@ -18,7 +19,7 @@ const proposal = (
   workflow_ref: "workflow-1",
   application_ref: "local-app:fixture",
   account_ref: "account-a",
-  role: "owner",
+  role: "Owner",
   policy_hash_sha256: POLICY_HASH,
   expected_revision: 0,
   checkpoint_ref: null,
@@ -31,19 +32,77 @@ const coordinator = (
     maxActions?: number;
     signal?: AbortSignal;
     now?: () => Date;
-    allowedAccounts?: ReadonlySet<string>;
+    allowedAccounts?: ReadonlyMap<string, "External" | "Member" | "Owner">;
   } = {},
 ) =>
   new AccountSimulationCoordinator(
     adapter,
     POLICY_HASH,
-    options.allowedAccounts ?? new Set(["account-a"]),
+    options.allowedAccounts ?? new Map([["account-a", "Owner"] as const]),
     options.maxActions ?? 20,
     options.signal ?? new AbortController().signal,
     options.now ?? (() => new Date("2026-07-13T12:00:00Z")),
   );
 
 describe("local account workflow simulation", () => {
+  it("rejects malformed runtime budgets before accepting an adapter", () => {
+    for (const value of [Number.NaN, Number.POSITIVE_INFINITY, 0, -1, 1.5]) {
+      expect(
+        () =>
+          new AccountSimulationCoordinator(
+            new MockLocalAccountApplication("local-app:fixture", {}),
+            POLICY_HASH,
+            new Map([["account-a", "Owner"] as const]),
+            value,
+            new AbortController().signal,
+            () => new Date("2026-07-13T12:00:00Z"),
+          ),
+      ).toThrow("ACCOUNT_BUDGET_INVALID");
+    }
+  });
+
+  it("rejects kind-spoofed and prototype-spoofed account adapters", () => {
+    let callbackCalls = 0;
+    const spoofed: AccountSimulationAdapter = {
+      kind: "local_mock",
+      applicationRef: "local-app:fixture",
+      start: () => {
+        callbackCalls += 1;
+        return Promise.resolve({
+          kind: "complete",
+          accountLocatorRef: "unsafe",
+        });
+      },
+      observeAndContinue: () => Promise.resolve("pending"),
+      retire: () => Promise.resolve(),
+    };
+    expect(
+      () =>
+        new AccountSimulationCoordinator(
+          spoofed,
+          POLICY_HASH,
+          new Map([["account-a", "Owner"] as const]),
+          1,
+          new AbortController().signal,
+          () => new Date("2026-07-13T12:00:00Z"),
+        ),
+    ).toThrow("ACCOUNT_ADAPTER_UNTRUSTED");
+    expect(
+      () =>
+        new AccountSimulationCoordinator(
+          Object.create(
+            MockLocalAccountApplication.prototype,
+          ) as AccountSimulationAdapter,
+          POLICY_HASH,
+          new Map([["account-a", "Owner"] as const]),
+          1,
+          new AbortController().signal,
+          () => new Date("2026-07-13T12:00:00Z"),
+        ),
+    ).toThrow("ACCOUNT_ADAPTER_UNTRUSTED");
+    expect(callbackCalls).toBe(0);
+  });
+
   it("pauses for every human-only challenge and never auto-accepts it", async () => {
     for (const kind of [
       "captcha",
@@ -116,7 +175,10 @@ describe("local account workflow simulation", () => {
       "account-a": ["captcha"],
     });
     const workflow = coordinator(app, {
-      allowedAccounts: new Set(["account-a", "account-b"]),
+      allowedAccounts: new Map([
+        ["account-a", "Owner"] as const,
+        ["account-b", "Owner"] as const,
+      ]),
     });
     const paused = await workflow.execute(proposal());
     const checkpoint = paused.workflow.checkpoint?.checkpointRef;
@@ -130,8 +192,8 @@ describe("local account workflow simulation", () => {
     app.satisfyCheckpoint(checkpoint);
 
     await expect(
-      workflow.execute({ ...resume, role: "member" }),
-    ).rejects.toThrow("ACCOUNT_WORKFLOW_BINDING_MISMATCH");
+      workflow.execute({ ...resume, role: "Member" }),
+    ).rejects.toThrow("ACCOUNT_ROLE_SCOPE_BLOCKED");
     await expect(
       workflow.execute({ ...resume, account_ref: "account-b" }),
     ).rejects.toThrow("ACCOUNT_WORKFLOW_BINDING_MISMATCH");
@@ -143,7 +205,7 @@ describe("local account workflow simulation", () => {
     ).rejects.toThrow("ACCOUNT_POLICY_DRIFT");
 
     expect(workflow.get("workflow-1")).toMatchObject({
-      role: "owner",
+      role: "Owner",
       accountRef: "account-a",
       applicationRef: "local-app:fixture",
       policyHash: POLICY_HASH,
@@ -152,7 +214,7 @@ describe("local account workflow simulation", () => {
     });
     await expect(workflow.execute(resume)).resolves.toMatchObject({
       workflow: {
-        role: "owner",
+        role: "Owner",
         accountRef: "account-a",
         applicationRef: "local-app:fixture",
         policyHash: POLICY_HASH,
@@ -181,7 +243,7 @@ describe("local account workflow simulation", () => {
       new AccountSimulationCoordinator(
         new DisabledExternalAccountAdapter(),
         POLICY_HASH,
-        new Set(["account-a"]),
+        new Map([["account-a", "Owner"] as const]),
         1,
         new AbortController().signal,
         () => new Date("2026-07-13T12:00:00Z"),
@@ -196,6 +258,12 @@ describe("local account workflow simulation", () => {
     const workflow = coordinator(app, { maxActions: 1 });
     await expect(
       workflow.execute({ ...proposal(), password: "x" }),
+    ).rejects.toThrow("ACCOUNT_SCHEMA_INVALID");
+    await expect(
+      workflow.execute({
+        ...proposal(),
+        role: "Administrator" as AccountSimulationProposal["role"],
+      }),
     ).rejects.toThrow("ACCOUNT_SCHEMA_INVALID");
     await expect(
       workflow.execute(proposal({ policy_hash_sha256: "b".repeat(64) })),
@@ -242,5 +310,29 @@ describe("local account workflow simulation", () => {
         proposal({ workflow_ref: "workflow-killed" }),
       ),
     ).rejects.toThrow("PHASE2_GLOBAL_KILL_SWITCH");
+  });
+
+  it("snapshots exact account-role scope against mutation and role escalation", async () => {
+    const sourceScope = new Map<string, "External" | "Member" | "Owner">([
+      ["account-a", "Member"],
+    ]);
+    const app = new MockLocalAccountApplication("local-app:fixture", {});
+    const workflow = coordinator(app, { allowedAccounts: sourceScope });
+    sourceScope.set("late-account", "Owner");
+    sourceScope.set("account-a", "Owner");
+
+    await expect(
+      workflow.execute(
+        proposal({ account_ref: "late-account", role: "Owner" }),
+      ),
+    ).rejects.toThrow("ACCOUNT_NOT_APPROVED");
+    await expect(workflow.execute(proposal())).rejects.toThrow(
+      "ACCOUNT_ROLE_SCOPE_BLOCKED",
+    );
+    await expect(
+      workflow.execute(proposal({ role: "Member" })),
+    ).resolves.toMatchObject({
+      workflow: { accountRef: "account-a", role: "Member", state: "ACTIVE" },
+    });
   });
 });

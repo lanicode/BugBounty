@@ -86,7 +86,10 @@ export function campaign(
       allowedMethods: Object.freeze(["GET", "HEAD"] as const),
       writeActionsAllowed: false,
       rollbackRequired: true,
-      humanCheckpoints: Object.freeze(["campaign_approval"]),
+      humanCheckpoints: Object.freeze([
+        "policy_acceptance",
+        "campaign_approval",
+      ]),
       validFrom: "2026-07-13T00:00:00.000Z",
       validUntil: "2026-07-14T00:00:00.000Z",
       policyHash: POLICY_HASH,

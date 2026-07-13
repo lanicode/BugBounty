@@ -118,6 +118,29 @@ describe("control-plane policy normalization", () => {
     for (const value of cases)
       expect(() => normalizePolicy(value as PolicyInput)).toThrow();
   });
+
+  it("rejects secret-like material before policy persistence", () => {
+    for (const text of [
+      "accidental access".concat("_token=placeholder-value"),
+      "token=".concat("abcdefghijklmnop"),
+      "Cookie: sessionid=".concat("local-session-value"),
+      "Authorization: Token ".concat("abcdefghijklmnop"),
+      "otpauth://totp/local?secret=".concat("ABCDEFGHIJKLMNOP"),
+      "eyJabcdefghij".concat(".abcdefghij.abcdefghij"),
+    ])
+      expect(() => normalizePolicy(policy({ text }))).toThrow(
+        "POLICY_SENSITIVE_MATERIAL",
+      );
+    for (const patch of [
+      { allowedAssets: ["token=".concat("abcdefghijklmnop")] },
+      { excludedAssets: ["session=".concat("abcdefghijklmnop")] },
+      { allowedTestClasses: ["api_key=".concat("abcdefghijklmnop")] },
+      { forbiddenTestClasses: ["client_secret=".concat("abcdefghijklmnop")] },
+    ])
+      expect(() => normalizePolicy(policy(patch))).toThrow(
+        "POLICY_SENSITIVE_MATERIAL",
+      );
+  });
 });
 
 describe("control-plane policy diff", () => {

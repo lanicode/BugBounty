@@ -1,5 +1,6 @@
 import { canonicalJson, sha256 } from "../shared/canonical.js";
 import { SecurityError } from "../shared/errors.js";
+import { assertNoSensitiveMaterial } from "./sensitive.js";
 
 export interface PolicyRequestLimits {
   readonly requestsPerMinute: number;
@@ -120,6 +121,18 @@ export function normalizePolicy(input: PolicyInput): NormalizedPolicy {
   const forbiddenTestClasses = normalizeList(input.forbiddenTestClasses);
   const rules = normalizeList(input.rules);
   const unclearRules = normalizeList(input.unclearRules);
+  assertNoSensitiveMaterial(
+    [
+      text,
+      ...allowedAssets,
+      ...excludedAssets,
+      ...allowedTestClasses,
+      ...forbiddenTestClasses,
+      ...rules,
+      ...unclearRules,
+    ],
+    "POLICY_SENSITIVE_MATERIAL",
+  );
   const requestLimits = normalizeRequestLimits(input.requestLimits);
 
   assertDisjoint(allowedAssets, excludedAssets, "POLICY_ASSET_OVERLAP");

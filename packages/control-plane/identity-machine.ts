@@ -94,6 +94,15 @@ const CHECKPOINT_FOR_STATUS: Readonly<
   awaiting_terms_acceptance: "terms_acceptance",
 });
 
+const REQUIRED_NEXT_STATUS: Readonly<
+  Partial<Record<TestIdentityStatus, HumanWaitStatus | "ready">>
+> = Object.freeze({
+  awaiting_manual_registration: "awaiting_email_verification",
+  awaiting_email_verification: "awaiting_captcha",
+  awaiting_captcha: "awaiting_terms_acceptance",
+  awaiting_terms_acceptance: "ready",
+});
+
 export function createIdentityMachine(
   suppliedIdentity: TestIdentityRecord,
 ): IdentityMachineState {
@@ -148,17 +157,7 @@ export function transitionIdentity(
       const timestamp = humanEvidenceTimestamp(transition.evidence, state);
       if (state.completedHumanCheckpoints.includes(checkpoint))
         throw new SecurityError("IDENTITY_HUMAN_EVIDENCE_REPLAY");
-      if (
-        checkpoint === "manual_registration" &&
-        transition.nextStatus === "ready"
-      )
-        throw new SecurityError("IDENTITY_CHECKPOINT_SEQUENCE_INVALID");
-      const nextCheckpoint = CHECKPOINT_FOR_STATUS[transition.nextStatus];
-      if (
-        nextCheckpoint !== undefined &&
-        (nextCheckpoint === checkpoint ||
-          state.completedHumanCheckpoints.includes(nextCheckpoint))
-      )
+      if (REQUIRED_NEXT_STATUS[state.identity.status] !== transition.nextStatus)
         throw new SecurityError("IDENTITY_CHECKPOINT_SEQUENCE_INVALID");
       const completed = Object.freeze(
         [...state.completedHumanCheckpoints, checkpoint].sort(compareAscii),

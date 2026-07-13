@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  DeterministicSimulationGateEvaluator,
   DeterministicMockActionRunner,
   DisabledExternalActionRunner,
   ExternalActionPipeline,
   Phase2KillSwitch,
   type DeterministicActionRunner,
+  type DeterministicSimulationGateDecisions,
   type ExternalActionGateEvaluator,
   type ExternalActionProposal,
-  type TrustedExternalActionExecution,
 } from "../../packages/external-actions/pipeline.js";
 import {
   getExternalActionDefinition,
@@ -16,6 +17,7 @@ import {
 import {
   resolvePhase2Runtime,
   SAFE_PHASE2_CONFIG,
+  type Phase2RuntimeState,
 } from "../../packages/phase2-config/runtime.js";
 
 const proposal = (
@@ -37,14 +39,16 @@ const proposal = (
 });
 
 const permissiveGates = (
-  overrides: Partial<ExternalActionGateEvaluator> = {},
-): ExternalActionGateEvaluator => ({
-  decidePolicy: () => true,
-  decideScope: () => true,
-  decideOwnership: () => true,
-  decideHumanCheckpoint: () => true,
-  ...overrides,
-});
+  overrides: Partial<DeterministicSimulationGateDecisions> = {},
+  boundProposal: ExternalActionProposal = proposal(),
+): ExternalActionGateEvaluator =>
+  new DeterministicSimulationGateEvaluator(boundProposal, {
+    policy: true,
+    scope: true,
+    ownership: true,
+    humanCheckpoint: true,
+    ...overrides,
+  });
 
 const simulationRuntime = (maxActions = 20) =>
   resolvePhase2Runtime(
@@ -54,6 +58,8 @@ const simulationRuntime = (maxActions = 20) =>
     },
     { secretsAvailable: false, externalAdapterAvailable: false },
   );
+
+const clearKillSwitch = () => new Phase2KillSwitch({ readActive: () => false });
 
 describe("trusted external action registry", () => {
   it("contains every known action as a deeply immutable blocked definition", () => {
@@ -94,19 +100,126 @@ describe("trusted external action registry", () => {
 });
 
 describe("external action safety chain", () => {
-  it("executes the exact ordered chain with only registry-derived target and secret kind", async () => {
-    let seen: TrustedExternalActionExecution | undefined;
-    const runner: DeterministicActionRunner = {
+  it("rejects malformed runtime budgets before constructing the pipeline", () => {
+    for (const value of [Number.NaN, Number.POSITIVE_INFINITY, 0, -1, 1.5]) {
+      const safe = simulationRuntime();
+      const malformed = {
+        ...safe,
+        config: {
+          ...safe.config,
+          budgets: {
+            ...safe.config.budgets,
+            max_actions_total: value,
+          },
+        },
+      } as Phase2RuntimeState;
+      expect(
+        () =>
+          new ExternalActionPipeline(
+            malformed,
+            new DeterministicMockActionRunner({}),
+            clearKillSwitch(),
+            permissiveGates(),
+          ),
+      ).toThrow("ACTION_RUNTIME_INVALID");
+    }
+  });
+
+  it("rejects kind-spoofed and prototype-spoofed runner callbacks", () => {
+    let callbackCalls = 0;
+    const kindSpoof: DeterministicActionRunner = {
       kind: "simulation_mock",
-      run: (execution) => {
-        seen = execution;
-        return Promise.resolve({ programs: 2 });
+      run: () => {
+        callbackCalls += 1;
+        return Promise.resolve({ unsafe: true });
       },
     };
+    expect(
+      () =>
+        new ExternalActionPipeline(
+          simulationRuntime(),
+          kindSpoof,
+          clearKillSwitch(),
+          permissiveGates(),
+        ),
+    ).toThrow("ACTION_RUNNER_UNTRUSTED");
+
+    const prototypeSpoof = Object.create(
+      DeterministicMockActionRunner.prototype,
+    ) as DeterministicActionRunner;
+    expect(
+      () =>
+        new ExternalActionPipeline(
+          simulationRuntime(),
+          prototypeSpoof,
+          clearKillSwitch(),
+          permissiveGates(),
+        ),
+    ).toThrow("ACTION_RUNNER_UNTRUSTED");
+    expect(callbackCalls).toBe(0);
+  });
+
+  it("rejects callback-based gate evaluators before any callback can run", () => {
+    let gateCalls = 0;
+    const untrusted: ExternalActionGateEvaluator = {
+      decidePolicy: () => {
+        gateCalls += 1;
+        return true;
+      },
+      decideScope: () => true,
+      decideOwnership: () => true,
+      decideHumanCheckpoint: () => true,
+    };
+    expect(
+      () =>
+        new ExternalActionPipeline(
+          simulationRuntime(),
+          new DeterministicMockActionRunner({}),
+          clearKillSwitch(),
+          untrusted,
+        ),
+    ).toThrow("ACTION_GATES_UNTRUSTED");
+    expect(gateCalls).toBe(0);
+  });
+
+  it("rejects malformed or accessor-backed deterministic gate decisions", () => {
+    expect(
+      () =>
+        new DeterministicSimulationGateEvaluator(proposal(), {
+          policy: true,
+          scope: true,
+          ownership: true,
+          humanCheckpoint: true,
+          extra: true,
+        } as DeterministicSimulationGateDecisions),
+    ).toThrow("ACTION_GATES_INVALID");
+
+    const accessorBacked = Object.defineProperty(
+      {
+        scope: true,
+        ownership: true,
+        humanCheckpoint: true,
+      },
+      "policy",
+      { enumerable: true, get: () => true },
+    );
+    expect(
+      () =>
+        new DeterministicSimulationGateEvaluator(
+          proposal(),
+          accessorBacked as DeterministicSimulationGateDecisions,
+        ),
+    ).toThrow("ACTION_GATES_INVALID");
+  });
+
+  it("executes the exact ordered chain with only registry-derived target and secret kind", async () => {
+    const runner = new DeterministicMockActionRunner({
+      "proposal-1": { programs: 2 },
+    });
     const pipeline = new ExternalActionPipeline(
       simulationRuntime(),
       runner,
-      new Phase2KillSwitch(),
+      clearKillSwitch(),
       permissiveGates(),
     );
 
@@ -124,6 +237,7 @@ describe("external action safety chain", () => {
         "runner",
       ],
     });
+    const [seen] = runner.recordedExecutions();
     expect(seen).toMatchObject({
       definition: {
         requiredSecretKind: "platform_api_token",
@@ -139,19 +253,41 @@ describe("external action safety chain", () => {
     expect(Object.isFrozen(seen?.proposal.parameters)).toBe(true);
   });
 
-  it("blocks unknown actions and attempted target or secret spoofing before gates", async () => {
-    let gateCalls = 0;
-    const gates = permissiveGates({
-      decidePolicy: () => {
-        gateCalls += 1;
-        return true;
-      },
+  it("binds deterministic gate decisions to one exact proposal", async () => {
+    const bound = proposal();
+    const runner = new DeterministicMockActionRunner({
+      "proposal-1": { ok: true },
+      "proposal-2": { unexpected: true },
     });
     const pipeline = new ExternalActionPipeline(
       simulationRuntime(),
+      runner,
+      clearKillSwitch(),
+      permissiveGates({}, bound),
+    );
+    await expect(pipeline.execute(bound)).resolves.toMatchObject({
+      proposalId: "proposal-1",
+    });
+    await expect(
+      pipeline.execute(
+        proposal({
+          proposal_id: "proposal-2",
+          parameters: {
+            ...proposal().parameters,
+            policy_hash_sha256: "b".repeat(64),
+          },
+        }),
+      ),
+    ).rejects.toThrow("ACTION_POLICY_BLOCKED");
+    expect(runner.recordedExecutions()).toHaveLength(1);
+  });
+
+  it("blocks unknown actions and attempted target or secret spoofing before gates", async () => {
+    const pipeline = new ExternalActionPipeline(
+      simulationRuntime(),
       new DeterministicMockActionRunner({}),
-      new Phase2KillSwitch(),
-      gates,
+      clearKillSwitch(),
+      permissiveGates(),
     );
 
     await expect(
@@ -178,14 +314,43 @@ describe("external action safety chain", () => {
         },
       }),
     ).rejects.toThrow("ACTION_SCHEMA_INVALID");
-    expect(gateCalls).toBe(0);
+  });
+
+  it("requires campaign, policy, and scope evidence before any gate", async () => {
+    for (const [parameters, expected] of [
+      [
+        { ...proposal().parameters, campaign_ref: null },
+        "ACTION_CAMPAIGN_REFERENCE_REQUIRED",
+      ],
+      [
+        { ...proposal().parameters, policy_hash_sha256: null },
+        "ACTION_POLICY_REFERENCE_REQUIRED",
+      ],
+      [
+        { ...proposal().parameters, scope_ref: null },
+        "ACTION_SCOPE_REFERENCE_REQUIRED",
+      ],
+    ] as const) {
+      const candidate = proposal({ parameters });
+      const runner = new DeterministicMockActionRunner({
+        "proposal-1": { unexpected: true },
+      });
+      const pipeline = new ExternalActionPipeline(
+        simulationRuntime(),
+        runner,
+        clearKillSwitch(),
+        permissiveGates({}, candidate),
+      );
+      await expect(pipeline.execute(candidate)).rejects.toThrow(expected);
+      expect(runner.recordedExecutions()).toHaveLength(0);
+    }
   });
 
   it("blocks legal, terms, report and triage automation", async () => {
     const pipeline = new ExternalActionPipeline(
       simulationRuntime(),
       new DeterministicMockActionRunner({}),
-      new Phase2KillSwitch(),
+      clearKillSwitch(),
       permissiveGates(),
     );
     for (const actionId of ["legal_accept", "terms_accept"]) {
@@ -201,19 +366,24 @@ describe("external action safety chain", () => {
   });
 
   it("requires trusted ownership evidence and a human checkpoint", async () => {
-    let calls = 0;
-    const runner: DeterministicActionRunner = {
-      kind: "simulation_mock",
-      run: () => {
-        calls += 1;
-        return Promise.resolve({ unexpected: true });
-      },
-    };
+    const runner = new DeterministicMockActionRunner({
+      "proposal-1": { unexpected: true },
+    });
     const ownershipPipeline = new ExternalActionPipeline(
       simulationRuntime(),
       runner,
-      new Phase2KillSwitch(),
-      permissiveGates(),
+      clearKillSwitch(),
+      permissiveGates(
+        {},
+        proposal({
+          action_id: "target_request",
+          parameters: {
+            ...proposal().parameters,
+            account_ref: "account-1",
+            object_ref: null,
+          },
+        }),
+      ),
     );
     await expect(
       ownershipPipeline.execute(
@@ -231,8 +401,18 @@ describe("external action safety chain", () => {
     const rejectedOwnership = new ExternalActionPipeline(
       simulationRuntime(),
       runner,
-      new Phase2KillSwitch(),
-      permissiveGates({ decideOwnership: () => false }),
+      clearKillSwitch(),
+      permissiveGates(
+        { ownership: false },
+        proposal({
+          action_id: "target_request",
+          parameters: {
+            ...proposal().parameters,
+            account_ref: "account-1",
+            object_ref: "object-1",
+          },
+        }),
+      ),
     );
     await expect(
       rejectedOwnership.execute(
@@ -250,20 +430,23 @@ describe("external action safety chain", () => {
     const human = new ExternalActionPipeline(
       simulationRuntime(),
       runner,
-      new Phase2KillSwitch(),
-      permissiveGates({ decideHumanCheckpoint: () => false }),
+      clearKillSwitch(),
+      permissiveGates(
+        { humanCheckpoint: false },
+        proposal({ action_id: "test_account_register" }),
+      ),
     );
     await expect(
       human.execute(proposal({ action_id: "test_account_register" })),
     ).rejects.toThrow("ACTION_HUMAN_CHECKPOINT_REQUIRED");
-    expect(calls).toBe(0);
+    expect(runner.recordedExecutions()).toHaveLength(0);
   });
 
   it("defaults every missing gate implementation to deny", async () => {
     const pipeline = new ExternalActionPipeline(
       simulationRuntime(),
       new DeterministicMockActionRunner({ "proposal-1": { ok: true } }),
-      new Phase2KillSwitch(),
+      clearKillSwitch(),
     );
     await expect(pipeline.execute(proposal())).rejects.toThrow(
       "ACTION_POLICY_BLOCKED",
@@ -271,47 +454,41 @@ describe("external action safety chain", () => {
   });
 
   it("enforces policy, scope, budget and concurrency before the runner", async () => {
-    let calls = 0;
-    const countingRunner: DeterministicActionRunner = {
-      kind: "simulation_mock",
-      run: () => {
-        calls += 1;
-        return Promise.resolve({ ok: true });
-      },
-    };
+    const countingRunner = new DeterministicMockActionRunner({
+      "proposal-1": { ok: true },
+    });
     for (const gates of [
-      permissiveGates({ decidePolicy: () => false }),
-      permissiveGates({ decideScope: () => false }),
+      permissiveGates({ policy: false }),
+      permissiveGates({ scope: false }),
     ]) {
       const blocked = new ExternalActionPipeline(
         simulationRuntime(),
         countingRunner,
-        new Phase2KillSwitch(),
+        clearKillSwitch(),
         gates,
       );
       await expect(blocked.execute(proposal())).rejects.toThrow();
     }
-    expect(calls).toBe(0);
+    expect(countingRunner.recordedExecutions()).toHaveLength(0);
 
+    const missingScopeProposal = proposal({
+      parameters: { ...proposal().parameters, scope_ref: null },
+    });
     const missingScope = new ExternalActionPipeline(
       simulationRuntime(),
       countingRunner,
-      new Phase2KillSwitch(),
-      permissiveGates(),
+      clearKillSwitch(),
+      permissiveGates({}, missingScopeProposal),
     );
-    await expect(
-      missingScope.execute(
-        proposal({
-          parameters: { ...proposal().parameters, scope_ref: null },
-        }),
-      ),
-    ).rejects.toThrow("ACTION_SCOPE_REFERENCE_REQUIRED");
-    expect(calls).toBe(0);
+    await expect(missingScope.execute(missingScopeProposal)).rejects.toThrow(
+      "ACTION_SCOPE_REFERENCE_REQUIRED",
+    );
+    expect(countingRunner.recordedExecutions()).toHaveLength(0);
 
     const once = new ExternalActionPipeline(
       simulationRuntime(1),
       countingRunner,
-      new Phase2KillSwitch(),
+      clearKillSwitch(),
       permissiveGates(),
     );
     await once.execute(proposal());
@@ -319,67 +496,111 @@ describe("external action safety chain", () => {
       "ACTION_BUDGET_EXCEEDED",
     );
 
-    let release: (() => void) | undefined;
-    const blockingRunner: DeterministicActionRunner = {
-      kind: "simulation_mock",
-      run: () =>
-        new Promise((resolve) => {
-          release = () => {
-            resolve({ ok: true });
-          };
-        }),
-    };
+    const blockingRunner = new DeterministicMockActionRunner(
+      { "proposal-1": { ok: true } },
+      { deferredProposalIds: ["proposal-1"] },
+    );
     const concurrent = new ExternalActionPipeline(
       simulationRuntime(2),
       blockingRunner,
-      new Phase2KillSwitch(),
+      clearKillSwitch(),
       permissiveGates(),
     );
     const first = concurrent.execute(proposal());
     await expect(concurrent.execute(proposal())).rejects.toThrow(
       "ACTION_CONCURRENCY_EXCEEDED",
     );
-    release?.();
+    blockingRunner.release("proposal-1");
     await first;
   });
 
   it("blocks on the kill switch both before and after the runner", async () => {
-    const preKilledSwitch = new Phase2KillSwitch();
+    const preKilledSwitch = clearKillSwitch();
     preKilledSwitch.kill();
-    let calls = 0;
+    const preKilledRunner = new DeterministicMockActionRunner({
+      "proposal-1": { unexpected: true },
+    });
     const preKilled = new ExternalActionPipeline(
       simulationRuntime(),
-      {
-        kind: "simulation_mock",
-        run: () => {
-          calls += 1;
-          return Promise.resolve({ unexpected: true });
-        },
-      },
+      preKilledRunner,
       preKilledSwitch,
       permissiveGates(),
     );
     await expect(preKilled.execute(proposal())).rejects.toThrow(
       "ACTION_KILL_SWITCH",
     );
-    expect(calls).toBe(0);
+    expect(preKilledRunner.recordedExecutions()).toHaveLength(0);
 
-    const duringSwitch = new Phase2KillSwitch();
+    const duringSwitch = clearKillSwitch();
+    const duringRunner = new DeterministicMockActionRunner(
+      { "proposal-1": { ignored: true } },
+      { deferredProposalIds: ["proposal-1"] },
+    );
     const killedDuringRun = new ExternalActionPipeline(
       simulationRuntime(),
-      {
-        kind: "simulation_mock",
-        run: () => {
-          duringSwitch.kill();
-          return Promise.resolve({ ignored: true });
-        },
-      },
+      duringRunner,
       duringSwitch,
       permissiveGates(),
     );
-    await expect(killedDuringRun.execute(proposal())).rejects.toThrow(
+    const pending = killedDuringRun.execute(proposal());
+    duringSwitch.kill();
+    await expect(pending).rejects.toThrow("ACTION_KILL_SWITCH");
+  });
+
+  it("treats missing, throwing and persistent active state readers as killed", async () => {
+    const missingRunner = new DeterministicMockActionRunner({
+      "proposal-1": { unexpected: true },
+    });
+    const missingSwitch = new Phase2KillSwitch(undefined);
+    const missing = new ExternalActionPipeline(
+      simulationRuntime(),
+      missingRunner,
+      missingSwitch,
+      permissiveGates(),
+    );
+    await expect(missing.execute(proposal())).rejects.toThrow(
       "ACTION_KILL_SWITCH",
     );
+    expect(missingSwitch.signal.aborted).toBe(true);
+    expect(missingRunner.recordedExecutions()).toHaveLength(0);
+
+    const throwingSwitch = new Phase2KillSwitch({
+      readActive: () => {
+        throw new Error("PERSISTENT_STATE_UNAVAILABLE");
+      },
+    });
+    const throwing = new ExternalActionPipeline(
+      simulationRuntime(),
+      new DeterministicMockActionRunner({
+        "proposal-1": { unexpected: true },
+      }),
+      throwingSwitch,
+      permissiveGates(),
+    );
+    await expect(throwing.execute(proposal())).rejects.toThrow(
+      "ACTION_KILL_SWITCH",
+    );
+    expect(throwingSwitch.signal.aborted).toBe(true);
+
+    let persistentActive = false;
+    const persistentSwitch = new Phase2KillSwitch({
+      readActive: () => persistentActive,
+    });
+    const persistentRunner = new DeterministicMockActionRunner(
+      { "proposal-1": { ignored: true } },
+      { deferredProposalIds: ["proposal-1"] },
+    );
+    const persistent = new ExternalActionPipeline(
+      simulationRuntime(),
+      persistentRunner,
+      persistentSwitch,
+      permissiveGates(),
+    );
+    const pending = persistent.execute(proposal());
+    expect(persistentRunner.recordedExecutions()).toHaveLength(1);
+    persistentActive = true;
+    await expect(pending).rejects.toThrow("ACTION_KILL_SWITCH");
+    expect(persistentSwitch.signal.aborted).toBe(true);
   });
 
   it("keeps external mode disabled even when runtime capabilities say enabled", async () => {
@@ -395,7 +616,7 @@ describe("external action safety chain", () => {
     const pipeline = new ExternalActionPipeline(
       runtime,
       new DisabledExternalActionRunner(),
-      new Phase2KillSwitch(),
+      clearKillSwitch(),
       permissiveGates(),
     );
     await expect(

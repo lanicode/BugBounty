@@ -5,6 +5,8 @@ import { SecurityError } from "../shared/errors.js";
 export type HumanCheckpointKind =
   "captcha" | "legal" | "program_rules" | "terms" | "two_factor";
 
+export type AccountSimulationRole = "External" | "Member" | "Owner";
+
 export interface AccountSimulationProposal {
   readonly version: 1;
   readonly proposal_id: string;
@@ -13,7 +15,7 @@ export interface AccountSimulationProposal {
   readonly workflow_ref: string;
   readonly application_ref: string;
   readonly account_ref: string;
-  readonly role: string;
+  readonly role: AccountSimulationRole;
   readonly policy_hash_sha256: string;
   readonly expected_revision: number;
   readonly checkpoint_ref: string | null;
@@ -23,7 +25,7 @@ export interface AccountWorkflowState {
   readonly workflowRef: string;
   readonly applicationRef: string;
   readonly accountRef: string;
-  readonly role: string;
+  readonly role: AccountSimulationRole;
   readonly policyHash: string;
   readonly revision: number;
   readonly state: "ACTIVE" | "NEW" | "PAUSED" | "RETIRED";
@@ -60,20 +62,51 @@ export interface AccountSimulationResult {
 
 const ajv = new Ajv2020({ allErrors: true, strict: true });
 const validate = ajv.compile<AccountSimulationProposal>(schema);
+const trustedMockAccountAdapters = new WeakSet();
+const trustedDisabledAccountAdapters = new WeakSet();
 
 export class AccountSimulationCoordinator {
   readonly #workflows = new Map<string, AccountWorkflowState>();
+  readonly #allowedAccounts: ReadonlyMap<string, AccountSimulationRole>;
   #active = 0;
   #count = 0;
 
   public constructor(
     private readonly adapter: AccountSimulationAdapter,
     private readonly policyHash: string,
-    private readonly allowedAccounts: ReadonlySet<string>,
+    allowedAccounts: ReadonlyMap<string, AccountSimulationRole>,
     private readonly maxActions: number,
     private readonly killSignal: AbortSignal,
     private readonly now: () => Date,
-  ) {}
+  ) {
+    assertTrustedAccountAdapter(adapter);
+    if (!/^[a-f0-9]{64}$/u.test(policyHash))
+      throw new SecurityError("ACCOUNT_POLICY_INVALID");
+    if (
+      Reflect.getPrototypeOf(allowedAccounts) !== Map.prototype ||
+      allowedAccounts.size === 0
+    )
+      throw new SecurityError("ACCOUNT_SCOPE_INVALID");
+    const scopeSnapshot = new Map<string, AccountSimulationRole>();
+    for (const [accountRef, role] of allowedAccounts) {
+      const suppliedRole: unknown = role;
+      if (
+        !/^[A-Za-z0-9_-]{1,128}$/u.test(accountRef) ||
+        (suppliedRole !== "External" &&
+          suppliedRole !== "Member" &&
+          suppliedRole !== "Owner")
+      )
+        throw new SecurityError("ACCOUNT_SCOPE_INVALID");
+      scopeSnapshot.set(accountRef, suppliedRole);
+    }
+    this.#allowedAccounts = scopeSnapshot;
+    if (
+      !Number.isSafeInteger(maxActions) ||
+      maxActions < 1 ||
+      maxActions > 1_000
+    )
+      throw new SecurityError("ACCOUNT_BUDGET_INVALID");
+  }
 
   public async execute(value: unknown): Promise<AccountSimulationResult> {
     if (!validate(value)) throw new SecurityError("ACCOUNT_SCHEMA_INVALID");
@@ -100,8 +133,11 @@ export class AccountSimulationCoordinator {
   private assertPolicy(proposal: AccountSimulationProposal): void {
     if (proposal.policy_hash_sha256 !== this.policyHash)
       throw new SecurityError("ACCOUNT_POLICY_DRIFT");
-    if (!this.allowedAccounts.has(proposal.account_ref))
+    const approvedRole = this.#allowedAccounts.get(proposal.account_ref);
+    if (approvedRole === undefined)
       throw new SecurityError("ACCOUNT_NOT_APPROVED");
+    if (approvedRole !== proposal.role)
+      throw new SecurityError("ACCOUNT_ROLE_SCOPE_BLOCKED");
     if (this.adapter.kind !== "local_mock")
       throw new SecurityError("EXTERNAL_INTEGRATIONS_DISABLED");
   }
@@ -253,6 +289,8 @@ export class MockLocalAccountApplication implements AccountSimulationAdapter {
   ) {
     for (const [account, plan] of Object.entries(plans))
       this.#plans.set(account, [...plan]);
+    trustedMockAccountAdapters.add(this);
+    Object.freeze(this);
   }
 
   public start(accountRef: string, signal: AbortSignal): Promise<AdapterStep> {
@@ -308,6 +346,10 @@ export class MockAccountProvider extends MockLocalAccountApplication {}
 export class DisabledExternalAccountAdapter implements AccountSimulationAdapter {
   public readonly kind = "external_disabled" as const;
   public readonly applicationRef = "external-disabled";
+  public constructor() {
+    trustedDisabledAccountAdapters.add(this);
+    Object.freeze(this);
+  }
   public start(): Promise<AdapterStep> {
     return Promise.reject(new Error("EXTERNAL_INTEGRATIONS_DISABLED"));
   }
@@ -322,3 +364,28 @@ export class DisabledExternalAccountAdapter implements AccountSimulationAdapter 
 function assertActive(signal: AbortSignal): void {
   if (signal.aborted) throw new SecurityError("PHASE2_GLOBAL_KILL_SWITCH");
 }
+
+function assertTrustedAccountAdapter(adapter: AccountSimulationAdapter): void {
+  let prototype: object | null;
+  try {
+    prototype = Reflect.getPrototypeOf(adapter);
+  } catch {
+    throw new SecurityError("ACCOUNT_ADAPTER_UNTRUSTED");
+  }
+  const trustedMock =
+    trustedMockAccountAdapters.has(adapter) &&
+    (prototype === MockLocalAccountApplication.prototype ||
+      prototype === MockAccountProvider.prototype);
+  const trustedDisabled =
+    trustedDisabledAccountAdapters.has(adapter) &&
+    prototype === DisabledExternalAccountAdapter.prototype;
+  if (!trustedMock && !trustedDisabled)
+    throw new SecurityError("ACCOUNT_ADAPTER_UNTRUSTED");
+}
+
+Object.freeze(MockLocalAccountApplication.prototype);
+Object.freeze(MockLocalAccountApplication);
+Object.freeze(MockAccountProvider.prototype);
+Object.freeze(MockAccountProvider);
+Object.freeze(DisabledExternalAccountAdapter.prototype);
+Object.freeze(DisabledExternalAccountAdapter);

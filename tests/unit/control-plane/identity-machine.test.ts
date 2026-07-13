@@ -122,6 +122,23 @@ describe("test identity state machine", () => {
         nextStatus: "awaiting_email_verification",
       }),
     ).toThrow("IDENTITY_TIMESTAMP_INVALID");
+
+    const awaitingEmail = transitionIdentity(awaitingManual, {
+      kind: "confirm_human_checkpoint",
+      expectedRevision: awaitingManual.revision,
+      evidence: human("2026-07-13T10:02:00.000Z"),
+      nextStatus: "awaiting_email_verification",
+    });
+    for (const skipped of ["awaiting_terms_acceptance", "ready"] as const) {
+      expect(() =>
+        transitionIdentity(awaitingEmail, {
+          kind: "confirm_human_checkpoint",
+          expectedRevision: awaitingEmail.revision,
+          evidence: human("2026-07-13T10:03:00.000Z"),
+          nextStatus: skipped,
+        }),
+      ).toThrow("IDENTITY_CHECKPOINT_SEQUENCE_INVALID");
+    }
   });
 
   it("restores an expired session only through a successful local mock login", () => {

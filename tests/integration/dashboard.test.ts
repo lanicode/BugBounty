@@ -15,6 +15,7 @@ import {
 import { DemoSaas } from "../../packages/demo-saas/index.js";
 import { createGuardedContext } from "../../packages/egress-guard/playwright.js";
 import { SimulationOrchestrator } from "../../packages/simulation/index.js";
+import { InMemorySecretStore } from "../../packages/secret-store/index.js";
 import type { ProgramConfig } from "../../packages/config/types.js";
 import { programConfig } from "../fixtures/factories.js";
 
@@ -38,7 +39,23 @@ interface DashboardState {
     readonly policyVersions: number;
   };
   readonly programs: readonly { readonly id: string }[];
-  readonly policyDiffs: readonly unknown[];
+  readonly policyDiffs: readonly {
+    readonly changedRules: {
+      readonly added: readonly string[];
+      readonly removed: readonly string[];
+    };
+  }[];
+  readonly approvals: readonly {
+    readonly id: string;
+    readonly technicalDetails: string;
+    readonly policyHash: string | null;
+    readonly policyVersion: number | null;
+    readonly payloadHash: string;
+    readonly revision: number;
+    readonly status: string;
+  }[];
+  readonly expert: { readonly auditLog: readonly string[] };
+  readonly simulationReview: { readonly reviewDigest: string };
 }
 
 interface SimulationResponse {
@@ -67,7 +84,16 @@ async function startHarness(): Promise<Harness> {
   const now = (): Date => new Date(NOW + ticks++ * 1_000);
   const demo = new DemoSaas(now);
   const eventRoot = await mkdtemp(join(tmpdir(), "dashboard-events-"));
-  const simulation = new SimulationOrchestrator(store, demo, eventRoot, now);
+  const eventSecrets = new InMemorySecretStore();
+  eventSecrets.set("secret://dashboard/event-key", new Uint8Array(32).fill(9));
+  const simulation = new SimulationOrchestrator(
+    store,
+    demo,
+    eventRoot,
+    eventSecrets,
+    () => "secret://dashboard/event-key",
+    now,
+  );
   try {
     const server = await startDashboardServer(
       { store, demo, simulation, now },
@@ -282,6 +308,8 @@ lifecycle: active
           ...confirmations(),
           queueReportReview: false,
         },
+        confirmationTimes: confirmationTimes(),
+        reviewDigest: initial.simulationReview.reviewDigest,
       },
     );
     expect(missingConfirmation.status).toBe(409);
@@ -293,6 +321,8 @@ lifecycle: active
       {
         actor: "local-dashboard-user",
         confirmations: confirmations(),
+        confirmationTimes: confirmationTimes(),
+        reviewDigest: initial.simulationReview.reviewDigest,
       },
     );
     expect(response.status).toBe(200);
@@ -316,6 +346,9 @@ lifecycle: active
       },
     });
     expect(after.policyDiffs).toHaveLength(1);
+    expect(after.policyDiffs[0]?.changedRules.added).toEqual([
+      "reapproval_required_after_drift",
+    ]);
 
     const engaged = await postJson(
       server,
@@ -335,7 +368,41 @@ lifecycle: active
     );
     expect(cleared.status).toBe(200);
     expect(await cleared.json()).toMatchObject({ active: false });
-    expect((await state(server)).killSwitch.active).toBe(false);
+    const afterClear = await state(server);
+    expect(afterClear.killSwitch.active).toBe(false);
+    expect(
+      afterClear.expert.auditLog.some((line) =>
+        line.includes("kill_switch_change"),
+      ),
+    ).toBe(true);
+
+    const openApproval = afterClear.approvals.find(
+      ({ id }) => id === "report-review-approval",
+    );
+    expect(openApproval).toBeDefined();
+    const decision = await postJson(
+      server,
+      "/api/approvals/decide",
+      afterClear.csrfToken,
+      {
+        id: openApproval?.id,
+        expectedRevision: openApproval?.revision,
+        expectedPayloadHash: openApproval?.payloadHash,
+        decision: "accepted",
+        actor: "local-dashboard-user",
+        userAction: "explicit_local_report_review",
+      },
+    );
+    expect(decision.status).toBe(200);
+    const decidedState = await state(server);
+    expect(
+      decidedState.approvals.find(({ id }) => id === "report-review-approval"),
+    ).toMatchObject({ status: "accepted", revision: 1 });
+    expect(
+      decidedState.expert.auditLog.some((line) =>
+        line.includes("approval_decision"),
+      ),
+    ).toBe(true);
   });
 });
 
@@ -414,6 +481,18 @@ describe("local dashboard browser UI", () => {
         await page.evaluate(() => document.body.dataset["dashboardXss"]),
       ).toBe("safe");
 
+      const reviewText = await page.locator("#simulation-review").textContent();
+      expect(reviewText).toContain("Review-Digest:");
+      expect(reviewText).toContain("Kampagne v1: Digest");
+      expect(reviewText).toContain("Methoden GET, HEAD");
+      expect(reviewText).toContain("Write false");
+      expect(reviewText).toContain("Rollback true");
+      expect(reviewText).toContain("reapproval_required_after_drift");
+      expect(reviewText).toContain("verbotene Klassen active_security_test");
+      expect(await page.locator("#confirm-acceptPolicyV1").isDisabled()).toBe(
+        true,
+      );
+
       for (const name of [
         "clearKillSwitch",
         "acceptPolicyV1",
@@ -436,6 +515,13 @@ describe("local dashboard browser UI", () => {
       expect(await page.locator("#count-programs").textContent()).toBe("2");
       await page.locator("#count-reports").filter({ hasText: "1" }).waitFor();
       expect(await page.locator("#count-reports").textContent()).toBe("1");
+      expect(await page.locator("#policy-diff-list").textContent()).toContain(
+        "Sonstige Regeln hinzugefügt: reapproval_required_after_drift",
+      );
+      const approvalText = await page.locator("#approval-list").textContent();
+      expect(approvalText).toContain("No submission runner exists in Phase 2.");
+      expect(approvalText).toContain("Payload-Hash:");
+      expect(approvalText).toContain("Policy: v2 /");
 
       await page.locator("#engage-kill").click();
       await page
@@ -452,6 +538,16 @@ describe("local dashboard browser UI", () => {
         .waitFor();
       expect(await page.locator("#kill-status").textContent()).toBe(
         "FREIGEGEBEN",
+      );
+      await page
+        .getByRole("button", { name: "Ausdrücklich akzeptieren" })
+        .click();
+      const reportApproval = page
+        .locator("#approval-list .data-item")
+        .filter({ hasText: "Review local simulation report" });
+      await reportApproval.filter({ hasText: "Status: accepted" }).waitFor();
+      expect(await reportApproval.textContent()).toContain(
+        "explicit_local_dashboard_accepted",
       );
       expect([...requestedOrigins]).toEqual([server.origin]);
     } finally {
@@ -487,6 +583,17 @@ function confirmations(): Record<string, true> {
     acceptPolicyV2: true,
     approveCampaignV2: true,
     queueReportReview: true,
+  };
+}
+
+function confirmationTimes(): Record<string, string> {
+  return {
+    clearKillSwitch: "2026-07-13T11:59:54.000Z",
+    acceptPolicyV1: "2026-07-13T11:59:55.000Z",
+    approveCampaignV1: "2026-07-13T11:59:56.000Z",
+    acceptPolicyV2: "2026-07-13T11:59:57.000Z",
+    approveCampaignV2: "2026-07-13T11:59:58.000Z",
+    queueReportReview: "2026-07-13T11:59:59.000Z",
   };
 }
 

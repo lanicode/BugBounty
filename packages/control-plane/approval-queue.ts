@@ -1,6 +1,7 @@
 import { canonicalJson, sha256, type JsonValue } from "../shared/canonical.js";
 import { SecurityError } from "../shared/errors.js";
 import type { ApprovalKind, ApprovalRecord } from "./types.js";
+import { assertNoSensitiveMaterial } from "./sensitive.js";
 
 export interface ApprovalInput {
   readonly id: string;
@@ -16,6 +17,15 @@ export interface ApprovalInput {
 
 export class ApprovalQueue {
   readonly #items = new Map<string, ApprovalRecord>();
+
+  public constructor(initial: readonly ApprovalRecord[] = []) {
+    for (const record of initial) {
+      validateHydratedRecord(record);
+      if (this.#items.has(record.id))
+        throw new SecurityError("APPROVAL_ALREADY_EXISTS");
+      this.#items.set(record.id, freeze({ ...record }));
+    }
+  }
 
   public enqueue(input: ApprovalInput): ApprovalRecord {
     validateInput(input);
@@ -45,7 +55,9 @@ export class ApprovalQueue {
     readonly at: string;
     readonly killSwitchActive: boolean;
   }): ApprovalRecord {
-    if (input.killSwitchActive) throw new SecurityError("APPROVAL_KILL_SWITCH");
+    const killSwitchActive: unknown = input.killSwitchActive;
+    if (killSwitchActive !== false)
+      throw new SecurityError("APPROVAL_KILL_SWITCH");
     const current = this.#items.get(input.id);
     if (current === undefined) throw new SecurityError("APPROVAL_NOT_FOUND");
     if (
@@ -58,15 +70,23 @@ export class ApprovalQueue {
       current.payloadHash !== approvalHash(current)
     )
       throw new SecurityError("APPROVAL_INTEGRITY_INVALID");
+    const decision: unknown = input.decision;
     if (
       !/^[A-Za-z0-9._@-]{1,128}$/u.test(input.actor) ||
+      (decision !== "accepted" && decision !== "rejected") ||
       !Number.isFinite(Date.parse(input.at)) ||
-      input.userAction.trim().length === 0
+      Date.parse(input.at) < Date.parse(current.createdAt) ||
+      input.userAction.trim().length === 0 ||
+      input.userAction.length > 500
     )
       throw new SecurityError("APPROVAL_DECISION_INVALID");
+    assertNoSensitiveMaterial(
+      [input.userAction],
+      "APPROVAL_SENSITIVE_MATERIAL",
+    );
     const decided = freeze({
       ...current,
-      status: input.decision,
+      status: decision,
       decidedAt: input.at,
       decidedBy: input.actor,
       userAction: input.userAction,
@@ -105,6 +125,10 @@ function approvalHash(input: ApprovalInput | ApprovalRecord): string {
 }
 
 function validateInput(input: ApprovalInput): void {
+  assertNoSensitiveMaterial(
+    [input.summary, input.technicalDetails, input.impact],
+    "APPROVAL_SENSITIVE_MATERIAL",
+  );
   if (
     !/^[A-Za-z0-9_-]{1,128}$/u.test(input.id) ||
     !/^[A-Za-z0-9_.:-]{1,160}$/u.test(input.auditReference) ||
@@ -117,6 +141,38 @@ function validateInput(input: ApprovalInput): void {
     (input.policyVersion !== null && input.policyVersion < 1)
   )
     throw new SecurityError("APPROVAL_INPUT_INVALID");
+}
+
+function validateHydratedRecord(record: ApprovalRecord): void {
+  validateInput(record);
+  if (record.userAction !== null)
+    assertNoSensitiveMaterial(
+      [record.userAction],
+      "APPROVAL_SENSITIVE_MATERIAL",
+    );
+  const open = record.status === "open";
+  const decided = record.status === "accepted" || record.status === "rejected";
+  if (
+    record.payloadHash !== approvalHash(record) ||
+    !/^[a-f0-9]{64}$/u.test(record.payloadHash) ||
+    (open &&
+      (record.revision !== 0 ||
+        record.decidedAt !== null ||
+        record.decidedBy !== null ||
+        record.userAction !== null)) ||
+    (decided &&
+      (record.revision !== 1 ||
+        record.decidedAt === null ||
+        record.decidedBy === null ||
+        record.userAction === null ||
+        !Number.isFinite(Date.parse(record.decidedAt)) ||
+        Date.parse(record.decidedAt) < Date.parse(record.createdAt) ||
+        !/^[A-Za-z0-9._@-]{1,128}$/u.test(record.decidedBy) ||
+        record.userAction.trim().length === 0 ||
+        record.userAction.length > 500)) ||
+    (!open && !decided)
+  )
+    throw new SecurityError("APPROVAL_INTEGRITY_INVALID");
 }
 
 function freeze<T extends ApprovalRecord>(value: T): T {

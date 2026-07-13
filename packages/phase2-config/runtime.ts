@@ -35,6 +35,13 @@ export interface Phase2RuntimeState {
   readonly disableReason: IntegrationDisableReason | null;
 }
 
+export type Phase2CapabilityProbe = boolean | (() => boolean);
+
+export interface Phase2RuntimeCapabilities {
+  readonly secretsAvailable: Phase2CapabilityProbe;
+  readonly externalAdapterAvailable: Phase2CapabilityProbe;
+}
+
 export const SAFE_PHASE2_CONFIG: Phase2RuntimeConfig = freezeConfig({
   version: 1,
   mode: "simulation",
@@ -53,10 +60,7 @@ const validate = ajv.compile<Phase2RuntimeConfig>(schema);
 
 export function resolvePhase2Runtime(
   value: unknown,
-  capabilities: {
-    readonly secretsAvailable: boolean;
-    readonly externalAdapterAvailable: boolean;
-  },
+  capabilities: Phase2RuntimeCapabilities,
 ): Phase2RuntimeState {
   if (!validate(value)) return disabled(SAFE_PHASE2_CONFIG, "CONFIG_INVALID");
   let hosts: readonly string[];
@@ -76,19 +80,28 @@ export function resolvePhase2Runtime(
   if (config.mode === "simulation") return disabled(config, "SIMULATION_MODE");
   if (!config.external_integrations_enabled)
     return disabled(config, "CONFIG_DISABLED");
-  if (!capabilities.secretsAvailable)
+  let secretsAvailable: boolean;
+  try {
+    secretsAvailable = probeCapability(capabilities.secretsAvailable);
+  } catch {
     return disabled(config, "SECRETS_UNAVAILABLE");
-  if (!capabilities.externalAdapterAvailable)
+  }
+  if (!secretsAvailable) return disabled(config, "SECRETS_UNAVAILABLE");
+  let externalAdapterAvailable: boolean;
+  try {
+    externalAdapterAvailable = probeCapability(
+      capabilities.externalAdapterAvailable,
+    );
+  } catch {
     return disabled(config, "ADAPTER_UNAVAILABLE");
+  }
+  if (!externalAdapterAvailable) return disabled(config, "ADAPTER_UNAVAILABLE");
   return disabled(config, "PHASE2_EXTERNAL_DISABLED");
 }
 
 export async function loadPhase2Runtime(
   path: string | undefined,
-  capabilities: {
-    readonly secretsAvailable: boolean;
-    readonly externalAdapterAvailable: boolean;
-  },
+  capabilities: Phase2RuntimeCapabilities,
 ): Promise<Phase2RuntimeState> {
   if (path === undefined) return disabled(SAFE_PHASE2_CONFIG, "CONFIG_MISSING");
   let value: unknown;
@@ -102,6 +115,10 @@ export async function loadPhase2Runtime(
     return disabled(SAFE_PHASE2_CONFIG, "CONFIG_MISSING");
   }
   return resolvePhase2Runtime(value, capabilities);
+}
+
+function probeCapability(probe: Phase2CapabilityProbe): boolean {
+  return typeof probe === "function" ? probe() : probe;
 }
 
 function disabled(

@@ -1,6 +1,7 @@
 import { isScalar, parseAllDocuments, visit, type Document } from "yaml";
 import { SecurityError } from "../shared/errors.js";
 import type { ProgramRecord } from "./types.js";
+import { assertNoSensitiveMaterial } from "./sensitive.js";
 
 export type ProgramImportFormat = "json" | "yaml";
 
@@ -114,6 +115,10 @@ function normalizeProgramImport(value: unknown): ImportedProgram {
     true,
   );
   const notes = requiredString(value["notes"], MAX_NOTES_LENGTH, true);
+  assertNoSensitiveMaterial(
+    [name, description, notes],
+    "PROGRAM_IMPORT_SENSITIVE_MATERIAL",
+  );
   const platform = normalizePlatform(value["platform"]);
   const status = normalizeStatus(value["status"]);
   const programType = normalizeProgramType(value["program_type"]);
@@ -123,6 +128,10 @@ function normalizeProgramImport(value: unknown): ImportedProgram {
   const lifecycle = normalizeLifecycle(value["lifecycle"]);
   const allowedAssets = normalizeAssets(value["allowed_assets"]);
   const excludedAssets = normalizeAssets(value["excluded_assets"]);
+  assertNoSensitiveMaterial(
+    [...allowedAssets, ...excludedAssets],
+    "PROGRAM_IMPORT_SENSITIVE_MATERIAL",
+  );
   assertNoOverlap(allowedAssets, excludedAssets);
 
   return Object.freeze({
@@ -197,6 +206,7 @@ function normalizeMetadataUrl(value: unknown): string {
     url.hostname.length === 0 ||
     url.username.length > 0 ||
     url.password.length > 0 ||
+    url.search.length > 0 ||
     url.hash.length > 0
   )
     throw new SecurityError("PROGRAM_IMPORT_URL_INVALID");
