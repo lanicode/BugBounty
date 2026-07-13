@@ -26,6 +26,7 @@ profiles/
 keychain-export/
 secrets/
 .secret-store/
+.local/
 
 # Traffic and evidence
 *.har
