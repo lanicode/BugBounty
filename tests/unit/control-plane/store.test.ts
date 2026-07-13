@@ -346,6 +346,40 @@ describe("ControlPlaneStore", () => {
     });
   });
 
+  it("rejects raw active campaign rows without relational approval evidence", () => {
+    const policy = seedPolicy();
+    store.insertCampaign(campaign({ policyHash: policy.policyHash }));
+    database.run(
+      `UPDATE campaigns SET state='running_simulation',revision=3,
+       human_approved_by=NULL,human_approved_at=NULL,
+       last_policy_check_at=?,kill_switch_status='engaged'
+       WHERE id='campaign-local'`,
+      LATER,
+    );
+    expect(() => store.getCampaign("campaign-local")).toThrow(
+      "CAMPAIGN_POLICY_NOT_ACCEPTED",
+    );
+    expect(() => store.listCampaigns()).toThrow("CAMPAIGN_POLICY_NOT_ACCEPTED");
+  });
+
+  it("rejects a raw policy acceptance without exact approval evidence", () => {
+    const policy = seedPolicy();
+    database.run(
+      `INSERT INTO policy_acceptances(
+        program_id,version,policy_hash,accepted_by,accepted_at,audit_reference
+       ) VALUES(?,?,?,?,?,?)`,
+      "program-local",
+      1,
+      policy.policyHash,
+      "local-reviewer",
+      LATER,
+      "audit:forged-policy-acceptance",
+    );
+    expect(() => store.getPolicy("program-local", 1)).toThrow(
+      "POLICY_ACCEPTANCE_EVIDENCE_INVALID",
+    );
+  });
+
   it("does not resume a paused campaign against a stale policy", () => {
     seedRunningCampaign();
     store.addPolicyVersion({
@@ -509,6 +543,38 @@ describe("ControlPlaneStore", () => {
       ).toThrow("KILL_SWITCH_VALUE_INVALID");
       expect(store.isKillSwitchActive()).toBe(true);
     }
+  });
+
+  it("treats unaudited or revision-corrupted clear state as engaged", () => {
+    expect(() =>
+      database.run(
+        `UPDATE system_state SET value='clear',revision=9001,
+         updated_at='not-a-time',audit_reference=NULL
+         WHERE key='global_kill_switch'`,
+      ),
+    ).toThrow();
+    expect(store.isKillSwitchActive()).toBe(true);
+
+    store.setKillSwitch(false, "local-reviewer", NOW);
+    expect(store.isKillSwitchActive()).toBe(false);
+    database.run("DROP TRIGGER system_state_kill_switch_update_guard");
+    database.run(
+      `UPDATE system_state SET revision=9001,updated_at='not-a-time'
+       WHERE key='global_kill_switch'`,
+    );
+    expect(store.isKillSwitchActive()).toBe(true);
+  });
+
+  it("pauses an active campaign before recording a kill-switch engagement", () => {
+    seedRunningCampaign();
+    store.setKillSwitch(true, "local-reviewer", "2026-07-13T14:00:00.000Z");
+    expect(store.isKillSwitchActive()).toBe(true);
+    expect(store.getCampaign("campaign-local")).toMatchObject({
+      state: "paused",
+      humanApprovedBy: null,
+      humanApprovedAt: null,
+      killSwitchStatus: "engaged",
+    });
   });
 
   it.each([

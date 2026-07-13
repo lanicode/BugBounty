@@ -252,6 +252,58 @@ BEFORE UPDATE OF program_id,campaign_id,account_id ON owned_objects BEGIN
 END;
 `,
   }),
+  Object.freeze({
+    version: 3,
+    sql: `
+ALTER TABLE system_state ADD COLUMN audit_reference TEXT
+  REFERENCES control_plane_audit(id) ON DELETE RESTRICT;
+UPDATE campaigns
+SET state='paused',revision=revision+1,human_approved_by=NULL,
+    human_approved_at=NULL,kill_switch_status='engaged',
+    last_policy_check_at='2026-07-13T00:00:00.000Z'
+WHERE state IN ('approved','running_simulation');
+UPDATE system_state
+SET value='engaged',revision=revision+1,
+    updated_at='2026-07-13T00:00:00.000Z',audit_reference=NULL
+WHERE key='global_kill_switch';
+CREATE TRIGGER system_state_kill_switch_insert_guard
+BEFORE INSERT ON system_state
+WHEN NEW.key='global_kill_switch' BEGIN
+  SELECT RAISE(ABORT,'KILL_SWITCH_STATE_INVALID')
+  WHERE NEW.value NOT IN ('engaged','clear')
+     OR NEW.revision < 0
+     OR (NEW.value='clear' AND (
+       NEW.audit_reference IS NULL OR NOT EXISTS (
+         SELECT 1 FROM control_plane_audit a
+         WHERE a.id=NEW.audit_reference
+           AND a.occurred_at=NEW.updated_at
+           AND a.action='kill_switch_change'
+           AND a.decision='clear'
+           AND a.reason_code='HUMAN_KILL_SWITCH_CLEARED'
+           AND a.object_reference IS NOT NULL
+       )
+     ));
+END;
+CREATE TRIGGER system_state_kill_switch_update_guard
+BEFORE UPDATE OF value,revision,updated_at,audit_reference ON system_state
+WHEN NEW.key='global_kill_switch' BEGIN
+  SELECT RAISE(ABORT,'KILL_SWITCH_STATE_INVALID')
+  WHERE NEW.value NOT IN ('engaged','clear')
+     OR NEW.revision < 0
+     OR (NEW.value='clear' AND (
+       NEW.audit_reference IS NULL OR NOT EXISTS (
+         SELECT 1 FROM control_plane_audit a
+         WHERE a.id=NEW.audit_reference
+           AND a.occurred_at=NEW.updated_at
+           AND a.action='kill_switch_change'
+           AND a.decision='clear'
+           AND a.reason_code='HUMAN_KILL_SWITCH_CLEARED'
+           AND a.object_reference IS NOT NULL
+       )
+     ));
+END;
+`,
+  }),
 ]);
 
 export const CONTROL_PLANE_SCHEMA_VERSION = MIGRATIONS.length;

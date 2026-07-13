@@ -172,6 +172,8 @@ describe("ControlPlaneDatabase migrations", () => {
       "campaigns_exact_policy_update",
       "owned_objects_exact_bindings_insert",
       "owned_objects_exact_bindings_update",
+      "system_state_kill_switch_insert_guard",
+      "system_state_kill_switch_update_guard",
     ])
       database.run(`DROP TRIGGER ${trigger}`);
     for (const index of [
@@ -180,7 +182,19 @@ describe("ControlPlaneDatabase migrations", () => {
       "identities_program_binding",
     ])
       database.run(`DROP INDEX ${index}`);
-    database.run("DELETE FROM schema_migrations WHERE version=2");
+    database.run(`CREATE TABLE system_state_v1 (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK (revision >= 0),
+      updated_at TEXT NOT NULL
+    ) STRICT`);
+    database.run(
+      `INSERT INTO system_state_v1(key,value,revision,updated_at)
+       SELECT key,value,revision,updated_at FROM system_state`,
+    );
+    database.run("DROP TABLE system_state");
+    database.run("ALTER TABLE system_state_v1 RENAME TO system_state");
+    database.run("DELETE FROM schema_migrations WHERE version>=2");
     database.close();
 
     await expect(ControlPlaneDatabase.file(path)).rejects.toThrow();

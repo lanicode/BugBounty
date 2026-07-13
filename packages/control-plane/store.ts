@@ -247,7 +247,10 @@ export class ControlPlaneStore {
       programId,
       version,
     );
-    return row === undefined ? undefined : policyFromRow(row);
+    if (row === undefined) return undefined;
+    const policy = policyFromRow(row);
+    this.assertPolicyAcceptanceEvidence(policy);
+    return policy;
   }
 
   public listPolicies(programId: string): readonly StoredPolicyVersion[] {
@@ -262,7 +265,11 @@ export class ControlPlaneStore {
            WHERE p.program_id=? ORDER BY p.version`,
           programId,
         )
-        .map(policyFromRow),
+        .map((row) => {
+          const policy = policyFromRow(row);
+          this.assertPolicyAcceptanceEvidence(policy);
+          return policy;
+        }),
     );
   }
 
@@ -344,14 +351,19 @@ export class ControlPlaneStore {
 
   public getCampaign(id: string): CampaignRecord | undefined {
     const row = this.database.get("SELECT * FROM campaigns WHERE id=?", id);
-    return row === undefined ? undefined : campaignFromRow(row);
+    if (row === undefined) return undefined;
+    const campaign = campaignFromRow(row);
+    this.assertCampaignPersistenceBindings(campaign);
+    return campaign;
   }
 
   public listCampaigns(): readonly CampaignRecord[] {
     return Object.freeze(
-      this.database
-        .all("SELECT * FROM campaigns ORDER BY id")
-        .map(campaignFromRow),
+      this.database.all("SELECT * FROM campaigns ORDER BY id").map((row) => {
+        const campaign = campaignFromRow(row);
+        this.assertCampaignPersistenceBindings(campaign);
+        return campaign;
+      }),
     );
   }
 
@@ -605,9 +617,16 @@ export class ControlPlaneStore {
   public isKillSwitchActive(): boolean {
     try {
       const row = this.database.get(
-        "SELECT value FROM system_state WHERE key='global_kill_switch'",
+        `SELECT s.value,s.revision,s.updated_at,s.audit_reference,
+          a.id AS audit_id,a.occurred_at AS audit_occurred_at,
+          a.action AS audit_action,a.decision AS audit_decision,
+          a.reason_code AS audit_reason_code,
+          a.object_reference AS audit_actor,a.payload_hash AS audit_payload_hash
+         FROM system_state s LEFT JOIN control_plane_audit a
+           ON a.id=s.audit_reference
+         WHERE s.key='global_kill_switch'`,
       );
-      return row?.["value"] !== "clear";
+      return row === undefined || !validKillSwitchClear(row);
     } catch {
       return true;
     }
@@ -628,12 +647,7 @@ export class ControlPlaneStore {
       readonly active: boolean;
       readonly revision: number;
     } => {
-      const row = this.database.get(
-        "SELECT revision FROM system_state WHERE key='global_kill_switch'",
-      );
-      if (typeof row?.["revision"] !== "number")
-        throw new SecurityError("KILL_SWITCH_STATE_UNAVAILABLE");
-      const revision = row["revision"] + 1;
+      const revision = nextKillSwitchRevision(this.database);
       this.database.run(
         `INSERT INTO control_plane_audit(
           id,occurred_at,action,decision,reason_code,object_reference,payload_hash
@@ -644,30 +658,34 @@ export class ControlPlaneStore {
         value,
         active ? "HUMAN_KILL_SWITCH_ENGAGED" : "HUMAN_KILL_SWITCH_CLEARED",
         actor,
-        sha256(canonicalJson({ active, actor, at })),
+        sha256(canonicalJson({ active, actor, at, revision })),
       );
       this.database.run(
-        `UPDATE system_state SET value=?,revision=?,updated_at=?
+        `UPDATE system_state SET value=?,revision=?,updated_at=?,audit_reference=?
          WHERE key='global_kill_switch'`,
         value,
         revision,
         at,
+        id,
       );
       return Object.freeze({ active, revision });
     };
     if (!active) return this.database.transaction(operation);
     // Engagement is written first. If audit persistence fails, callers receive an
     // error but the system remains blocked instead of rolling back to unsafe state.
-    const row = this.database.get(
-      "SELECT revision FROM system_state WHERE key='global_kill_switch'",
-    );
-    if (typeof row?.["revision"] !== "number")
-      throw new SecurityError("KILL_SWITCH_STATE_UNAVAILABLE");
-    const revision = row["revision"] + 1;
+    const revision = nextKillSwitchRevision(this.database);
     this.database.run(
-      `UPDATE system_state SET value='engaged',revision=?,updated_at=?
+      `UPDATE system_state SET value='engaged',revision=?,updated_at=?,
+       audit_reference=NULL
        WHERE key='global_kill_switch'`,
       revision,
+      at,
+    );
+    this.database.run(
+      `UPDATE campaigns SET state='paused',revision=revision+1,
+       human_approved_by=NULL,human_approved_at=NULL,
+       last_policy_check_at=?,kill_switch_status='engaged'
+       WHERE state IN ('approved','running_simulation')`,
       at,
     );
     try {
@@ -681,7 +699,13 @@ export class ControlPlaneStore {
         "engaged",
         "HUMAN_KILL_SWITCH_ENGAGED",
         actor,
-        sha256(canonicalJson({ active, actor, at })),
+        sha256(canonicalJson({ active, actor, at, revision })),
+      );
+      this.database.run(
+        `UPDATE system_state SET audit_reference=?
+         WHERE key='global_kill_switch' AND revision=? AND value='engaged'`,
+        id,
+        revision,
       );
     } catch (error) {
       throw new SecurityError(
@@ -689,6 +713,26 @@ export class ControlPlaneStore {
       );
     }
     return Object.freeze({ active: true, revision });
+  }
+
+  private assertPolicyAcceptanceEvidence(policy: StoredPolicyVersion): void {
+    const acceptance = policy.acceptance;
+    if (acceptance === null) return;
+    const approval = this.listApprovals().find(
+      (candidate) =>
+        candidate.kind === "program_policy_acceptance" &&
+        candidate.status === "accepted" &&
+        candidate.summary ===
+          `Accept ${policy.programId} policy version ${String(policy.version)}` &&
+        candidate.policyVersion === policy.version &&
+        candidate.policyHash === policy.policy.policyHash &&
+        candidate.decidedBy === acceptance.acceptedBy &&
+        candidate.decidedAt === acceptance.acceptedAt &&
+        candidate.auditReference === acceptance.auditReference,
+    );
+    if (approval === undefined)
+      throw new SecurityError("POLICY_ACCEPTANCE_EVIDENCE_INVALID");
+    new ApprovalQueue([approval]);
   }
 
   private assertCampaignPersistenceBindings(campaign: CampaignRecord): void {
@@ -805,6 +849,51 @@ export class ControlPlaneStore {
     )
       throw new SecurityError("CONTROL_PLANE_OBJECT_POLICY_BINDING_INVALID");
   }
+}
+
+function nextKillSwitchRevision(database: ControlPlaneDatabase): number {
+  const row = database.get(
+    "SELECT revision FROM system_state WHERE key='global_kill_switch'",
+  );
+  const revision = row?.["revision"];
+  if (
+    typeof revision !== "number" ||
+    !Number.isSafeInteger(revision) ||
+    revision < 0 ||
+    revision >= Number.MAX_SAFE_INTEGER
+  )
+    throw new SecurityError("KILL_SWITCH_STATE_UNAVAILABLE");
+  return revision + 1;
+}
+
+function validKillSwitchClear(row: Row): boolean {
+  const revision = row["revision"];
+  const at = row["updated_at"];
+  const actor = row["audit_actor"];
+  const auditReference = row["audit_reference"];
+  if (
+    row["value"] !== "clear" ||
+    typeof revision !== "number" ||
+    !Number.isSafeInteger(revision) ||
+    revision < 1 ||
+    typeof at !== "string" ||
+    !Number.isFinite(Date.parse(at)) ||
+    typeof actor !== "string" ||
+    !/^[A-Za-z0-9._@-]{1,128}$/u.test(actor) ||
+    typeof auditReference !== "string"
+  )
+    return false;
+  const expectedAuditId = `kill-${sha256(`${actor}\u0000${at}\u0000clear`).slice(0, 32)}`;
+  return (
+    auditReference === expectedAuditId &&
+    row["audit_id"] === expectedAuditId &&
+    row["audit_occurred_at"] === at &&
+    row["audit_action"] === "kill_switch_change" &&
+    row["audit_decision"] === "clear" &&
+    row["audit_reason_code"] === "HUMAN_KILL_SWITCH_CLEARED" &&
+    row["audit_payload_hash"] ===
+      sha256(canonicalJson({ active: false, actor, at, revision }))
+  );
 }
 
 type Row = Readonly<
