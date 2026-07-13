@@ -13,6 +13,7 @@ describe("Playwright context guard", () => {
     let httpHandler: ((route: Route) => Promise<void>) | undefined;
     let websocketHandler: ((route: WebSocketRoute) => void) | undefined;
     const context = {
+      addInitScript: () => Promise.resolve(),
       route(_pattern: string, handler: (route: Route) => Promise<void>) {
         httpHandler = handler;
         return Promise.resolve();
@@ -47,6 +48,8 @@ describe("Playwright context guard", () => {
         aborted = true;
         return Promise.resolve();
       },
+      fetch: () => Promise.reject(new Error("must-not-fetch-blocked-request")),
+      fulfill: () => Promise.resolve(),
       continue: () => Promise.resolve(),
     } as unknown as Route;
     await httpHandler?.(route);
@@ -64,6 +67,7 @@ describe("Playwright context guard", () => {
   it("allows exact targets and derives supporting capture modes", async () => {
     let handler: ((route: Route) => Promise<void>) | undefined;
     const context = {
+      addInitScript: () => Promise.resolve(),
       route: (_pattern: string, value: (route: Route) => Promise<void>) => {
         handler = value;
         return Promise.resolve();
@@ -88,6 +92,14 @@ describe("Playwright context guard", () => {
           redirectedFrom: () => null,
         }),
         continue: () => {
+          continued = true;
+          return Promise.resolve();
+        },
+        fetch: () =>
+          Promise.resolve({
+            status: () => 200,
+          }),
+        fulfill: () => {
           continued = true;
           return Promise.resolve();
         },

@@ -19,6 +19,9 @@ export async function createGuardedContext(
   options: BrowserContextOptions = {},
 ): Promise<BrowserContext> {
   const context = await browser.newContext(secureContextOptions(options));
+  await context.addInitScript({
+    content: `if ('serviceWorker' in navigator) { Object.defineProperty(navigator.serviceWorker, 'register', { configurable: false, writable: false, value: function () { return Promise.reject(new DOMException('BLOCK_SERVICE_WORKER', 'NotAllowedError')); } }); }`,
+  });
   await context.route("**/*", async (route) => {
     const request = route.request();
     const decision = decideEgress(policy, {
@@ -35,8 +38,21 @@ export async function createGuardedContext(
               : "other",
       isRedirect: request.redirectedFrom() !== null,
     });
-    if (decision.allow) await route.continue();
-    else await route.abort("blockedbyclient");
+    if (!decision.allow) {
+      await route.abort("blockedbyclient");
+      return;
+    }
+    try {
+      const response = await route.fetch({ maxRedirects: 0 });
+      if (response.status() >= 300 && response.status() < 400) {
+        await response.dispose();
+        await route.abort("blockedbyclient");
+        return;
+      }
+      await route.fulfill({ response });
+    } catch {
+      await route.abort("blockedbyclient");
+    }
   });
   await context.routeWebSocket(/.*/u, (websocket) =>
     websocket.close({ code: 1008, reason: "BLOCK_WEBSOCKET" }),

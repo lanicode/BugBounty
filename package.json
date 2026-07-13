@@ -16,7 +16,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "test:egress": "vitest run tests/unit/egress tests/integration/egress-loopback.test.ts",
+    "test:egress": "vitest run tests/unit/egress tests/integration/*loopback.test.ts",
     "doctor": "tsx apps/cli/index.ts doctor",
     "validate": "tsx apps/cli/index.ts validate",
     "policy:hash": "tsx apps/cli/index.ts policy:hash",
