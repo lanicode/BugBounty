@@ -2,17 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "version",
-    "proposal_id",
-    "action",
-    "mode",
-    "platform",
-    "target_url",
-    "method",
-    "required_secret_ref",
-    "human_checkpoint"
-  ],
+  "required": ["version", "proposal_id", "action_id", "mode", "parameters"],
   "properties": {
     "version": { "const": 1 },
     "proposal_id": {
@@ -21,31 +11,43 @@
       "maxLength": 128,
       "pattern": "^[A-Za-z0-9_-]+$"
     },
-    "action": {
-      "enum": [
-        "program_read",
-        "policy_read",
-        "account_create_local",
-        "program_rules_accept",
-        "terms_accept",
-        "report_submit"
-      ]
+    "action_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]+$"
     },
     "mode": { "enum": ["simulation", "external"] },
-    "platform": { "enum": ["local_mock", "hackerone"] },
-    "target_url": { "type": "string", "minLength": 1, "maxLength": 2048 },
-    "method": { "enum": ["GET", "POST"] },
-    "required_secret_ref": {
+    "parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "campaign_ref",
+        "policy_hash_sha256",
+        "scope_ref",
+        "account_ref",
+        "object_ref",
+        "payload_ref"
+      ],
+      "properties": {
+        "campaign_ref": { "$ref": "#/$defs/referenceOrNull" },
+        "policy_hash_sha256": {
+          "type": ["string", "null"],
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "scope_ref": { "$ref": "#/$defs/referenceOrNull" },
+        "account_ref": { "$ref": "#/$defs/referenceOrNull" },
+        "object_ref": { "$ref": "#/$defs/referenceOrNull" },
+        "payload_ref": { "$ref": "#/$defs/referenceOrNull" }
+      }
+    }
+  },
+  "$defs": {
+    "referenceOrNull": {
       "type": ["string", "null"],
-      "pattern": "^keychain://[A-Za-z0-9._/-]+$"
-    },
-    "human_checkpoint": {
-      "enum": [
-        "not_required",
-        "program_policy_acceptance",
-        "terms_acceptance",
-        "report_submission_approval"
-      ]
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$"
     }
   }
 }

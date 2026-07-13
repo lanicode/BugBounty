@@ -1,4 +1,7 @@
-import type { PlatformAdapter } from "./adapters.js";
+import {
+  assertGenuineMockPlatformAdapter,
+  type PlatformAdapter,
+} from "./adapters.js";
 import {
   compilePlatformPolicy,
   verifySourceAcceptance,
@@ -23,6 +26,7 @@ export class ProgramCatalogService {
     assertActive(signal);
     if (adapter.kind !== "local_mock")
       throw new SecurityError("EXTERNAL_INTEGRATIONS_DISABLED");
+    assertGenuineMockPlatformAdapter(adapter);
     const snapshots = await adapter.listProgramSnapshots(signal);
     assertActive(signal);
     const entries = snapshots.map((snapshot) => {
