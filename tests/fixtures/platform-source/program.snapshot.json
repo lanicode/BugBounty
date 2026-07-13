@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "source": {
+    "kind": "offline_fixture",
+    "platform": "hackerone",
+    "source_revision": "fixture-001",
+    "retrieved_at": "2026-07-13T12:00:00Z"
+  },
+  "program": {
+    "handle": "local_fixture_program",
+    "display_name": "Local Fixture Program"
+  },
+  "policy": {
+    "content_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "network": {
+    "targets": [
+      {
+        "scheme": "https",
+        "host": "api.example.test",
+        "ports": [443],
+        "path_prefixes": ["/api/"]
+      },
+      {
+        "scheme": "https",
+        "host": "app.example.test",
+        "ports": [443],
+        "path_prefixes": ["/"]
+      }
+    ],
+    "supporting_hosts": [
+      {
+        "scheme": "https",
+        "host": "cdn.example.test",
+        "ports": [443],
+        "allowed_methods": ["GET", "HEAD"],
+        "capture": "metadata_only"
+      }
+    ],
+    "blocked_hosts": ["blocked.example.test"]
+  }
+}
