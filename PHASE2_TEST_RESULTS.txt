@@ -1,0 +1,109 @@
+BUG BOUNTY COPILOT - PHASE 2 TEST RESULTS
+Date: 2026-07-13
+Branch: codex/phase-2-platform-source
+Phase-1 baseline: 0f0f508765ebec663c2d09dc22fa408c1de46a4f
+Tested implementation commit: b0a2b597e66d63dab3580ddbc19ac716fba8b79d
+Runtime: Node.js v24.14.0, pnpm 11.7.0
+
+FINAL STATIC AND BUILD GATES
+PASS  pnpm typecheck
+      tsc --noEmit
+PASS  pnpm lint
+      eslint . --max-warnings 0
+      0 errors, 0 warnings
+PASS  pnpm format:check
+      prettier --check .
+PASS  pnpm build
+      tsc -p tsconfig.build.json
+
+FINAL COMPLETE TEST RUN
+Command: pnpm test
+Result: PASS
+Test Files: 45 passed / 45
+Tests: 207 passed / 207
+Disabled or skipped to obtain green: 0
+Network boundary: only in-process mocks and 127.0.0.1 servers
+Notable runtime notice: Node emitted ExperimentalWarning for node:sqlite
+
+FINAL PROPERTY RUN
+Command: pnpm exec vitest run tests/property
+Result: PASS
+Test Files: 6 passed / 6
+Tests: 10 passed / 10
+Configured generated runs: 1,150 total
+  egress: 300
+  platform source: 200
+  ownership ledger: 200
+  account simulation: 50
+  platform ranking: 100
+  phase-2 security boundaries: 300
+
+FINAL PHASE-1 EGRESS REGRESSION
+Command: pnpm test:egress
+Result: PASS
+Test Files: 4 passed / 4
+Tests: 11 passed / 11
+Targets: ephemeral 127.0.0.1 servers only
+
+FINAL PLATFORM-SOURCE REGRESSION
+Command: pnpm test:platform-source
+Result: PASS
+Test Files: 4 passed / 4
+Tests: 12 passed / 12
+Sources: local immutable fixtures only
+
+FINAL COVERAGE RUN
+Command: pnpm test:coverage
+Result: PASS
+Test Files: 45 passed / 45
+Tests: 207 passed / 207
+Statements: 87.72% (2781/3170)
+Branches:   81.78% (1837/2246)
+Functions:  94.49% (601/636)
+Lines:      88.89% (2674/3008)
+Thresholds: statements 80%, branches 75%, functions 80%, lines 80%
+
+DASHBOARD AND LOOPBACK SMOKE
+Command: pnpm dashboard
+Result: PASS
+Dashboard: http://127.0.0.1:4173
+Demo-SaaS: random ephemeral 127.0.0.1 port
+Command: curl --fail --silent --show-error http://127.0.0.1:4173/health
+Result: PASS
+Response: {"status":"ok","mode":"simulation","externalIntegrationsEnabled":false}
+Shutdown: clean Ctrl-C, exit 0
+
+DEPENDENCY AUDIT
+Command: pnpm audit --audit-level high
+Result: PASS
+Output: No known vulnerabilities found
+Endpoint: official npm registry only; no product target
+
+REPOSITORY SAFETY CHECKS
+PASS  git diff --check
+PASS  Phase-1 protected-path diff is empty
+PASS  no merge commits after Phase-1 baseline
+PASS  no tracked .local, HAR, SQLite, DB, key, PEM, token, or runtime-secret file
+PASS  final git status is clean after completion commit
+
+IMPORTANT INTERMEDIATE RESULTS (NO TEST WAS DISABLED)
+1. The first complete suite inside the managed socket sandbox produced:
+   40 passed files, 4 failed files; 191 passed tests, 10 failed tests.
+   Every failure was listen EPERM on 127.0.0.1. The identical suite was
+   rerun with permission for local loopback sockets and passed completely.
+2. An early lint run found 19 errors. All code was corrected; final lint
+   passes with --max-warnings 0.
+3. A property run found counterexample [["cdn"],false]. The generated target
+   overlapped the fixture's supporting-host class and was not a valid input.
+   The generator was constrained to valid disjoint host classes. The full
+   property and platform-source suites were rerun and pass; no assertion was
+   weakened.
+4. The first audit in the network sandbox received ENOTFOUND for the official
+   npm registry. The same audit was rerun with official-registry access and
+   returned No known vulnerabilities found.
+
+SECURITY CONTACT CONFIRMATION
+No HackerOne, Bugcrowd, real platform, example host, or Bug Bounty target was
+contacted by product code or tests. Browser and HTTP tests used only 127.0.0.1.
+No real token, cookie, password, TOTP secret, e-mail credential, or browser
+session was requested or used.

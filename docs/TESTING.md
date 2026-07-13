@@ -1,17 +1,24 @@
-# Phase-1-Testnachweis
+# Testnachweis
 
-Stand: 13. Juli 2026. Alle Netzwerk-Integrationstests liefen ausschließlich gegen kurzlebige Server auf `127.0.0.1`.
+Stand: 13. Juli 2026. Der vollständige, maschinenlesbare Phase-2-Lauf steht in `PHASE2_TEST_RESULTS.txt`.
 
-## Ergebnis
+Alle Netzwerk- und Browser-Integrationstests liefen ausschließlich gegen kurzlebige Server auf `127.0.0.1`. Beispiel- und `.invalid`-Hosts wurden nur als nicht aufgelöste Testdaten verwendet.
 
-- Vollständige Suite: 12 Testdateien, 36 Tests, 36 bestanden.
-- Egress-Suite: echte Chromium- sowie Unit- und HTTP-Loopback-Tests; alle bestanden.
-- Coverage: 86,18 % Statements, 79,90 % Branches, 90,58 % Funktionen, 87,92 % Zeilen.
+## Aktuelles Ergebnis
+
+- Vollständige Suite: 45 Testdateien, 207 Tests, alle bestanden.
+- Property-Suite: 6 Testdateien, 10 Tests mit insgesamt 1.150 generierten Läufen, alle bestanden.
+- Phase-1-Egress-Regression: 4 Testdateien, 11 Tests, alle bestanden.
+- Lokale ProgramSource-Suite: 4 Testdateien, 12 Tests, alle bestanden.
+- Statements: 87,72 % (2781/3170).
+- Branches: 81,78 % (1837/2246).
+- Funktionen: 94,49 % (601/636).
+- Zeilen: 88,89 % (2674/3008).
 - TypeScript-Typprüfung, ESLint ohne Warnungen, Prettier-Check und Build: bestanden.
 - Dependency-Audit: keine bekannten Schwachstellen.
 
-## Abgedeckte Sicherheitsinvarianten
+## Abgedeckte Phase-2-Invarianten
 
-Exact-Host/Userinfo/Port/HTTP/IDN/Case/Trailing-Dot/IPv6- und Pfadtraversalentscheidungen; Target-/Supporting-Trennung; Capture-Modi; Redirects; echte Chromium-Popups, neue Seiten, Frames, Fetch, Formulare sowie WebSocket-/Service-Worker-Sperren; Header-/Query-/JSON-/Textredaktion; Größen-/Binär-/Content-Type-Verhalten; Quarantäne; HMAC-Stabilität; Schema-/Placeholder-/Policy-Drift; Vertragslaufzeit, Asset, Konto, Risk-Tier, Budget, Parallelität, Kill Switch und AbortSignal; Eventverschlüsselung/Manipulation/kein Überschreiben; Audit-Hashkette; Secret-Marker-Abwesenheit in persistierten Events; Loopback-Pre-Request-Entscheidung.
+Strikte JSON-/YAML-Importe; immutable Policy-Versionen und Diffs; Policy Drift; Kampagnenfreigaben und vollständige Vertragsdigests; Identitäts-Lifecycle und unveränderliche Account-Rollen-Scope-Snapshots; kryptografisch gebundene Ownership-Receipts; unbekannte, fremde, abgelaufene und policy-fremde Objekte; Approval-Tampering und doppelte Verarbeitung; SQLite-Migrationen einschließlich Cross-Program-Acceptance-Schutz; revisions- und auditgebundener fail-closed Kill Switch; Revalidierung aktiver Kampagnen beim Lesen; geschlossene Adapterregistrierung; deaktivierte externe Integrationen; vollständige Simulations-Gate-Kette; Demo-SaaS; interaktive CLI; 18-Schritte-Simulation; verschlüsselte Events; Dashboard-Host-/Origin-/CSRF-/Content-Type-/Größen-/UTF-8-Grenzen; echte Chromium-Navigation ausschließlich auf Loopback.
 
-Property-Tests erzeugen 300 Hostvarianten sowie generierte Traversal-, Header- und rekursive JSON-Fälle.
+Die ursprünglichen Phase-1-Invarianten für Egress, Redaktion, Secret Store, Event Store, Policy, Audit und Browserkontrolle bleiben unverändert und vollständig in der Gesamtsuite enthalten.
