@@ -156,14 +156,10 @@ describe("ControlPlaneStore", () => {
     expect(store.isKillSwitchActive()).toBe(false);
     store.setKillSwitch(true, "local-reviewer", LATER);
     expect(store.isKillSwitchActive()).toBe(true);
-    store.setKillSwitch(
-      false,
-      "local-reviewer",
-      "2026-07-13T14:00:00.000Z",
+    store.setKillSwitch(false, "local-reviewer", "2026-07-13T14:00:00.000Z");
+    expect(() => store.setKillSwitch(true, "local-reviewer", LATER)).toThrow(
+      "KILL_SWITCH_AUDIT_FAILED",
     );
-    expect(() =>
-      store.setKillSwitch(true, "local-reviewer", LATER),
-    ).toThrow("KILL_SWITCH_AUDIT_FAILED");
     expect(store.isKillSwitchActive()).toBe(true);
     const report = store.insertReportDraft({
       id: "report-local",

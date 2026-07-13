@@ -611,9 +611,7 @@ function policyFromRow(row: Row): StoredPolicyVersion {
       maxConcurrency: integerValue(requestLimits["maxConcurrency"]),
     },
     allowedTestClasses: stringArrayValue(document["allowedTestClasses"]),
-    forbiddenTestClasses: stringArrayValue(
-      document["forbiddenTestClasses"],
-    ),
+    forbiddenTestClasses: stringArrayValue(document["forbiddenTestClasses"]),
     rules: stringArrayValue(document["rules"]),
     unclearRules: stringArrayValue(document["unclearRules"]),
   });
@@ -939,7 +937,8 @@ function enumText<const T extends string>(
 ): T {
   const value = text(row, key);
   const matched = allowed.find((candidate) => candidate === value);
-  if (matched === undefined) throw new SecurityError("CONTROL_PLANE_ROW_INVALID");
+  if (matched === undefined)
+    throw new SecurityError("CONTROL_PLANE_ROW_INVALID");
   return matched;
 }
 
@@ -955,10 +954,7 @@ function stringArray(row: Row, key: string): readonly string[] {
   return Object.freeze(value.map((item) => item));
 }
 
-function jsonObject(
-  row: Row,
-  key: string,
-): Readonly<Record<string, unknown>> {
+function jsonObject(row: Row, key: string): Readonly<Record<string, unknown>> {
   let value: unknown;
   try {
     value = JSON.parse(text(row, key)) as unknown;
@@ -1004,7 +1000,10 @@ function campaignContractFromRow(row: Row): CampaignRecord["contract"] {
   const writeActionsAllowed = value["writeActionsAllowed"];
   if (maxConcurrency !== 1 || writeActionsAllowed !== false)
     throw new SecurityError("CONTROL_PLANE_ROW_INVALID");
-  const riskTiers = exactTupleValue(value["allowedRiskTiers"], "tier_0_offline");
+  const riskTiers = exactTupleValue(
+    value["allowedRiskTiers"],
+    "tier_0_offline",
+  );
   const methods = stringArrayValue(value["allowedMethods"]);
   if (
     methods.some(
@@ -1035,8 +1034,7 @@ function campaignContractFromRow(row: Row): CampaignRecord["contract"] {
 }
 
 function recordValue(value: unknown): Readonly<Record<string, unknown>> {
-  if (!isRecord(value))
-    throw new SecurityError("CONTROL_PLANE_ROW_INVALID");
+  if (!isRecord(value)) throw new SecurityError("CONTROL_PLANE_ROW_INVALID");
   return value;
 }
 
