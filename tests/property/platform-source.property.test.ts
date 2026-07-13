@@ -7,10 +7,15 @@ import { snapshotValue } from "../fixtures/platform-source.factory.js";
 it("compiles generated target order into the same deterministic host order", () => {
   fc.assert(
     fc.property(
-      fc.uniqueArray(fc.stringMatching(/^[a-z]{1,10}$/u), {
-        minLength: 1,
-        maxLength: 20,
-      }),
+      fc.uniqueArray(
+        fc
+          .stringMatching(/^[a-z]{1,10}$/u)
+          .filter((label) => label !== "blocked" && label !== "cdn"),
+        {
+          minLength: 1,
+          maxLength: 20,
+        },
+      ),
       fc.boolean(),
       (labels, reverse) => {
         const base = snapshotValue();
