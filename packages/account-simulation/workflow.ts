@@ -146,12 +146,15 @@ export class AccountSimulationCoordinator {
     }
     if (current === undefined)
       throw new SecurityError("ACCOUNT_WORKFLOW_NOT_FOUND");
-    if (
-      current.revision !== proposal.expected_revision ||
-      current.accountRef !== proposal.account_ref ||
-      current.applicationRef !== proposal.application_ref
-    )
+    if (current.revision !== proposal.expected_revision)
       throw new SecurityError("ACCOUNT_WORKFLOW_REVISION_MISMATCH");
+    if (
+      current.accountRef !== proposal.account_ref ||
+      current.applicationRef !== proposal.application_ref ||
+      current.role !== proposal.role ||
+      current.policyHash !== proposal.policy_hash_sha256
+    )
+      throw new SecurityError("ACCOUNT_WORKFLOW_BINDING_MISMATCH");
     if (proposal.action === "retire") {
       if (proposal.checkpoint_ref !== null || current.state !== "ACTIVE")
         throw new SecurityError("ACCOUNT_RETIRE_INVALID");
@@ -298,6 +301,9 @@ export class MockLocalAccountApplication implements AccountSimulationAdapter {
     };
   }
 }
+
+/** Phase-2 provider name used by the control plane; it remains in-process only. */
+export class MockAccountProvider extends MockLocalAccountApplication {}
 
 export class DisabledExternalAccountAdapter implements AccountSimulationAdapter {
   public readonly kind = "external_disabled" as const;

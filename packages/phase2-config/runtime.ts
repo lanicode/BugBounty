@@ -25,6 +25,7 @@ export type IntegrationDisableReason =
   | "CONFIG_DISABLED"
   | "CONFIG_INVALID"
   | "CONFIG_MISSING"
+  | "PHASE2_EXTERNAL_DISABLED"
   | "SECRETS_UNAVAILABLE"
   | "SIMULATION_MODE";
 
@@ -34,17 +35,17 @@ export interface Phase2RuntimeState {
   readonly disableReason: IntegrationDisableReason | null;
 }
 
-export const SAFE_PHASE2_CONFIG: Phase2RuntimeConfig = Object.freeze({
+export const SAFE_PHASE2_CONFIG: Phase2RuntimeConfig = freezeConfig({
   version: 1,
   mode: "simulation",
   external_integrations_enabled: false,
-  allowed_platform_hosts: Object.freeze([]),
-  budgets: Object.freeze({ max_actions_total: 20, max_concurrency: 1 }),
-  human_controls: Object.freeze({
+  allowed_platform_hosts: [],
+  budgets: { max_actions_total: 20, max_concurrency: 1 },
+  human_controls: {
     require_program_policy_acceptance: true,
     require_terms_acceptance: true,
     require_report_submission_approval: true,
-  }),
+  },
 });
 
 const ajv = new Ajv2020({ allErrors: true, strict: true, useDefaults: false });
@@ -64,10 +65,14 @@ export function resolvePhase2Runtime(
   } catch {
     return disabled(SAFE_PHASE2_CONFIG, "CONFIG_INVALID");
   }
-  const config: Phase2RuntimeConfig = {
-    ...value,
+  const config = freezeConfig({
+    version: value.version,
+    mode: value.mode,
+    external_integrations_enabled: value.external_integrations_enabled,
     allowed_platform_hosts: hosts,
-  };
+    budgets: value.budgets,
+    human_controls: value.human_controls,
+  });
   if (config.mode === "simulation") return disabled(config, "SIMULATION_MODE");
   if (!config.external_integrations_enabled)
     return disabled(config, "CONFIG_DISABLED");
@@ -75,11 +80,7 @@ export function resolvePhase2Runtime(
     return disabled(config, "SECRETS_UNAVAILABLE");
   if (!capabilities.externalAdapterAvailable)
     return disabled(config, "ADAPTER_UNAVAILABLE");
-  return {
-    config,
-    externalIntegrationsEnabled: true,
-    disableReason: null,
-  };
+  return disabled(config, "PHASE2_EXTERNAL_DISABLED");
 }
 
 export async function loadPhase2Runtime(
@@ -107,5 +108,29 @@ function disabled(
   config: Phase2RuntimeConfig,
   disableReason: IntegrationDisableReason,
 ): Phase2RuntimeState {
-  return { config, externalIntegrationsEnabled: false, disableReason };
+  return Object.freeze({
+    config: freezeConfig(config),
+    externalIntegrationsEnabled: false,
+    disableReason,
+  });
+}
+
+function freezeConfig(config: Phase2RuntimeConfig): Phase2RuntimeConfig {
+  return Object.freeze({
+    version: config.version,
+    mode: config.mode,
+    external_integrations_enabled: config.external_integrations_enabled,
+    allowed_platform_hosts: Object.freeze([...config.allowed_platform_hosts]),
+    budgets: Object.freeze({
+      max_actions_total: config.budgets.max_actions_total,
+      max_concurrency: config.budgets.max_concurrency,
+    }),
+    human_controls: Object.freeze({
+      require_program_policy_acceptance:
+        config.human_controls.require_program_policy_acceptance,
+      require_terms_acceptance: config.human_controls.require_terms_acceptance,
+      require_report_submission_approval:
+        config.human_controls.require_report_submission_approval,
+    }),
+  });
 }

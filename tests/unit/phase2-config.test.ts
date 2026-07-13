@@ -67,12 +67,61 @@ describe("phase 2 integration gate", () => {
     ).toMatchObject({ disableReason: "ADAPTER_UNAVAILABLE" });
   });
 
-  it("requires every enablement condition simultaneously", () => {
+  it("never enables external integrations during phase 2", () => {
+    for (const mode of ["simulation", "external"] as const) {
+      for (const configured of [false, true]) {
+        for (const secretsAvailable of [false, true]) {
+          for (const externalAdapterAvailable of [false, true]) {
+            const state = resolvePhase2Runtime(
+              {
+                ...externalConfig(),
+                mode,
+                external_integrations_enabled: configured,
+              },
+              { secretsAvailable, externalAdapterAvailable },
+            );
+            expect(state.externalIntegrationsEnabled).toBe(false);
+          }
+        }
+      }
+    }
     expect(
       resolvePhase2Runtime(externalConfig(), {
         secretsAvailable: true,
         externalAdapterAvailable: true,
-      }).externalIntegrationsEnabled,
-    ).toBe(true);
+      }),
+    ).toMatchObject({
+      externalIntegrationsEnabled: false,
+      disableReason: "PHASE2_EXTERNAL_DISABLED",
+    });
+  });
+
+  it("returns defensive deeply frozen runtime state", () => {
+    const value = {
+      ...externalConfig(),
+      allowed_platform_hosts: ["api.platform.invalid"],
+      budgets: { max_actions_total: 7, max_concurrency: 1 as const },
+      human_controls: {
+        require_program_policy_acceptance: true as const,
+        require_terms_acceptance: true as const,
+        require_report_submission_approval: true as const,
+      },
+    };
+    const state = resolvePhase2Runtime(value, {
+      secretsAvailable: true,
+      externalAdapterAvailable: true,
+    });
+    value.allowed_platform_hosts[0] = "mutated.invalid";
+    value.budgets.max_actions_total = 999;
+
+    expect(state.config.allowed_platform_hosts).toEqual([
+      "api.platform.invalid",
+    ]);
+    expect(state.config.budgets.max_actions_total).toBe(7);
+    expect(Object.isFrozen(state)).toBe(true);
+    expect(Object.isFrozen(state.config)).toBe(true);
+    expect(Object.isFrozen(state.config.allowed_platform_hosts)).toBe(true);
+    expect(Object.isFrozen(state.config.budgets)).toBe(true);
+    expect(Object.isFrozen(state.config.human_controls)).toBe(true);
   });
 });

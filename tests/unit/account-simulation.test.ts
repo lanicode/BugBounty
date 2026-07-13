@@ -27,12 +27,17 @@ const proposal = (
 
 const coordinator = (
   adapter: MockLocalAccountApplication,
-  options: { maxActions?: number; signal?: AbortSignal; now?: () => Date } = {},
+  options: {
+    maxActions?: number;
+    signal?: AbortSignal;
+    now?: () => Date;
+    allowedAccounts?: ReadonlySet<string>;
+  } = {},
 ) =>
   new AccountSimulationCoordinator(
     adapter,
     POLICY_HASH,
-    new Set(["account-a"]),
+    options.allowedAccounts ?? new Set(["account-a"]),
     options.maxActions ?? 20,
     options.signal ?? new AbortController().signal,
     options.now ?? (() => new Date("2026-07-13T12:00:00Z")),
@@ -104,6 +109,57 @@ describe("local account workflow simulation", () => {
     await expect(workflow.execute(resume)).rejects.toThrow(
       "ACCOUNT_WORKFLOW_REVISION_MISMATCH",
     );
+  });
+
+  it("binds resume to the stored role, policy, application and account", async () => {
+    const app = new MockLocalAccountApplication("local-app:fixture", {
+      "account-a": ["captcha"],
+    });
+    const workflow = coordinator(app, {
+      allowedAccounts: new Set(["account-a", "account-b"]),
+    });
+    const paused = await workflow.execute(proposal());
+    const checkpoint = paused.workflow.checkpoint?.checkpointRef;
+    if (checkpoint === undefined) throw new Error("MISSING_CHECKPOINT");
+    const resume = proposal({
+      proposal_id: "bound-resume",
+      action: "resume",
+      expected_revision: 1,
+      checkpoint_ref: checkpoint,
+    });
+    app.satisfyCheckpoint(checkpoint);
+
+    await expect(
+      workflow.execute({ ...resume, role: "member" }),
+    ).rejects.toThrow("ACCOUNT_WORKFLOW_BINDING_MISMATCH");
+    await expect(
+      workflow.execute({ ...resume, account_ref: "account-b" }),
+    ).rejects.toThrow("ACCOUNT_WORKFLOW_BINDING_MISMATCH");
+    await expect(
+      workflow.execute({ ...resume, application_ref: "local-app:other" }),
+    ).rejects.toThrow("ACCOUNT_APPLICATION_SCOPE_BLOCKED");
+    await expect(
+      workflow.execute({ ...resume, policy_hash_sha256: "b".repeat(64) }),
+    ).rejects.toThrow("ACCOUNT_POLICY_DRIFT");
+
+    expect(workflow.get("workflow-1")).toMatchObject({
+      role: "owner",
+      accountRef: "account-a",
+      applicationRef: "local-app:fixture",
+      policyHash: POLICY_HASH,
+      state: "PAUSED",
+      revision: 1,
+    });
+    await expect(workflow.execute(resume)).resolves.toMatchObject({
+      workflow: {
+        role: "owner",
+        accountRef: "account-a",
+        applicationRef: "local-app:fixture",
+        policyHash: POLICY_HASH,
+        state: "ACTIVE",
+        revision: 2,
+      },
+    });
   });
 
   it("supports deterministic local retirement but no external adapter", async () => {

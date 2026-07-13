@@ -133,6 +133,8 @@ export class OwnershipLedger {
   readonly #accounts = new Map<string, AccountOwnership>();
   readonly #objects = new Map<string, ObjectOwnership>();
   readonly #canaries = new Set<string>();
+  readonly #receiptCanonicals = new Map<string, string>();
+  #operationTail: Promise<void> = Promise.resolve();
 
   public constructor(
     private readonly authority: SimulationReceiptAuthority,
@@ -140,61 +142,69 @@ export class OwnershipLedger {
     private readonly currentPolicyHash: string,
   ) {}
 
-  public async activateAccount(receipt: SimulationReceipt): Promise<void> {
-    this.assertReceipt(receipt, "ACCOUNT_ACTIVE");
-    const key = accountKey(receipt.applicationRef, receipt.accountRef);
-    const existing = this.#accounts.get(key);
-    if (existing !== undefined) {
-      if (existing.receiptId === receipt.receiptId) return;
-      throw new SecurityError("OWNERSHIP_ACCOUNT_CONFLICT");
-    }
-    const record: AccountOwnership = Object.freeze({
-      receiptId: receipt.receiptId,
-      applicationRef: receipt.applicationRef,
-      accountRef: receipt.accountRef,
-      policyHash: receipt.policyHash,
-      state: "ACTIVE",
+  public activateAccount(receipt: SimulationReceipt): Promise<void> {
+    return this.serialize(async () => {
+      this.assertReceipt(receipt, "ACCOUNT_ACTIVE");
+      const key = accountKey(receipt.applicationRef, receipt.accountRef);
+      const existing = this.#accounts.get(key);
+      const receiptCanonical = canonicalJson(receipt);
+      if (this.isExactReceiptReplay(receipt, receiptCanonical, existing))
+        return;
+      if (existing !== undefined)
+        throw new SecurityError("OWNERSHIP_ACCOUNT_CONFLICT");
+      const record: AccountOwnership = Object.freeze({
+        receiptId: receipt.receiptId,
+        applicationRef: receipt.applicationRef,
+        accountRef: receipt.accountRef,
+        policyHash: receipt.policyHash,
+        state: "ACTIVE",
+      });
+      await this.journal.append(
+        receipt.receiptId,
+        eventFor("ACCOUNT_ACTIVATED", record),
+      );
+      this.#accounts.set(key, record);
+      this.#receiptCanonicals.set(receipt.receiptId, receiptCanonical);
     });
-    await this.journal.append(
-      receipt.receiptId,
-      eventFor("ACCOUNT_ACTIVATED", record),
-    );
-    this.#accounts.set(key, record);
   }
 
-  public async registerObject(receipt: SimulationReceipt): Promise<void> {
-    this.assertReceipt(receipt, "OBJECT_CREATED");
-    if (receipt.objectRef === null || receipt.canaryHmac === null)
-      throw new SecurityError("OWNERSHIP_RECEIPT_INVALID");
-    const account = this.#accounts.get(
-      accountKey(receipt.applicationRef, receipt.accountRef),
-    );
-    if (account?.state !== "ACTIVE")
-      throw new SecurityError("OWNERSHIP_ACCOUNT_NOT_ACTIVE");
-    const key = objectKey(receipt.applicationRef, receipt.objectRef);
-    const existing = this.#objects.get(key);
-    if (existing !== undefined) {
-      if (existing.receiptId === receipt.receiptId) return;
-      throw new SecurityError("OWNERSHIP_OBJECT_CONFLICT");
-    }
-    if (this.#canaries.has(receipt.canaryHmac))
-      throw new SecurityError("OWNERSHIP_CANARY_COLLISION");
-    const record: ObjectOwnership = Object.freeze({
-      receiptId: receipt.receiptId,
-      applicationRef: receipt.applicationRef,
-      accountRef: receipt.accountRef,
-      objectRef: receipt.objectRef,
-      policyHash: receipt.policyHash,
-      canaryHmac: receipt.canaryHmac,
-      locatorPseudonym: receipt.locatorPseudonym,
-      state: "ACTIVE",
+  public registerObject(receipt: SimulationReceipt): Promise<void> {
+    return this.serialize(async () => {
+      this.assertReceipt(receipt, "OBJECT_CREATED");
+      if (receipt.objectRef === null || receipt.canaryHmac === null)
+        throw new SecurityError("OWNERSHIP_RECEIPT_INVALID");
+      const key = objectKey(receipt.applicationRef, receipt.objectRef);
+      const existing = this.#objects.get(key);
+      const receiptCanonical = canonicalJson(receipt);
+      if (this.isExactReceiptReplay(receipt, receiptCanonical, existing))
+        return;
+      const account = this.#accounts.get(
+        accountKey(receipt.applicationRef, receipt.accountRef),
+      );
+      if (account?.state !== "ACTIVE")
+        throw new SecurityError("OWNERSHIP_ACCOUNT_NOT_ACTIVE");
+      if (existing !== undefined)
+        throw new SecurityError("OWNERSHIP_OBJECT_CONFLICT");
+      if (this.#canaries.has(receipt.canaryHmac))
+        throw new SecurityError("OWNERSHIP_CANARY_COLLISION");
+      const record: ObjectOwnership = Object.freeze({
+        receiptId: receipt.receiptId,
+        applicationRef: receipt.applicationRef,
+        accountRef: receipt.accountRef,
+        objectRef: receipt.objectRef,
+        policyHash: receipt.policyHash,
+        canaryHmac: receipt.canaryHmac,
+        locatorPseudonym: receipt.locatorPseudonym,
+        state: "ACTIVE",
+      });
+      await this.journal.append(
+        receipt.receiptId,
+        eventFor("OBJECT_REGISTERED", record),
+      );
+      this.#objects.set(key, record);
+      this.#canaries.add(receipt.canaryHmac);
+      this.#receiptCanonicals.set(receipt.receiptId, receiptCanonical);
     });
-    await this.journal.append(
-      receipt.receiptId,
-      eventFor("OBJECT_REGISTERED", record),
-    );
-    this.#objects.set(key, record);
-    this.#canaries.add(receipt.canaryHmac);
   }
 
   public assertOwned(input: {
@@ -215,23 +225,25 @@ export class OwnershipLedger {
     return record;
   }
 
-  public async retireObject(input: {
+  public retireObject(input: {
     readonly eventId: string;
     readonly applicationRef: string;
     readonly accountRef: string;
     readonly objectRef: string;
     readonly policyHash: string;
   }): Promise<void> {
-    const record = this.assertOwned(input);
-    const retired = Object.freeze({ ...record, state: "RETIRED" as const });
-    await this.journal.append(
-      input.eventId,
-      eventFor("OBJECT_RETIRED", retired),
-    );
-    this.#objects.set(
-      objectKey(input.applicationRef, input.objectRef),
-      retired,
-    );
+    return this.serialize(async () => {
+      const record = this.assertOwned(input);
+      const retired = Object.freeze({ ...record, state: "RETIRED" as const });
+      await this.journal.append(
+        input.eventId,
+        eventFor("OBJECT_RETIRED", retired),
+      );
+      this.#objects.set(
+        objectKey(input.applicationRef, input.objectRef),
+        retired,
+      );
+    });
   }
 
   private assertReceipt(
@@ -242,6 +254,30 @@ export class OwnershipLedger {
       throw new SecurityError("OWNERSHIP_RECEIPT_INVALID");
     if (receipt.policyHash !== this.currentPolicyHash)
       throw new SecurityError("OWNERSHIP_POLICY_DRIFT");
+  }
+
+  private isExactReceiptReplay(
+    receipt: SimulationReceipt,
+    receiptCanonical: string,
+    existing: AccountOwnership | ObjectOwnership | undefined,
+  ): boolean {
+    const registered = this.#receiptCanonicals.get(receipt.receiptId);
+    if (registered === undefined) return false;
+    if (
+      registered === receiptCanonical &&
+      existing?.receiptId === receipt.receiptId
+    )
+      return true;
+    throw new SecurityError("OWNERSHIP_RECEIPT_CONFLICT");
+  }
+
+  private serialize<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.#operationTail.then(operation, operation);
+    this.#operationTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
   }
 }
 
