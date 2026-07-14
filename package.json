@@ -15,6 +15,7 @@
     "lint": "eslint . --max-warnings 0",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:browser": "PLAYWRIGHT_NO_COPY_PROMPT=1 playwright test --config playwright.config.ts",
     "test:coverage": "vitest run --coverage --maxWorkers=1",
     "test:egress": "vitest run tests/unit/egress tests/integration/*loopback.test.ts",
     "test:platform-source": "vitest run tests/unit/platform-source tests/property/platform-source.property.test.ts",
