@@ -1,52 +1,37 @@
 import { createHash } from "node:crypto";
 import { types } from "node:util";
+import {
+  LOCAL_JOURNEY_CATALOG_ID,
+  journeyCapabilitiesFor,
+  journeyPlanFor,
+} from "../../../packages/local-journey-catalog/index.js";
+import type {
+  JourneyReplayProfile,
+  JourneyRole,
+  JourneyStep,
+} from "../../../packages/local-journey-catalog/index.js";
 
-export const JOURNEY_ROLES = Object.freeze([
-  "Owner",
-  "Member",
-  "External",
-] as const);
-
-export type JourneyRole = (typeof JOURNEY_ROLES)[number];
-
-export type JourneyState = "ready" | "running" | "completed" | "blocked";
-
-export type JourneyPath =
-  | "/"
-  | "/api/v1/documents"
-  | "/api/v1/invitations"
-  | "/api/v1/organization"
-  | "/api/v1/policy"
-  | "/api/v1/projects"
-  | "/api/v1/state"
-  | "/api/v1/test-objects";
-
-export type JourneyCapability =
-  | "documents.read"
-  | "invitations.read"
-  | "organization.read"
-  | "policy.read"
-  | "projects.read"
-  | "service.read"
-  | "state.read"
-  | "test_objects.read";
-
-export interface JourneyStep {
-  readonly index: number;
-  readonly method: "GET";
-  readonly path: JourneyPath;
-  readonly capability: JourneyCapability;
-  readonly fromState: "ready" | "running";
-  readonly successState: "running" | "completed";
-}
-
-export interface JourneyReplayProfile {
-  readonly role: JourneyRole;
-  readonly purpose: "deterministic_local_replay_only";
-  readonly authentication: "not_modeled";
-  readonly authorization: "not_an_authorization_decision";
-  readonly capabilities: readonly JourneyCapability[];
-}
+export {
+  JOURNEY_ROLES,
+  LOCAL_JOURNEY_CATALOG,
+  LOCAL_JOURNEY_CATALOG_DIGEST_SHA256,
+  LOCAL_JOURNEY_CATALOG_ID,
+  LOCAL_JOURNEY_REPLAY_PROFILES,
+  LOCAL_JOURNEY_ROLE_PLANS,
+  journeyCapabilitiesFor,
+  journeyCatalog,
+  journeyPlanFor,
+} from "../../../packages/local-journey-catalog/index.js";
+export type {
+  JourneyCapability,
+  JourneyPath,
+  JourneyReplayProfile,
+  JourneyRole,
+  JourneyState,
+  JourneyStep,
+  LocalJourneyCatalog,
+  LocalJourneyCatalogId,
+} from "../../../packages/local-journey-catalog/index.js";
 
 export type LoopbackOrigin = `http://127.0.0.1:${number}`;
 
@@ -85,74 +70,16 @@ export interface JourneyEvidence {
   readonly evidenceDigestSha256: string;
 }
 
-const PATH_CAPABILITIES: Readonly<Record<JourneyPath, JourneyCapability>> =
-  Object.freeze({
-    "/": "service.read",
-    "/api/v1/documents": "documents.read",
-    "/api/v1/invitations": "invitations.read",
-    "/api/v1/organization": "organization.read",
-    "/api/v1/policy": "policy.read",
-    "/api/v1/projects": "projects.read",
-    "/api/v1/state": "state.read",
-    "/api/v1/test-objects": "test_objects.read",
-  });
-
-const ROLE_PATHS: Readonly<Record<JourneyRole, readonly JourneyPath[]>> =
-  Object.freeze({
-    Owner: Object.freeze([
-      "/",
-      "/api/v1/organization",
-      "/api/v1/projects",
-      "/api/v1/documents",
-      "/api/v1/invitations",
-      "/api/v1/test-objects",
-      "/api/v1/policy",
-      "/api/v1/state",
-    ] as const),
-    Member: Object.freeze([
-      "/",
-      "/api/v1/organization",
-      "/api/v1/projects",
-      "/api/v1/documents",
-      "/api/v1/test-objects",
-      "/api/v1/policy",
-      "/api/v1/state",
-    ] as const),
-    External: Object.freeze([
-      "/",
-      "/api/v1/organization",
-      "/api/v1/projects",
-      "/api/v1/policy",
-      "/api/v1/state",
-    ] as const),
-  });
-
-const JOURNEY_PLANS: Readonly<Record<JourneyRole, readonly JourneyStep[]>> =
-  Object.freeze({
-    Owner: makePlan(ROLE_PATHS.Owner),
-    Member: makePlan(ROLE_PATHS.Member),
-    External: makePlan(ROLE_PATHS.External),
-  });
-
-const REPLAY_PROFILES: Readonly<Record<JourneyRole, JourneyReplayProfile>> =
-  Object.freeze({
-    Owner: makeReplayProfile("Owner"),
-    Member: makeReplayProfile("Member"),
-    External: makeReplayProfile("External"),
-  });
-
 const CANONICAL_LOOPBACK_ORIGIN = /^http:\/\/127\.0\.0\.1:([1-9][0-9]{3,4})$/u;
 const SHA256 = /^[a-f0-9]{64}$/u;
 const MAX_JOURNEY_STEPS = 8;
 
 export function journeyPlan(role: unknown): readonly JourneyStep[] {
-  assertJourneyRole(role);
-  return JOURNEY_PLANS[role];
+  return journeyPlanFor(LOCAL_JOURNEY_CATALOG_ID, role);
 }
 
 export function capabilitiesFor(role: unknown): JourneyReplayProfile {
-  assertJourneyRole(role);
-  return REPLAY_PROFILES[role];
+  return journeyCapabilitiesFor(LOCAL_JOURNEY_CATALOG_ID, role);
 }
 
 export function assertLoopbackOrigin(origin: unknown): LoopbackOrigin {
@@ -180,7 +107,7 @@ export function isAllowedJourneyRequest(
   expectedOrigin: unknown,
 ): boolean {
   try {
-    assertJourneyRole(role);
+    const plan = journeyPlan(role);
     const origin = assertLoopbackOrigin(expectedOrigin);
     if (
       typeof currentIndex !== "number" ||
@@ -190,7 +117,7 @@ export function isAllowedJourneyRequest(
       method !== "GET"
     )
       return false;
-    const step = JOURNEY_PLANS[role][currentIndex];
+    const step = plan[currentIndex];
     return step !== undefined && rawUrl === `${origin}${step.path}`;
   } catch {
     return false;
@@ -219,7 +146,8 @@ export function finalizeJourneyEvidence(input: unknown): JourneyEvidence {
 
   const rawSteps = cloneExactDataArray(record["steps"]);
   const steps = rawSteps.map(normalizeStepEvidence);
-  const plannedStepCount = JOURNEY_PLANS[role].length;
+  const rolePlan = journeyPlan(role);
+  const plannedStepCount = rolePlan.length;
   if (steps.length > plannedStepCount)
     throw new Error("LOCAL_JOURNEY_EVIDENCE_INVALID");
 
@@ -255,7 +183,7 @@ export function finalizeJourneyEvidence(input: unknown): JourneyEvidence {
   );
   const planDigestSha256 = digest([
     role,
-    ...JOURNEY_PLANS[role].map((step) => [
+    ...rolePlan.map((step) => [
       step.index,
       step.method,
       step.path,
@@ -297,36 +225,6 @@ export function finalizeJourneyEvidence(input: unknown): JourneyEvidence {
     redactedScreenshotDigestsSha256,
     planDigestSha256,
     evidenceDigestSha256,
-  });
-}
-
-function makePlan(paths: readonly JourneyPath[]): readonly JourneyStep[] {
-  return Object.freeze(
-    paths.map((path, index) =>
-      Object.freeze({
-        index,
-        method: "GET" as const,
-        path,
-        capability: PATH_CAPABILITIES[path],
-        fromState: index === 0 ? ("ready" as const) : ("running" as const),
-        successState:
-          index === paths.length - 1
-            ? ("completed" as const)
-            : ("running" as const),
-      }),
-    ),
-  );
-}
-
-function makeReplayProfile(role: JourneyRole): JourneyReplayProfile {
-  return Object.freeze({
-    role,
-    purpose: "deterministic_local_replay_only",
-    authentication: "not_modeled",
-    authorization: "not_an_authorization_decision",
-    capabilities: Object.freeze(
-      JOURNEY_PLANS[role].map(({ capability }) => capability),
-    ),
   });
 }
 
@@ -459,12 +357,13 @@ function cloneExactDataArray(value: unknown): readonly unknown[] {
   });
 }
 
-function assertJourneyRole(value: unknown): asserts value is JourneyRole {
-  if (!isJourneyRole(value)) throw new Error("LOCAL_JOURNEY_ROLE_INVALID");
-}
-
 function isJourneyRole(value: unknown): value is JourneyRole {
-  return JOURNEY_ROLES.some((role) => role === value);
+  try {
+    journeyPlan(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function digest(value: unknown): string {
