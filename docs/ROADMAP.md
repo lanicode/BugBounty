@@ -27,13 +27,44 @@
 
 Reale Plattformadapter, Account-Erstellung, Browser-Sessions, aktive Tests und Report-Einreichung bleiben deaktiviert.
 
-## Phase 3 – lokale Vertrauens- und Wiederanlaufhärtung (Teil 2 abgeschlossen)
+## Phase 3 – store-gebundene External Actions (abgeschlossen)
 
-1. **Abgeschlossen:** Den External-Action-Evaluator an aktuelle, persistierte Policy-, Campaign-, Scope-, Ownership- und Approval-Evidence binden.
-2. **Abgeschlossen:** Lokal authentifizierte Ed25519-Operator-Identität, signierte Freigaben, replay-sicheren Kill-Clear und persistente Clock-Grenze ergänzen.
-3. Rotation und Wiederanlauf für den bereits Keychain-referenzierten Event-Schlüssel definieren.
-4. Crash-/Restart- und Mehrprozess-Tests für Approval Queue, Kill Switch und Event Store ergänzen.
-5. Erst danach: rein lokale Browserjourneys gegen die Demo-SaaS.
+1. External-Action-Evaluator an aktuelle, persistierte Policy-, Campaign-, Scope-, Ownership- und Approval-Evidence binden.
+2. Proposal, Payload, Budget, Reservation, Runner-Start und Settlement atomar und restart-sicher revalidieren.
+3. Ausschließlich den gebrandeten deterministischen In-Process-Mock ausführbar halten.
+
+## Phase 4 – signierte lokale Operatorgrenze (abgeschlossen)
+
+1. Lokal authentifizierte Ed25519-Operator-Identität aus dem OS-Keychain.
+2. Signierte, session-, nonce-, context- und control-plane-gebundene Freigaben.
+3. Replay-sicherer Kill-Clear und persistente Clock-High-Water-Mark.
+
+## Phase 5 – Event-Key-Rotation und Wiederanlauf (abgeschlossen)
+
+1. Authentifizierte append-only State-Chain für aktive und lesbare
+   Event-Key-Versionen.
+2. Strategie **write new -> read explicitly activated old**; kein
+   automatisches Re-Keying und keine automatische Key-Löschung.
+3. Verpflichtender `BUGBOUNTY_EVENT_KEY_MIN_VERSION`-Rollback-Anker ohne
+   Default.
+4. Verzeichnisweite Mutation-Lease für Init, Legacy-Adoption, Writes und
+   Rotation sowie explizite, bestätigte Offline-Recovery.
+5. Zwingende Security-Core-Härtung von `packages/event-store`: geschlossene
+   versionierte Hüllen, Pre-write-Größenprüfung, restriktive Dateien und
+   Verzeichnis-`fsync`.
+6. Echte Kindprozess-, SIGKILL-, Pre-link-, Post-link-, Restart-, Property-
+   und lokale Integrationstests.
+
+## Phase 6 – weitere Crash-/Mehrprozesshärtung
+
+1. Approval Queue, Kill Switch, Audit Log und Control Plane gezielt gegen
+   Crash, Restart und konkurrierende lokale Prozesse qualifizieren.
+2. Eine explizite Recovery- und Betriebssemantik pro persistenter Komponente
+   definieren und fault-injection-getrieben testen.
+3. Erst danach rein lokale Browserjourneys gegen die Demo-SaaS erweitern.
+
+Reale Integrationen bleiben auch in Phase 6 deaktiviert; alle Netzwerk- und
+Browsertests bleiben auf Loopback beschränkt.
 
 ## Spätere Phase – Journey-Automation
 

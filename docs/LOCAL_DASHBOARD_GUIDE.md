@@ -13,9 +13,17 @@ Dashboard und Phase-2-CLI verwenden ausschließlich `MacOSKeychainSecretStore`. 
 
 ```sh
 security add-generic-password -U -s bugbounty-copilot -a event-store-v1 -w "$(openssl rand -base64 24)"
+export BUGBOUNTY_EVENT_KEY_MIN_VERSION=1
 ```
 
 Die 24 zufälligen Binärbytes werden durch Base64 zu exakt 32 ASCII-Bytes und unter der Referenz `keychain://bugbounty-copilot/event-store-v1` gespeichert. Den Wert weder anzeigen noch in Shell-Historien, Skripte, Logs oder das Repository kopieren. Fehlt der Eintrag, ist er unlesbar oder nicht exakt 32 Byte lang, endet der Lauf mit `SIMULATION_EVENT_SECRET_UNAVAILABLE`, bevor der Kill Switch freigegeben oder Control-Plane-Zustand verändert wird. Auf anderen Betriebssystemen bleibt dieser Produktpfad fail-closed deaktiviert.
+
+`BUGBOUNTY_EVENT_KEY_MIN_VERSION` ist für jeden Start verpflichtend und
+besitzt keinen Default. Der Wert ist ein positiver, store-spezifischer
+Rollback-Anker. Fehlende oder ungültige Konfiguration blockiert mit
+`EVENT_KEY_MIN_VERSION_CONFIG_INVALID`; ein persistierter Head unter dem Wert
+blockiert ebenfalls. Ein wirklich frischer Store beginnt ausschließlich mit
+Version 1.
 
 ## Lokale Operator-Credential einrichten
 
@@ -50,6 +58,10 @@ Im Repository ausführen:
 pnpm install --frozen-lockfile
 pnpm dashboard
 ```
+
+Der Start benötigt weiterhin die im selben Terminal gesetzte Mindestversion.
+Nach einer Rotation beispielsweise auf v2 lautet sie
+`BUGBOUNTY_EVENT_KEY_MIN_VERSION=2`.
 
 Die Control Plane bindet ausschließlich an:
 
@@ -92,9 +104,73 @@ Die sechs Bestätigungen sind exakt:
 
 Owner, Member und External sind vorautorisierte, checkpoint-freie In-Process-Demo-Fixtures; der Ablauf repräsentiert keine Registrierung und akzeptiert keine Bedingungen. Konfigurierte Account-Challenges wie CAPTCHA, E-Mail-Verifikation, TOTP, Programmregeln, Bedingungen oder rechtliche Erklärungen pausieren immer und werden niemals automatisch erfüllt.
 
+## Event-Key lokal administrieren
+
+Der Adminpfad arbeitet ausschließlich auf
+`.local/dashboard/event-store`. Dashboard vor Adoption, Rotation oder Recovery
+vollständig beenden. Status lesen:
+
+```sh
+pnpm event-key:admin status
+```
+
+Das Dashboard initialisiert nur einen nachweislich leeren Store automatisch
+als v1. Derselbe Schritt kann bewusst separat ausgeführt werden:
+
+```sh
+pnpm event-key:admin initialize --confirm-local-event-key-initialize
+```
+
+Ein bestehender Phase-4-Store wird niemals automatisch übernommen. Nach
+vollständiger lokaler Verifikation kann er explizit adoptiert werden:
+
+```sh
+pnpm event-key:admin adopt-legacy-v1 --confirm-local-legacy-adoption
+```
+
+Vor einer v1→v2-Rotation zuerst einen neuen, verschiedenen 32-Byte-Schlüssel
+als `event-store-v2` im Keychain bereitstellen. Die Rotation läuft noch mit dem
+bisherigen Mindestanker:
+
+```sh
+BUGBOUNTY_EVENT_KEY_MIN_VERSION=1 \
+  pnpm event-key:admin rotate \
+  --expected 1 \
+  --next 2 \
+  --confirm-local-event-key-rotation
+```
+
+Erst nach erfolgreichem Commit den Mindestanker für alle folgenden Starts
+anheben und den Head prüfen:
+
+```sh
+export BUGBOUNTY_EVENT_KEY_MIN_VERSION=2
+pnpm event-key:admin status
+```
+
+Neue Events verwenden jetzt v2; v1-Hüllen bleiben mit dem weiterhin
+vorhandenen v1-Key lesbar. Es findet weder automatisches Re-Keying noch eine
+automatische Löschung alter Keychain-Einträge statt.
+
+Init, Adoption, Event-Writes und Rotation halten eine private
+verzeichnisweite Mutation-Lease. Nach einem Prozessabbruch blockieren ein
+verwaister Lock oder eine Event-Temporärdatei jeden weiteren Zugriff. Erst
+nachdem sicher festgestellt wurde, dass kein Dashboard- oder Adminprozess mehr
+läuft, ist die explizit bestätigte Recovery zulässig:
+
+```sh
+pnpm event-key:admin recover-stale-mutation \
+  --confirm-local-stale-event-key-recovery
+```
+
+Die Recovery verdrängt keine lebende Eigentümer-PID, akzeptiert nur exakt
+validierte private Lock-/Temp-Dateien und authentifiziert danach die komplette
+State-Chain. Sie ist kein allgemeines Dateireparaturwerkzeug und wird niemals
+automatisch ausgeführt.
+
 ## Lokale Laufzeitdaten
 
-Das Dashboard schreibt ausschließlich nach `.local/dashboard/`; die SQLite-Datei erhält Modus `0600`, das Verzeichnis `0700`. Der Pfad ist per `.gitignore` ausgeschlossen. Simulationsevents werden nur als AES-256-GCM-Hüllen gespeichert; der Schlüssel verbleibt im macOS-Schlüsselbund. Roh-HARs, Klartext-Secrets und unredigierte Responses werden nicht erzeugt.
+Das Dashboard schreibt ausschließlich nach `.local/dashboard/`; die SQLite-Datei erhält Modus `0600`, das Verzeichnis `0700`. Der Pfad ist per `.gitignore` ausgeschlossen. Simulationsevents werden nur als versionierte AES-256-GCM-Hüllen gespeichert; die authentifizierte State-Chain enthält ausschließlich nicht geheime Metadaten. Schlüssel verbleiben im macOS-Schlüsselbund. Roh-HARs, Klartext-Secrets und unredigierte Responses werden nicht erzeugt.
 
 Zum Zurücksetzen zuerst den Server beenden und anschließend nur die lokalen Demo-Daten entfernen:
 

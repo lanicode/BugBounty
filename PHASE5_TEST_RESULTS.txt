@@ -1,0 +1,143 @@
+PHASE 5 TEST RESULTS
+====================
+
+Date: 2026-07-14
+Branch: codex/phase-5-event-key-rotation
+Phase-4 baseline: a3312cd65c5e64d36a281a7a195bfc862378eac1
+Node.js: v24.14.0
+pnpm: 11.7.0
+
+FINAL QUALITY GATES
+-------------------
+
+PASS  pnpm typecheck
+      tsc --noEmit
+
+PASS  pnpm lint
+      eslint . --max-warnings 0
+      0 warnings, 0 errors
+
+PASS  pnpm format:check
+      prettier --check .
+
+PASS  pnpm build
+      tsc -p tsconfig.build.json
+
+PASS  pnpm test
+      67/67 test files passed
+      356/356 tests passed
+
+PASS  pnpm test:coverage
+      67/67 test files passed
+      356/356 tests passed
+
+      Statements: 88.17% (4197/4760)
+      Branches:   83.14% (2817/3388)
+      Functions:  95.95% (855/891)
+      Lines:      89.27% (4052/4539)
+
+      event-key-lifecycle:
+        Statements 91.12%, Branches 87.95%, Functions 100%, Lines 91.79%
+      event-store:
+        Statements 91.66%, Branches 87.82%, Functions 100%, Lines 93.54%
+
+PASS  pnpm exec vitest run tests/property
+      11/11 test files passed
+      24/24 tests passed
+
+PASS  pnpm exec vitest run tests/integration
+      15/15 test files passed
+      63/63 tests passed
+      All listening sockets used local 127.0.0.1 mocks only.
+
+PASS  pnpm test:egress
+      4/4 test files passed
+      11/11 tests passed
+
+PASS  pnpm test:platform-source
+      4/4 test files passed
+      12/12 tests passed
+
+PASS  pnpm audit --audit-level high
+      No known vulnerabilities found
+      Network use was limited to the official npm package source.
+
+PASS  git diff --check
+
+PASS  protected Phase-1 path audit against Phase 4
+      Exactly packages/event-store/store.ts changed.
+      This is the required and documented Phase-5 Security-Core change.
+      All other protected Phase-1 paths remained unchanged.
+
+ADDITIONAL PHASE-5 SECURITY TESTS
+---------------------------------
+
+PASS  Event-envelope tests prove:
+      * explicit active and readable key versions
+      * invalid/future versions block before SecretStore access
+      * exact envelope schema and canonical Base64
+      * exact nonce/tag sizes and 4 MiB read/write limit
+      * oversized writes create no destination or temporary
+      * O_NOFOLLOW and same-directory path enforcement
+      * write-once hardlink publication
+      * parent-directory fsync after publish and cleanup
+      * cleanup failures remain visible
+      * every SecretStore key copy is zeroized
+
+PASS  Event-key lifecycle tests prove:
+      * authenticated canonical HKDF/HMAC state chain
+      * monotone current+1 rotation and duplicate-key rejection
+      * mandatory minimum-active-version rollback anchor
+      * old/new ciphertext readability after full reopen
+      * missing historical keys block the whole store
+      * cross-store, chain-gap, field, mode and symlink tampering blocks
+      * explicit authenticated legacy-v1 adoption only
+
+PASS  Lease, fault and crash tests prove:
+      * one directory-wide mutation lease covers refresh+write and rotation
+      * competing operations receive deterministic fail-closed reasons
+      * a live child-process lease cannot be recovered or stolen
+      * SIGKILL before the final link recovers to v1
+      * SIGKILL after the committed link recovers to v2
+      * a link failure leaves no v2 record, temporary or lock
+      * a post-link fsync error is resolved by authenticated restart state
+      * event-temp unlink/fsync failures keep a fail-closed recovery lock
+      * recovery removes only exact private regular event temporaries
+
+PASS  Product-boundary tests prove:
+      * BUGBOUNTY_EVENT_KEY_MIN_VERSION has no default
+      * missing/invalid minimum blocks before .local or Keychain access
+      * recovery requires the exact explicit local confirmation flag
+      * Dashboard/simulation write only through the persisted active head
+      * no network, browser, child-process or LLM transport exists in the
+        lifecycle/admin product path
+
+DIAGNOSTIC RUNS
+---------------
+
+The first typecheck command in the resumed desktop session used the short
+`pnpm` command before the bundled workspace runtime path had been loaded and
+exited 127 with `command not found`. The same command and every final gate
+passed with the documented absolute workspace Node/pnpm PATH. This was an
+execution-environment issue, not a repository failure.
+
+An initial unprivileged full-suite run encountered EPERM for tests that bind
+local 127.0.0.1 mock servers. It also exposed that a deliberately blocked
+pre-link child process could exit with Node status 13 when no event-loop handle
+remained. The fixture was corrected to keep its existing stdin gate alive
+until SIGKILL. No product security check was changed or weakened. The full
+suite then passed 67/67 files and 356/356 tests with explicit loopback socket
+permission.
+
+No test was disabled, skipped, relaxed or rewritten merely to obtain a green
+result.
+
+NOTES
+-----
+
+* Node.js emitted its documented ExperimentalWarning for node:sqlite.
+* No real platform, HackerOne, Bugcrowd, example or bug-bounty target host was
+  contacted.
+* Product network and browser tests used only in-process mocks or 127.0.0.1.
+* Real integrations, active security tests, account automation, report
+  submission, triage delivery and LLM-driven requests remained disabled.

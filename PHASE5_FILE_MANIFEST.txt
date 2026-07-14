@@ -1,0 +1,48 @@
+PHASE 5 FILE MANIFEST
+=====================
+
+Baseline: a3312cd65c5e64d36a281a7a195bfc862378eac1
+Branch: codex/phase-5-event-key-rotation
+
+M  AGENTS.md
+A  PHASE5_COMPLETION_REPORT.md
+A  PHASE5_EXTERNAL_ACTIONS.md
+A  PHASE5_FILE_MANIFEST.txt
+A  PHASE5_KNOWN_RISKS.md
+A  PHASE5_SECURITY_CORE_CHANGES.md
+A  PHASE5_TEST_RESULTS.txt
+M  README.md
+M  apps/dashboard/index.ts
+A  apps/event-key-cli/index.ts
+M  apps/phase2-cli/index.ts
+M  docs/LOCAL_DASHBOARD_GUIDE.md
+A  docs/PHASE4_BASELINE.md
+A  docs/PHASE5_ACCEPTANCE_CRITERIA.md
+A  docs/PHASE5_EVENT_KEY_LIFECYCLE.md
+M  docs/ROADMAP.md
+M  docs/SIMULATION_GUIDE.md
+M  docs/TESTING.md
+M  package.json
+A  packages/event-key-lifecycle/config.ts
+A  packages/event-key-lifecycle/index.ts
+A  packages/event-key-lifecycle/lifecycle.ts
+A  packages/event-key-lifecycle/types.ts
+M  packages/event-store/store.ts
+M  packages/simulation/orchestrator.ts
+A  tests/fixtures/event-key-mutation-lease-holder.ts
+M  tests/integration/dashboard.test.ts
+A  tests/integration/event-key-admin-cli.test.ts
+A  tests/integration/event-key-mutation-crash.test.ts
+A  tests/integration/event-key-mutation-lease-process.test.ts
+A  tests/integration/event-key-restart.test.ts
+M  tests/integration/phase2-simulation.test.ts
+A  tests/property/event-envelope.property.test.ts
+A  tests/property/event-key-lifecycle.property.test.ts
+A  tests/property/event-key-rotation-invalid.property.test.ts
+A  tests/unit/event-key-config.test.ts
+A  tests/unit/event-key-lifecycle-boundary.test.ts
+A  tests/unit/event-key-lifecycle.test.ts
+A  tests/unit/event-key-mutation-lease.test.ts
+A  tests/unit/event-key-recovery-faults.test.ts
+A  tests/unit/event-key-state-commit-faults.test.ts
+M  tests/unit/storage.test.ts

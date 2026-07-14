@@ -1,6 +1,6 @@
-# Bug Bounty Copilot – lokale Phase-4-Control-Plane
+# Bug Bounty Copilot – lokale Phase-5-Control-Plane
 
-Bug Bounty Copilot ist ein eigenes, lokal betriebenes Produkt für die sichere Vorbereitung künftiger Bug-Bounty-Workflows. Phase 3 bindet die External-Action-Pipeline zusätzlich an atomare, aktuelle und persistierte Policy-, Kampagnen-, Scope-, Ownership-, Budget- und Approval-Evidence. Der Phase-1-Sicherheitskern bleibt unverändert.
+Bug Bounty Copilot ist ein eigenes, lokal betriebenes Produkt für die sichere Vorbereitung künftiger Bug-Bounty-Workflows. Phase 3 bindet die External-Action-Pipeline an atomare, aktuelle und persistierte Policy-, Kampagnen-, Scope-, Ownership-, Budget- und Approval-Evidence.
 
 Phase 4 ersetzt freie Operatorlabels durch eine lokal eingeschriebene
 Ed25519-Credential. Approval-Entscheidungen und Kill-Switch-Clears benötigen
@@ -8,7 +8,15 @@ eine frische, nonce- und sessiongebundene Signatur; Policy-, Kampagnen- und
 External-Action-Konsumenten verifizieren diese Evidence erneut. Der
 Phase-1-Sicherheitskern bleibt unverändert.
 
-Die Anwendung ist weiterhin **kein Live-Scanner**. Sie führt keine aktiven Sicherheitstests aus, erstellt keine realen Konten, besitzt keine funktionsfähige Plattformintegration und reicht keine Reports ein. Sämtliche Demonstrationen laufen deterministisch gegen In-Process-Mocks oder Loopback-Server. Externe Integrationen sind standardmäßig und bei Fehlern deaktiviert.
+Phase 5 ergänzt einen restart-sicheren, versionierten Event-Key-Lifecycle:
+Neue Events verwenden ausschließlich den authentifiziert aktivierten Head,
+während alte Hüllen nur mit ausdrücklich aktivierten historischen Versionen
+lesbar bleiben. Eine verzeichnisweite Mutation-Lease serialisiert Init,
+Legacy-Adoption, Writes und Rotation auch über Prozesse hinweg. Dafür wurde
+`packages/event-store` als zwingende **Security-Core-Änderung** gehärtet; die
+anderen Phase-1-Komponenten bleiben unverändert.
+
+Die Anwendung ist weiterhin **kein Live-Scanner**. Sie führt keine aktiven Sicherheitstests aus, erstellt keine realen Konten, besitzt keine funktionsfähige Plattformintegration und reicht keine Reports ein. Sämtliche Demonstrationen laufen deterministisch gegen In-Process-Mocks oder Loopback-Server. Externe Integrationen sind standardmäßig, bei fehlender oder fehlerhafter Konfiguration und bei Laufzeitfehlern deaktiviert.
 
 ## Lokal starten
 
@@ -16,9 +24,16 @@ Voraussetzungen sind macOS, Node.js 24 oder neuer und pnpm 11. Der produktive Da
 
 ```sh
 security add-generic-password -U -s bugbounty-copilot -a event-store-v1 -w "$(openssl rand -base64 24)"
+export BUGBOUNTY_EVENT_KEY_MIN_VERSION=1
 ```
 
 Dieser Befehl gehört zur lokalen Einrichtung und darf nicht in Skripte, Logs oder das Repository übernommen werden. Ein fehlender, nicht lesbarer oder falsch langer Eintrag blockiert die Simulation vor jeder Zustandsänderung.
+
+`BUGBOUNTY_EVENT_KEY_MIN_VERSION` ist ein verpflichtender, store-spezifischer
+Rollback-Anker ohne Default. Fehlende oder ungültige Konfiguration blockiert
+Dashboard, Simulations-CLI und Event-Key-Admin fail-closed. Ein frischer Store
+beginnt mit `1`; nach erfolgreicher Rotation muss der Wert vor dem nächsten
+Produktstart auf den ausgegebenen neuen Head angehoben werden.
 
 Zusätzlich wird einmalig ein Ed25519-PKCS#8-Schlüssel direkt im macOS-
 Schlüsselbund angelegt. Der folgende Befehl setzt voraus, dass das lokale
@@ -58,6 +73,13 @@ pnpm phase2:simulate --confirm-local-simulation
 
 Die CLI benötigt ein interaktives TTY, zeigt zuerst das vollständige digest-gebundene Review-Paket an und akzeptiert an jedem Kontrollpunkt ausschließlich die exakte Eingabe `yes`. Ein Sammel- oder Non-TTY-Fallback existiert nicht.
 
+Die rein lokale Event-Key-Administration besitzt einen getrennten CLI-Pfad.
+Status, explizite Legacy-v1-Adoption, monotone Rotation und die manuell
+bestätigte Recovery einer nach Prozessabbruch verbliebenen Mutation-Lease sind
+in `docs/PHASE5_EVENT_KEY_LIFECYCLE.md` beschrieben. Rotation und Recovery
+erfolgen nur bei beendetem Dashboard. Weder alte Hüllen noch alte Keychain-
+Einträge werden automatisch umgeschrieben oder gelöscht.
+
 ## Sicherheitsmodell
 
 Jede künftig extern wirksame Aktion muss die folgende technisch erzwungene Kette durchlaufen:
@@ -75,7 +97,7 @@ strukturierter Vorschlag
 
 Vorschläge können weder Zielhost noch Secret-Art oder Runner bestimmen. Die zentrale Registry setzt diese Werte. Proposal v2 bindet zusätzlich Kampagnenrevision und -digest, Policy, Scope, Accountrolle, Objekt, Approval und Operator. Positive Entscheidungen entstehen ausschließlich in einer `BEGIN IMMEDIATE`-Transaktion aus aktueller Store-Evidence und einer gültigen signierten Operatorentscheidung. Nonces, Credential, Signatur-Evidence, Proposal-IDs, Budgets und aktive Reservationen bleiben über Neustarts erhalten. Caller-Booleans, freie Actor-Strings, Callback-Gates, Proxies und Prototype-Spoofs können keinen Runner freigeben.
 
-Externe Runner sind nicht implementiert; `external_integrations_enabled` ist immer effektiv `false`. Der gebrandete Kill Switch und der Store blockieren vor, während und nach Runner-Aufrufen sowie bei unlesbarem oder inkonsistentem Zustand. Der einzige ausführbare Runner ist ein deterministischer In-Process-Mock ohne HTTP- oder Browsertransport.
+Externe Runner sind nicht implementiert; `external_integrations_enabled` ist immer effektiv `false`. Der gebrandete Kill Switch und der Store blockieren vor, während und nach Runner-Aufrufen sowie bei unlesbarem oder inkonsistentem Zustand. Der einzige ausführbare Runner ist ein deterministischer In-Process-Mock ohne HTTP- oder Browsertransport. Der Event-Key-Admin ist ebenfalls rein lokal und weder aus dem Dashboard noch aus einem Modell- oder External-Action-Pfad erreichbar.
 
 ## Hauptkomponenten
 
@@ -84,9 +106,15 @@ Externe Runner sind nicht implementiert; `external_integrations_enabled` ist imm
 - `packages/external-actions`: geschlossene Action Registry, Proposal-v2-Vertrag und store-gebundene deterministische Pipeline.
 - `packages/operator-auth`: Keychain-geladener Ed25519-Signer, geschlossene
   Enrollment-/Decision-/Kill-Clear-Envelopes und kryptografische Verifikation.
+- `packages/event-key-lifecycle`: authentifizierte append-only State-Chain,
+  verpflichtender Mindestversionsanker, verzeichnisweite Mutation-Lease und
+  explizite lokale Crash-Recovery.
 - `packages/account-simulation` und `packages/ownership-ledger`: rein lokale Account-Lifecycle-Simulation und kryptografisch gebundene Eigentumsnachweise.
 - `packages/demo-saas` und `packages/simulation`: lokale Demo-Domäne und reproduzierbarer 18-Schritte-Ablauf.
 - `packages/dashboard`: loopback-only HTTP-Control-Plane und Browseroberfläche.
-- `packages/config`, `packages/egress-guard`, `packages/redaction`, `packages/secret-store`, `packages/event-store`, `packages/policy` und `packages/audit-log`: unveränderter Phase-1-Sicherheitskern.
+- `packages/event-store`: zwingend geänderter Phase-1-Sicherheitskern mit
+  versionierten AES-256-GCM-Hüllen, expliziten Leseversionen,
+  Hüllengrößenprüfung vor Dateianlage sowie Datei- und Verzeichnis-`fsync`.
+- `packages/config`, `packages/egress-guard`, `packages/redaction`, `packages/secret-store`, `packages/policy` und `packages/audit-log`: in Phase 5 unveränderte Phase-1-Komponenten.
 
-Bedienung und Grenzen stehen in `docs/LOCAL_DASHBOARD_GUIDE.md` und `docs/SIMULATION_GUIDE.md`. Die Phase-4-Architektur ist in `docs/PHASE4_SIGNED_OPERATOR_APPROVALS.md` beschrieben; der vollständige Nachweis steht in `PHASE4_COMPLETION_REPORT.md`.
+Bedienung und Grenzen stehen in `docs/LOCAL_DASHBOARD_GUIDE.md` und `docs/SIMULATION_GUIDE.md`. Die signierte Operatorgrenze ist in `docs/PHASE4_SIGNED_OPERATOR_APPROVALS.md`, der Event-Key-Lifecycle in `docs/PHASE5_EVENT_KEY_LIFECYCLE.md` beschrieben. Der vollständige Phase-5-Nachweis steht in `PHASE5_COMPLETION_REPORT.md`.

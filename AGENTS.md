@@ -2,7 +2,7 @@
 
 ## Geltungsbereich
 
-Der produktive Code in `apps/` und `packages/` enthält den unveränderten Phase-1-Sicherheitskern, die lokale Phase-2-Control-Plane, den store-gebundenen Phase-3-External-Action-Evaluator und die lokale signierte Phase-4-Operatorgrenze. `legacy/mvp/` ist ausschließlich eine unsichere, nicht produktive Audit-Referenz.
+Der produktive Code in `apps/` und `packages/` enthält den Phase-1-Sicherheitskern, die lokale Phase-2-Control-Plane, den store-gebundenen Phase-3-External-Action-Evaluator, die lokale signierte Phase-4-Operatorgrenze und den restart-sicheren Phase-5-Event-Key-Lifecycle. Phase 5 ändert zwingend und dokumentiert ausschließlich `packages/event-store` innerhalb des Phase-1-Kerns. `legacy/mvp/` ist ausschließlich eine unsichere, nicht produktive Audit-Referenz.
 
 ## Nicht verhandelbare Regeln
 
@@ -13,6 +13,18 @@ Der produktive Code in `apps/` und `packages/` enthält den unveränderten Phase
 - Keine Roh-HARs, Rohbodys, Tokens, Cookies, Zugangsdaten oder Identitätsdaten persistieren oder loggen.
 - Persistierung erfolgt erst nach Redaktion und Größenprüfung. Eventdaten werden ausschließlich authentifiziert verschlüsselt gespeichert.
 - Produktionsschlüssel stammen ausschließlich aus dem OS-Keychain-Adapter. Es gibt keinen Klartext-Fallback.
+- `BUGBOUNTY_EVENT_KEY_MIN_VERSION` ist für jeden Produkt- und Adminstart
+  verpflichtend. Es gibt keinen Default; fehlende, ungültige oder unter dem
+  authentifizierten Head liegende Konfiguration blockiert fail-closed.
+- Event-Key-Versionen werden monoton um exakt eins aktiviert: neue Events
+  verwenden nur den neuen Head, alte Hüllen bleiben nur über ausdrücklich
+  aktivierte historische Versionen lesbar. Automatisches Re-Keying und
+  automatische Key-Löschung sind verboten.
+- Init, Legacy-Adoption, Event-Writes und Rotation müssen die verzeichnisweite
+  Mutation-Lease über den vollständigen Refresh-/Commit-Bereich halten. Eine
+  verbliebene Lease oder Event-Temporärdatei blockiert; Recovery ist nur als
+  ausdrücklich bestätigter lokaler Offline-Adminschritt erlaubt und darf eine
+  nachweislich aktive Eigentümer-PID niemals verdrängen.
 - Private Operator-Schlüssel werden ausschließlich als Ed25519-PKCS#8 über eine `keychain://`-Referenz geladen. Schlüsseldateien, Schlüsselmaterial in Umgebungsvariablen, automatische Provisionierung und Klartext-Fallbacks sind verboten.
 - Jede neue persistierte Approval-Entscheidung sowie jeder Kill-Switch-Clear benötigt eine gültige, frische, session-, nonce-, control-plane- und kontextgebundene Operator-Signatur. Freie Actor-Strings sind keine Credential.
 - Signaturprüfung, Replay-Schutz, Decision-Evidence, Approval-Transition, Audit und External-Action-Binding bleiben atomar in `BEGIN IMMEDIATE`. Die store-eigene Uhr und ihr persistenter High-Water-Mark dürfen nicht umgangen werden.
@@ -24,6 +36,9 @@ Der produktive Code in `apps/` und `packages/` enthält den unveränderten Phase
 - Proposal, Policy, Kampagnenrevision/-digest, Scope, Accountrolle, Ownership, Payload, Approval, Operator, Budget und Audit müssen exakt gebunden und vor Start sowie Settlement erneut geprüft werden.
 - Proposal-IDs, Attempts und Budgets sind persistent. Abbruch und Fehler erstatten kein Budget; Crash-Reservationen bleiben fail-closed blockierend.
 - Das initiale Operator-Enrollment ist lokales TOFU bei aktivem Kill Switch. Es ist keine rechtliche Zustimmung, keine Hardwarebindung und kein Beweis menschlicher Anwesenheit. Reale Runner bleiben unabhängig von vorhandener Evidence deaktiviert.
+- Event-Key-Adoption, -Rotation und -Recovery sind lokale Offline-
+  Adminoperationen bei beendetem Dashboard. Kein Dashboard-, HTTP-, Browser-,
+  LLM- oder External-Action-Pfad darf sie auslösen.
 - `external_integrations_enabled` bleibt standardmäßig sowie bei fehlender oder fehlerhafter Konfiguration effektiv `false`.
 - Der globale Kill Switch ist fail-closed; Lesefehler, fehlende Audit-Referenzen, Revisionsfehler und inkonsistente Clear-Zustände gelten als aktiv. Engagement pausiert aktive Kampagnen vor der Audit-Fortsetzung.
 - Sicherheitsgrenzen benötigen direkte Unit-, Property- und Integrationstests. Tests dürfen nicht zur Fehlerbehebung gelockert werden.
@@ -35,7 +50,12 @@ Der produktive Code in `apps/` und `packages/` enthält den unveränderten Phase
 - `packages/egress-guard`: einzige Freigabestelle des Phase-1-Kerns für HTTP-/Browser-Egress.
 - `packages/redaction`: einzige Transformation vor Eventpersistierung.
 - `packages/secret-store`: Keychain-Produktion und In-Memory nur für Tests.
-- `packages/event-store`: AES-256-GCM-Hüllen und atomare, restriktive Dateien.
+- `packages/event-store`: versionierte AES-256-GCM-Hüllen, explizit aktivierte
+  Leseversionen, write-once-Dateien, enge Größengrenzen sowie Datei- und
+  Verzeichnis-Durability; zwingende Phase-5-Security-Core-Änderung.
+- `packages/event-key-lifecycle`: authentifizierte append-only State-Chain,
+  Mindestversionsanker, verzeichnisweite Mutation-Lease und explizite lokale
+  Recovery; einzige Aktivierungsgrenze für Event-Key-Versionen.
 - `packages/policy`: Phase-1-Vertrag, Budgets, Kill Switch und deterministische Reason Codes.
 - `packages/audit-log`: bodyfreies append-only JSONL mit Hash-Verkettung.
 - `packages/platform-source`: lokale, strikt validierte Plattform-Snapshots ohne HTTP-Client.

@@ -8,9 +8,17 @@ Produktive Dashboard- und CLI-Läufe benötigen den exakt 32 Byte langen Schlüs
 
 ```sh
 security add-generic-password -U -s bugbounty-copilot -a event-store-v1 -w "$(openssl rand -base64 24)"
+export BUGBOUNTY_EVENT_KEY_MIN_VERSION=1
 ```
 
 Der Wert wird nicht in der Control Plane gespeichert. Fehlen, Lesefehler oder falsche Länge blockieren vor jeder Simulationsfachdaten-Mutation; vorbereitende Verzeichnis- und Schema-Erstellung kann bereits erfolgt sein. Tests injizieren ausschließlich einen In-Memory-Testschlüssel und beweisen diesen fail-closed Preflight; der Produktpfad besitzt keinen Fallback.
+
+`BUGBOUNTY_EVENT_KEY_MIN_VERSION` ist verpflichtend und besitzt keinen
+Default. Die Phase-2-CLI verwendet pro Lauf ein neues, zufälliges lokales
+Eventverzeichnis und kann deshalb ausschließlich mit Mindestversion `1`
+initialisieren. Das persistente Dashboard verwendet dagegen den zu seinem
+authentifizierten Head passenden, nach erfolgreicher Rotation angehobenen
+Wert. Fehlende oder ungültige Konfiguration blockiert fail-closed.
 
 Zusätzlich ist eine manuell bereitgestellte Ed25519-Operator-Credential nötig:
 
@@ -41,6 +49,23 @@ pnpm dashboard
 
 Danach `http://127.0.0.1:4173` öffnen, die sechs Kontrollpunkte einzeln bestätigen und „Simulation starten“ wählen.
 
+## Event-Key-Verhalten
+
+Der Orchestrator authentifiziert oder initialisiert den Event-Key-Lifecycle
+vor der ersten nicht sicherheitsgerichteten Control-Plane-Mutation. Neue
+Events werden ausschließlich mit dem aktivierten Head geschrieben; alte
+Hüllen sind nur über die in der authentifizierten State-Chain aktivierten
+historischen Versionen lesbar. Alle historischen Schlüssel müssen deshalb im
+Keychain verfügbar bleiben.
+
+Init und Event-Writes halten für den vollständigen Refresh-/Commit-Bereich
+eine verzeichnisweite Mutation-Lease. Eine fremde oder nach Abbruch
+verbliebene Lease sowie Event-Temporärdateien blockieren. Recovery und Rotation
+sind ausschließlich explizite lokale Offline-Adminschritte für den persistenten
+Dashboard-Store; die Simulation löst sie nicht aus. Es gibt kein automatisches
+Re-Keying, keine automatische Löschung alter Keys und keinen Dashboard-,
+HTTP-, Browser-, Modell- oder External-Action-Pfad zur Rotation.
+
 ## Reproduzierbare 18 Schritte
 
 1. Mock-Programm importieren.
@@ -66,6 +91,6 @@ Schritt 6 materialisiert ausschließlich vorautorisierte, checkpoint-freie Owner
 
 ## Erwartetes Ergebnis
 
-Der Abschluss meldet `mode: simulation`, `externalIntegrationsEnabled: false`, `networkConnections: 0`, `externalSubmissions: 0`, zwei Policy-Versionen, drei Identitäten, ein kontrolliertes Objekt, drei verschlüsselte Events, einen offenen Report-Kontrollpunkt und genau 18 Schritte.
+Der Abschluss meldet `mode: simulation`, `externalIntegrationsEnabled: false`, `networkConnections: 0`, `externalSubmissions: 0`, zwei Policy-Versionen, drei Identitäten, ein kontrolliertes Objekt, drei versioniert verschlüsselte Events, einen offenen Report-Kontrollpunkt und genau 18 Schritte.
 
 Ein während des Ablaufs aktivierter, unlesbarer oder audit-/revisionsinkonsistenter Kill Switch bricht vor dem nächsten Schritt geschlossen ab und pausiert aktive Kampagnen. Er verhindert außerdem Kampagnenstart, Resume, Freigabeverarbeitung und Runner-Aufrufe. Jede lokale Policy-/Kampagnenentscheidung wird zum tatsächlichen Laufzeitpunkt frisch signiert; die zuvor erfassten menschlichen Bestätigungszeiten bleiben separat im hashgebundenen Approval-Payload erhalten. Der External-Action-Evaluator revalidiert persistierte Signatur-Evidence vor Reservation, Start und Settlement. Der einzige Runner bleibt ein deterministischer In-Process-Mock ohne Netzwerktransport.
