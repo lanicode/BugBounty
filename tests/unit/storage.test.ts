@@ -4,6 +4,7 @@ import {
   mkdir,
   readFile,
   readdir,
+  realpath,
   symlink,
   unlink,
   writeFile,
@@ -310,7 +311,10 @@ describe("encrypted event store", () => {
 
 describe("audit chain", () => {
   it("verifies and detects manipulation", async ({ task }) => {
-    const path = join("/tmp", `audit-${process.pid}-${task.id}.jsonl`);
+    const directory = join("/tmp", `audit-${process.pid}-${task.id}`);
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    await chmod(directory, 0o700);
+    const path = join(await realpath(directory), "audit.jsonl");
     const log = new AuditLog(path);
     await log.append({
       timestamp: "2026-01-01T00:00:00Z",
@@ -335,9 +339,10 @@ describe("audit chain", () => {
     await expect(verifyAuditLog(path)).rejects.toThrow("AUDIT_CHAIN_INVALID");
   });
   it("rejects body-like or unsafe audit values", async ({ task }) => {
-    const log = new AuditLog(
-      join("/tmp", `audit-unsafe-${process.pid}-${task.id}.jsonl`),
-    );
+    const directory = join("/tmp", `audit-unsafe-${process.pid}-${task.id}`);
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    await chmod(directory, 0o700);
+    const log = new AuditLog(join(await realpath(directory), "audit.jsonl"));
     await expect(
       log.append({
         timestamp: "2026-01-01T00:00:00Z",
