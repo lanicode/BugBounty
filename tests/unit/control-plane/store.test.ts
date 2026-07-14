@@ -1,6 +1,6 @@
 import {
   ControlPlaneDatabase,
-  ControlPlaneStore,
+  type ControlPlaneStore,
 } from "../../../packages/control-plane/index.js";
 import { ApprovalQueue } from "../../../packages/control-plane/approval-queue.js";
 import {
@@ -18,6 +18,13 @@ import {
   ownedObject,
   programInput,
 } from "../../fixtures/control-plane.factory.js";
+import {
+  clearTestKillSwitch,
+  createTestControlPlaneStore,
+  decideTestApproval,
+  enrollTestOperator,
+  signTestApprovalDecision,
+} from "../../fixtures/operator-auth.factory.js";
 
 describe("ControlPlaneStore", () => {
   let database: ControlPlaneDatabase;
@@ -25,7 +32,8 @@ describe("ControlPlaneStore", () => {
 
   beforeEach(() => {
     database = ControlPlaneDatabase.memory();
-    store = new ControlPlaneStore(database);
+    store = createTestControlPlaneStore(database, NOW);
+    enrollTestOperator(store, NOW);
   });
 
   afterEach(() => {
@@ -47,8 +55,7 @@ describe("ControlPlaneStore", () => {
   function acceptSeededPolicy(
     policy: ReturnType<typeof controlPlanePolicy>,
   ): ReturnType<ControlPlaneStore["acceptPolicy"]> {
-    if (store.isKillSwitchActive())
-      store.setKillSwitch(false, "local-reviewer", NOW);
+    if (store.isKillSwitchActive()) clearTestKillSwitch(store, NOW);
     const queue = new ApprovalQueue();
     const open = queue.enqueue({
       id: `policy-${policy.policyHash.slice(0, 12)}-approval`,
@@ -62,14 +69,11 @@ describe("ControlPlaneStore", () => {
       auditReference: "audit:seed-policy",
     });
     store.persistApproval(open);
-    store.decideApproval({
-      id: open.id,
-      expectedRevision: 0,
-      expectedPayloadHash: open.payloadHash,
+    decideTestApproval(store, {
+      approvalId: open.id,
       decision: "accepted",
-      actor: "local-reviewer",
       userAction: "explicit_policy_acceptance",
-      at: LATER,
+      issuedAt: LATER,
     });
     return store.acceptPolicy({
       programId: "program-local",
@@ -105,14 +109,11 @@ describe("ControlPlaneStore", () => {
       auditReference: "audit:campaign-local-approval",
     });
     store.persistApproval(open);
-    store.decideApproval({
-      id: open.id,
-      expectedRevision: 0,
-      expectedPayloadHash: open.payloadHash,
+    decideTestApproval(store, {
+      approvalId: open.id,
       decision: "accepted",
-      actor: "local-reviewer",
       userAction: "explicit_local_campaign_v1_approval",
-      at: LATER,
+      issuedAt: LATER,
     });
     const approved = campaign({
       policyHash: policy.policyHash,
@@ -158,7 +159,7 @@ describe("ControlPlaneStore", () => {
 
   it("rejects an acceptance bound to the wrong hash", () => {
     seedPolicy();
-    store.setKillSwitch(false, "local-reviewer", NOW);
+    clearTestKillSwitch(store, NOW);
     expect(() =>
       store.acceptPolicy({
         programId: "program-local",
@@ -173,7 +174,7 @@ describe("ControlPlaneStore", () => {
 
   it("requires a persisted accepted approval before policy acceptance", () => {
     const policy = seedPolicy();
-    store.setKillSwitch(false, "local-reviewer", NOW);
+    clearTestKillSwitch(store, NOW);
     expect(() =>
       store.acceptPolicy({
         programId: "program-local",
@@ -414,7 +415,7 @@ describe("ControlPlaneStore", () => {
 
     database.close();
     database = ControlPlaneDatabase.memory();
-    store = new ControlPlaneStore(database);
+    store = createTestControlPlaneStore(database, NOW);
     const policy = seedPolicy();
     acceptSeededPolicy(policy);
     expect(() =>
@@ -513,13 +514,11 @@ describe("ControlPlaneStore", () => {
     const policy = seedPolicy();
     store.insertCampaign(campaign({ policyHash: policy.policyHash }));
     expect(store.isKillSwitchActive()).toBe(true);
-    expect(store.setKillSwitch(false, "local-reviewer", NOW).active).toBe(
-      false,
-    );
+    expect(clearTestKillSwitch(store, NOW).active).toBe(false);
     expect(store.isKillSwitchActive()).toBe(false);
     store.setKillSwitch(true, "local-reviewer", LATER);
     expect(store.isKillSwitchActive()).toBe(true);
-    store.setKillSwitch(false, "local-reviewer", "2026-07-13T14:00:00.000Z");
+    clearTestKillSwitch(store, "2026-07-13T14:00:00.000Z");
     expect(() => store.setKillSwitch(true, "local-reviewer", LATER)).toThrow(
       "KILL_SWITCH_AUDIT_FAILED",
     );
@@ -555,9 +554,10 @@ describe("ControlPlaneStore", () => {
     ).toThrow();
     expect(store.isKillSwitchActive()).toBe(true);
 
-    store.setKillSwitch(false, "local-reviewer", NOW);
+    clearTestKillSwitch(store, NOW);
     expect(store.isKillSwitchActive()).toBe(false);
     database.run("DROP TRIGGER system_state_kill_switch_update_guard");
+    database.run("DROP TRIGGER system_state_signed_kill_clear_guard");
     database.run(
       `UPDATE system_state SET revision=9001,updated_at='not-a-time'
        WHERE key='global_kill_switch'`,
@@ -605,7 +605,7 @@ describe("ControlPlaneStore", () => {
     database.close();
     expect(store.isKillSwitchActive()).toBe(true);
     database = ControlPlaneDatabase.memory();
-    store = new ControlPlaneStore(database);
+    store = createTestControlPlaneStore(database, NOW);
   });
 
   it("rehydrates and decides persisted approvals under the global kill switch", () => {
@@ -622,28 +622,21 @@ describe("ControlPlaneStore", () => {
       auditReference: "audit:approval-persisted",
     });
     store.persistApproval(approval);
-    expect(() =>
-      store.decideApproval({
-        id: approval.id,
-        expectedRevision: 0,
-        expectedPayloadHash: approval.payloadHash,
-        decision: "accepted",
-        actor: "local-reviewer",
-        userAction: "clicked_accept",
-        at: LATER,
-      }),
-    ).toThrow("APPROVAL_KILL_SWITCH");
-    store.setKillSwitch(false, "local-reviewer", NOW);
-    const restartedStore = new ControlPlaneStore(database);
+    const signed = signTestApprovalDecision(store, {
+      approvalId: approval.id,
+      decision: "accepted",
+      userAction: "clicked_accept",
+      issuedAt: LATER,
+    });
+    expect(() => store.decideApproval(signed)).toThrow("APPROVAL_KILL_SWITCH");
+    clearTestKillSwitch(store, NOW);
+    const restartedStore = createTestControlPlaneStore(database, LATER);
     expect(
-      restartedStore.decideApproval({
-        id: approval.id,
-        expectedRevision: 0,
-        expectedPayloadHash: approval.payloadHash,
+      decideTestApproval(restartedStore, {
+        approvalId: approval.id,
         decision: "accepted",
-        actor: "local-reviewer",
         userAction: "clicked_accept",
-        at: LATER,
+        issuedAt: LATER,
       }),
     ).toMatchObject({ status: "accepted", revision: 1 });
     expect(restartedStore.listAuditEntries()).toEqual(

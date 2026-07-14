@@ -24,6 +24,13 @@ import {
   ACTION_TIME,
   seedStoreBoundAction,
 } from "../fixtures/store-bound-action.factory.js";
+import {
+  createTestControlPlaneStore,
+  decideTestApproval,
+  enrollTestOperator,
+  signTestApprovalDecision,
+} from "../fixtures/operator-auth.factory.js";
+import { ApprovalQueue } from "../../packages/control-plane/approval-queue.js";
 
 function runtime(maxActions = 20) {
   return resolvePhase2Runtime(
@@ -191,7 +198,7 @@ describe("store-bound external action authorization", () => {
   });
 
   it("prevents method shadowing on trusted stores and databases", () => {
-    const store = new ControlPlaneStore(database);
+    const store = createTestControlPlaneStore(database, ACTION_TIME);
     expect(Object.isFrozen(database)).toBe(true);
     expect(Object.isFrozen(store)).toBe(true);
     expect(Object.isFrozen(ControlPlaneDatabase.prototype)).toBe(true);
@@ -327,14 +334,11 @@ describe("store-bound external action authorization", () => {
       seeded.store,
       secondProposal,
     );
-    seeded.store.decideApproval({
-      id: secondApproval.id,
-      expectedRevision: 0,
-      expectedPayloadHash: secondApproval.payloadHash,
+    decideTestApproval(seeded.store, {
+      approvalId: secondApproval.id,
       decision: "accepted",
-      actor: ACTION_OPERATOR,
       userAction: "approve_store_bound_external_action",
-      at: "2026-07-13T14:00:04.000Z",
+      issuedAt: "2026-07-13T14:00:04.000Z",
     });
     vi.setSystemTime("2026-07-13T14:00:05.000Z");
     const secondRunner = new DeterministicMockActionRunner({
@@ -391,18 +395,27 @@ describe("store-bound external action authorization", () => {
   });
 
   it("requires exact accepted operator evidence", () => {
-    const store = new ControlPlaneStore(database);
+    const store = createTestControlPlaneStore(database, ACTION_TIME);
+    enrollTestOperator(store, ACTION_TIME);
+    const approval = new ApprovalQueue().enqueue({
+      id: "kill-switch-blocked-approval",
+      kind: "privacy_alert",
+      summary: "Acknowledge local blocked action",
+      technicalDetails: "Local fixture evidence only.",
+      impact: "No action may run while the kill switch is engaged.",
+      policyVersion: null,
+      policyHash: null,
+      createdAt: ACTION_TIME,
+      auditReference: "audit:kill-switch-blocked",
+    });
+    store.persistApproval(approval);
+    const signed = signTestApprovalDecision(store, {
+      approvalId: approval.id,
+      decision: "accepted",
+      userAction: "approve_store_bound_external_action",
+      issuedAt: ACTION_DECISION_TIME,
+    });
     expect(() => new StoreBoundExternalActionEvaluator(store)).not.toThrow();
-    expect(() =>
-      store.decideApproval({
-        id: "missing",
-        expectedRevision: 0,
-        expectedPayloadHash: "0".repeat(64),
-        decision: "accepted",
-        actor: ACTION_OPERATOR,
-        userAction: "approve_store_bound_external_action",
-        at: ACTION_DECISION_TIME,
-      }),
-    ).toThrow("APPROVAL_KILL_SWITCH");
+    expect(() => store.decideApproval(signed)).toThrow("APPROVAL_KILL_SWITCH");
   });
 });

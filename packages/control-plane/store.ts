@@ -1,5 +1,6 @@
 import { canonicalJson, sha256 } from "../shared/canonical.js";
 import { SecurityError } from "../shared/errors.js";
+import { types } from "node:util";
 import { ApprovalQueue } from "./approval-queue.js";
 import {
   campaignApprovalDigest,
@@ -23,6 +24,25 @@ import type {
 } from "./external-action-evidence.js";
 import type { ExternalActionProposal } from "../external-actions/proposal.js";
 import type { ExternalActionEvidenceDefinition } from "./external-action-evidence.js";
+import {
+  APPROVAL_DECISION_DOMAIN,
+  KILL_SWITCH_CLEAR_DOMAIN,
+  OPERATOR_ENROLLMENT_DOMAIN,
+  approvalDecisionStatementDigest,
+  killSwitchClearStatementDigest,
+  operatorEnrollmentStatementDigest,
+  validateAndFreezeSignedApprovalDecision,
+  validateAndFreezeSignedKillSwitchClearCommand,
+  validateAndFreezeOperatorEnrollmentProof,
+  verifyOperatorEnrollmentProof,
+  verifySignedApprovalDecision,
+  verifySignedKillSwitchClearCommand,
+  type OperatorApprovalKind,
+  type OperatorCredentialDescriptor,
+  type SignedApprovalDecision,
+  type SignedKillSwitchClearCommand,
+  type SignedOperatorEnrollmentProof,
+} from "../operator-auth/index.js";
 import type {
   ApprovalRecord,
   CampaignRecord,
@@ -55,14 +75,54 @@ export interface ControlPlaneAuditRecord {
   readonly payloadHash: string;
 }
 
+export interface ApprovalDecisionSigningContext {
+  readonly controlPlaneId: string;
+  readonly approvalId: string;
+  readonly approvalKind: OperatorApprovalKind;
+  readonly approvalPayloadHashSha256: string;
+  readonly expectedRevision: number;
+  readonly contextDigestSha256: string;
+}
+
+export interface KillSwitchClearSigningContext {
+  readonly controlPlaneId: string;
+  readonly expectedRevision: number;
+  readonly contextDigestSha256: string;
+}
+
+export interface AuthenticatedApprovalDecisionEvidence {
+  readonly statementDigest: string;
+  readonly keyFingerprintSha256: string;
+  readonly keyRevision: number;
+}
+
+export type ControlPlaneClock = () => Date;
+
 const trustedControlPlaneStores = new WeakSet();
+const APPROVAL_KINDS = Object.freeze([
+  "program_policy_acceptance",
+  "campaign_contract",
+  "account_manual_action",
+  "external_action",
+  "tier_3_action",
+  "privacy_alert",
+  "report_bundle",
+  "triage_response",
+] as const satisfies readonly OperatorApprovalKind[]);
 
 export class ControlPlaneStore {
   private readonly externalActions: ExternalActionEvidenceStore;
+  readonly #now: ControlPlaneClock;
 
-  public constructor(private readonly database: ControlPlaneDatabase) {
+  public constructor(
+    private readonly database: ControlPlaneDatabase,
+    now: ControlPlaneClock = systemClock,
+  ) {
     if (!isTrustedControlPlaneDatabase(database))
       throw new SecurityError("CONTROL_PLANE_DATABASE_UNTRUSTED");
+    if (typeof now !== "function" || types.isProxy(now))
+      throw new SecurityError("CONTROL_PLANE_CLOCK_UNTRUSTED");
+    this.#now = now;
     this.externalActions = new ExternalActionEvidenceStore(database, this);
     trustedControlPlaneStores.add(this);
     Object.freeze(this);
@@ -121,6 +181,335 @@ export class ControlPlaneStore {
 
   public listExternalActionAttempts(): readonly ExternalActionAttemptRecord[] {
     return this.externalActions.listAttempts();
+  }
+
+  public getControlPlaneId(): string {
+    const value = this.database.get(
+      "SELECT control_plane_id FROM control_plane_identity WHERE singleton=1",
+    )?.["control_plane_id"];
+    if (typeof value !== "string" || !/^[a-f0-9]{64}$/u.test(value))
+      throw new SecurityError("CONTROL_PLANE_IDENTITY_INVALID");
+    return value;
+  }
+
+  public getLocalOperatorCredential():
+    OperatorCredentialDescriptor | undefined {
+    const row = this.database.get(
+      `SELECT c.*,s.purpose,s.session_id,s.nonce,s.issued_at,s.expires_at,
+        s.verified_at,s.signature_base64url
+       FROM local_operator_credentials c
+       JOIN operator_signed_statements s
+         ON s.statement_digest=c.enrollment_statement_digest
+       WHERE c.singleton=1`,
+    );
+    if (row === undefined) return undefined;
+    const proof = Object.freeze({
+      version: 1 as const,
+      domain: OPERATOR_ENROLLMENT_DOMAIN,
+      control_plane_id: text(row, "control_plane_id"),
+      operator_id: text(row, "operator_id"),
+      public_key_spki_base64url: text(row, "public_key_spki_base64url"),
+      key_fingerprint_sha256: text(row, "key_fingerprint_sha256"),
+      key_revision: number(row, "key_revision"),
+      session_id: text(row, "session_id"),
+      nonce: text(row, "nonce"),
+      issued_at: text(row, "issued_at"),
+      expires_at: text(row, "expires_at"),
+      signature_base64url: text(row, "signature_base64url"),
+    });
+    if (row["purpose"] !== "operator_enrollment")
+      throw new SecurityError("OPERATOR_CREDENTIAL_INVALID");
+    const verified = verifyOperatorEnrollmentProof(proof, {
+      controlPlaneId: this.getControlPlaneId(),
+      operatorId: proof.operator_id,
+      keyRevision: proof.key_revision,
+      sessionId: proof.session_id,
+      observedAt: text(row, "verified_at"),
+    });
+    if (
+      operatorEnrollmentStatementDigest(verified) !==
+        text(row, "enrollment_statement_digest") ||
+      text(row, "enrolled_at") !== verified.issued_at
+    )
+      throw new SecurityError("OPERATOR_CREDENTIAL_INVALID");
+    return Object.freeze({
+      operator_id: verified.operator_id,
+      public_key_spki_base64url: verified.public_key_spki_base64url,
+      key_fingerprint_sha256: verified.key_fingerprint_sha256,
+      key_revision: verified.key_revision,
+    });
+  }
+
+  public enrollLocalOperator(
+    value: SignedOperatorEnrollmentProof,
+  ): OperatorCredentialDescriptor {
+    const proof = validateAndFreezeOperatorEnrollmentProof(value);
+    return this.database.transaction(() => {
+      const observedAt = this.observeOperatorTime();
+      if (!this.isKillSwitchActive())
+        throw new SecurityError("OPERATOR_ENROLLMENT_KILL_SWITCH_REQUIRED");
+      if (this.getLocalOperatorCredential() !== undefined)
+        throw new SecurityError("OPERATOR_CREDENTIAL_ALREADY_ENROLLED");
+      const verified = verifyOperatorEnrollmentProof(proof, {
+        controlPlaneId: this.getControlPlaneId(),
+        operatorId: proof.operator_id,
+        keyRevision: proof.key_revision,
+        sessionId: proof.session_id,
+        observedAt,
+      });
+      const statementDigest = operatorEnrollmentStatementDigest(verified);
+      this.insertOperatorStatement(
+        "operator_enrollment",
+        statementDigest,
+        verified,
+        observedAt,
+      );
+      this.database.run(
+        `INSERT INTO local_operator_credentials(
+          singleton,control_plane_id,operator_id,public_key_spki_base64url,
+          key_fingerprint_sha256,key_revision,enrollment_statement_digest,
+          enrolled_at
+        ) VALUES(1,?,?,?,?,?,?,?)`,
+        verified.control_plane_id,
+        verified.operator_id,
+        verified.public_key_spki_base64url,
+        verified.key_fingerprint_sha256,
+        verified.key_revision,
+        statementDigest,
+        verified.issued_at,
+      );
+      const credential = this.getLocalOperatorCredential();
+      if (credential === undefined)
+        throw new SecurityError("OPERATOR_ENROLLMENT_FAILED");
+      return credential;
+    });
+  }
+
+  public authenticateLocalOperatorSession(
+    value: SignedOperatorEnrollmentProof,
+  ): OperatorCredentialDescriptor {
+    const proof = validateAndFreezeOperatorEnrollmentProof(value);
+    return this.database.transaction(() => {
+      const observedAt = this.observeOperatorTime();
+      const credential = this.getLocalOperatorCredential();
+      if (credential === undefined)
+        throw new SecurityError("OPERATOR_CREDENTIAL_REQUIRED");
+      const verified = verifyOperatorEnrollmentProof(proof, {
+        controlPlaneId: this.getControlPlaneId(),
+        operatorId: credential.operator_id,
+        keyRevision: credential.key_revision,
+        sessionId: proof.session_id,
+        observedAt,
+      });
+      if (
+        verified.public_key_spki_base64url !==
+          credential.public_key_spki_base64url ||
+        verified.key_fingerprint_sha256 !== credential.key_fingerprint_sha256
+      )
+        throw new SecurityError("OPERATOR_CREDENTIAL_MISMATCH");
+      this.insertOperatorStatement(
+        "operator_enrollment",
+        operatorEnrollmentStatementDigest(verified),
+        verified,
+        observedAt,
+      );
+      return credential;
+    });
+  }
+
+  public describeApprovalDecision(
+    approvalId: string,
+  ): ApprovalDecisionSigningContext {
+    return this.database.transaction(() => {
+      const row = this.database.get(
+        "SELECT * FROM approvals WHERE id=?",
+        approvalId,
+      );
+      if (row === undefined) throw new SecurityError("APPROVAL_NOT_FOUND");
+      const approval = approvalFromRow(row);
+      if (approval.status !== "open" || approval.revision !== 0)
+        throw new SecurityError("APPROVAL_ALREADY_PROCESSED");
+      return this.approvalSigningContext(approval);
+    });
+  }
+
+  public requireAuthenticatedApprovalDecision(
+    approval: ApprovalRecord,
+    expectedContextDigest: string,
+  ): AuthenticatedApprovalDecisionEvidence {
+    if (
+      approval.status === "open" ||
+      approval.revision !== 1 ||
+      approval.decidedAt === null ||
+      approval.decidedBy === null ||
+      approval.userAction === null
+    )
+      throw new SecurityError("SIGNED_APPROVAL_DECISION_REQUIRED");
+    const row = this.database.get(
+      `SELECT d.*,s.purpose,s.control_plane_id,s.operator_id,
+        s.key_fingerprint_sha256,s.key_revision,s.session_id,s.nonce,
+        s.issued_at,s.expires_at,s.verified_at,s.signature_base64url
+       FROM signed_approval_decisions d
+       JOIN operator_signed_statements s
+         ON s.statement_digest=d.statement_digest
+       WHERE d.approval_id=?`,
+      approval.id,
+    );
+    if (row?.["purpose"] !== "approval_decision")
+      throw new SecurityError("SIGNED_APPROVAL_DECISION_REQUIRED");
+    const signed = Object.freeze({
+      version: 1 as const,
+      domain: APPROVAL_DECISION_DOMAIN,
+      control_plane_id: text(row, "control_plane_id"),
+      approval_id: text(row, "approval_id"),
+      approval_kind: enumText(row, "approval_kind", APPROVAL_KINDS),
+      approval_payload_hash_sha256: text(row, "approval_payload_hash_sha256"),
+      expected_revision: number(row, "expected_revision"),
+      decision: enumText(row, "decision", ["accepted", "rejected"]),
+      user_action: text(row, "user_action"),
+      operator_id: text(row, "operator_id"),
+      key_fingerprint_sha256: text(row, "key_fingerprint_sha256"),
+      key_revision: number(row, "key_revision"),
+      context_digest_sha256: text(row, "context_digest_sha256"),
+      session_id: text(row, "session_id"),
+      nonce: text(row, "nonce"),
+      issued_at: text(row, "issued_at"),
+      expires_at: text(row, "expires_at"),
+      signature_base64url: text(row, "signature_base64url"),
+    });
+    const credential = this.getLocalOperatorCredential();
+    if (credential === undefined)
+      throw new SecurityError("OPERATOR_CREDENTIAL_REQUIRED");
+    const verified = verifySignedApprovalDecision(signed, {
+      controlPlaneId: this.getControlPlaneId(),
+      credential,
+      sessionId: signed.session_id,
+      observedAt: text(row, "verified_at"),
+      approvalId: approval.id,
+      approvalKind: approval.kind,
+      approvalPayloadHashSha256: approval.payloadHash,
+      expectedRevision: 0,
+      contextDigestSha256: expectedContextDigest,
+    });
+    this.assertAuthenticatedOperatorSession(verified, text(row, "verified_at"));
+    const statementDigest = approvalDecisionStatementDigest(verified);
+    if (
+      statementDigest !== text(row, "statement_digest") ||
+      verified.decision !== approval.status ||
+      verified.operator_id !== approval.decidedBy ||
+      verified.user_action !== approval.userAction ||
+      verified.issued_at !== approval.decidedAt
+    )
+      throw new SecurityError("SIGNED_APPROVAL_DECISION_INVALID");
+    return Object.freeze({
+      statementDigest,
+      keyFingerprintSha256: verified.key_fingerprint_sha256,
+      keyRevision: verified.key_revision,
+    });
+  }
+
+  private approvalSigningContext(
+    approval: ApprovalRecord,
+  ): ApprovalDecisionSigningContext {
+    if (approval.status !== "open" || approval.revision !== 0)
+      throw new SecurityError("APPROVAL_ALREADY_PROCESSED");
+    const contextDigest =
+      approval.kind === "external_action"
+        ? this.externalActions.approvalContextDigest(approval.id)
+        : approval.payloadHash;
+    return Object.freeze({
+      controlPlaneId: this.getControlPlaneId(),
+      approvalId: approval.id,
+      approvalKind: approval.kind,
+      approvalPayloadHashSha256: approval.payloadHash,
+      expectedRevision: approval.revision,
+      contextDigestSha256: contextDigest,
+    });
+  }
+
+  private insertOperatorStatement(
+    purpose: "operator_enrollment" | "approval_decision" | "kill_switch_clear",
+    statementDigest: string,
+    statement:
+      | SignedOperatorEnrollmentProof
+      | SignedApprovalDecision
+      | SignedKillSwitchClearCommand,
+    observedAt: string,
+  ): void {
+    this.database.run(
+      `INSERT INTO operator_signed_statements(
+        statement_digest,purpose,control_plane_id,operator_id,
+        key_fingerprint_sha256,key_revision,session_id,nonce,issued_at,
+        expires_at,verified_at,signature_base64url
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+      statementDigest,
+      purpose,
+      statement.control_plane_id,
+      statement.operator_id,
+      statement.key_fingerprint_sha256,
+      statement.key_revision,
+      statement.session_id,
+      statement.nonce,
+      statement.issued_at,
+      statement.expires_at,
+      observedAt,
+      statement.signature_base64url,
+    );
+  }
+
+  private assertAuthenticatedOperatorSession(
+    statement: SignedApprovalDecision | SignedKillSwitchClearCommand,
+    observedAt: string,
+  ): void {
+    const row = this.database.get(
+      `SELECT s.*,c.public_key_spki_base64url
+       FROM operator_signed_statements s
+       JOIN local_operator_credentials c
+         ON c.control_plane_id=s.control_plane_id
+        AND c.operator_id=s.operator_id
+        AND c.key_fingerprint_sha256=s.key_fingerprint_sha256
+        AND c.key_revision=s.key_revision
+       WHERE s.purpose='operator_enrollment'
+         AND s.control_plane_id=? AND s.operator_id=?
+         AND s.key_fingerprint_sha256=? AND s.key_revision=?
+         AND s.session_id=? AND s.verified_at<=? AND s.expires_at>?
+       ORDER BY s.verified_at DESC,s.statement_digest DESC LIMIT 1`,
+      statement.control_plane_id,
+      statement.operator_id,
+      statement.key_fingerprint_sha256,
+      statement.key_revision,
+      statement.session_id,
+      observedAt,
+      observedAt,
+    );
+    if (row === undefined)
+      throw new SecurityError("OPERATOR_SESSION_AUTHENTICATION_REQUIRED");
+    const proof = Object.freeze({
+      version: 1 as const,
+      domain: OPERATOR_ENROLLMENT_DOMAIN,
+      control_plane_id: text(row, "control_plane_id"),
+      operator_id: text(row, "operator_id"),
+      public_key_spki_base64url: text(row, "public_key_spki_base64url"),
+      key_fingerprint_sha256: text(row, "key_fingerprint_sha256"),
+      key_revision: number(row, "key_revision"),
+      session_id: text(row, "session_id"),
+      nonce: text(row, "nonce"),
+      issued_at: text(row, "issued_at"),
+      expires_at: text(row, "expires_at"),
+      signature_base64url: text(row, "signature_base64url"),
+    });
+    const verified = verifyOperatorEnrollmentProof(proof, {
+      controlPlaneId: statement.control_plane_id,
+      operatorId: statement.operator_id,
+      keyRevision: statement.key_revision,
+      sessionId: statement.session_id,
+      observedAt: text(row, "verified_at"),
+    });
+    if (
+      operatorEnrollmentStatementDigest(verified) !==
+      text(row, "statement_digest")
+    )
+      throw new SecurityError("OPERATOR_SESSION_AUTHENTICATION_INVALID");
   }
 
   public createProgram(
@@ -284,6 +673,7 @@ export class ControlPlaneStore {
     if (approval === undefined)
       throw new SecurityError("POLICY_ACCEPTANCE_EVIDENCE_REQUIRED");
     new ApprovalQueue([approval]);
+    this.requireAuthenticatedApprovalDecision(approval, approval.payloadHash);
     this.database.transaction(() => {
       this.database.run(
         `INSERT INTO policy_acceptances(
@@ -613,54 +1003,94 @@ export class ControlPlaneStore {
     );
   }
 
-  public decideApproval(input: {
-    readonly id: string;
-    readonly expectedRevision: number;
-    readonly expectedPayloadHash: string;
-    readonly decision: "accepted" | "rejected";
-    readonly actor: string;
-    readonly userAction: string;
-    readonly at: string;
-  }): ApprovalRecord {
+  public decideApproval(value: SignedApprovalDecision): ApprovalRecord {
+    const input = validateAndFreezeSignedApprovalDecision(value);
     return this.database.transaction(() => {
+      const observedAt = this.observeOperatorTime();
       if (this.isKillSwitchActive())
         throw new SecurityError("APPROVAL_KILL_SWITCH");
       const row = this.database.get(
         "SELECT * FROM approvals WHERE id=?",
-        input.id,
+        input.approval_id,
       );
       if (row === undefined) throw new SecurityError("APPROVAL_NOT_FOUND");
       const current = approvalFromRow(row);
+      const context = this.approvalSigningContext(current);
+      const credential = this.getLocalOperatorCredential();
+      if (credential === undefined)
+        throw new SecurityError("OPERATOR_CREDENTIAL_REQUIRED");
+      const verified = verifySignedApprovalDecision(input, {
+        controlPlaneId: context.controlPlaneId,
+        credential,
+        sessionId: input.session_id,
+        observedAt,
+        approvalId: context.approvalId,
+        approvalKind: context.approvalKind,
+        approvalPayloadHashSha256: context.approvalPayloadHashSha256,
+        expectedRevision: context.expectedRevision,
+        contextDigestSha256: context.contextDigestSha256,
+      });
+      this.assertAuthenticatedOperatorSession(verified, observedAt);
+      const statementDigest = approvalDecisionStatementDigest(verified);
+      this.insertOperatorStatement(
+        "approval_decision",
+        statementDigest,
+        verified,
+        observedAt,
+      );
+      this.database.run(
+        `INSERT INTO signed_approval_decisions(
+          approval_id,statement_digest,approval_kind,
+          approval_payload_hash_sha256,expected_revision,decision,user_action,
+          context_digest_sha256
+        ) VALUES(?,?,?,?,?,?,?,?)`,
+        verified.approval_id,
+        statementDigest,
+        verified.approval_kind,
+        verified.approval_payload_hash_sha256,
+        verified.expected_revision,
+        verified.decision,
+        verified.user_action,
+        verified.context_digest_sha256,
+      );
       const queue = new ApprovalQueue([current]);
       const decided = queue.decide({
-        ...input,
+        id: verified.approval_id,
+        expectedRevision: verified.expected_revision,
+        expectedPayloadHash: verified.approval_payload_hash_sha256,
+        decision: verified.decision,
+        actor: verified.operator_id,
+        userAction: verified.user_action,
+        at: verified.issued_at,
         killSwitchActive: false,
       });
       this.updateApproval(current.revision, decided);
+      const decisionAuditId = `approval-${sha256(
+        `${verified.approval_id}\u0000${verified.issued_at}\u0000${verified.decision}`,
+      ).slice(0, 32)}`;
       this.database.run(
         `INSERT INTO control_plane_audit(
           id,occurred_at,action,decision,reason_code,object_reference,payload_hash
         ) VALUES(?,?,?,?,?,?,?)`,
-        `approval-${sha256(`${input.id}\u0000${input.at}\u0000${input.decision}`).slice(0, 32)}`,
-        input.at,
+        decisionAuditId,
+        verified.issued_at,
         "approval_decision",
-        input.decision,
+        verified.decision,
         "HUMAN_APPROVAL_DECISION",
-        input.id,
-        decided.payloadHash,
+        verified.approval_id,
+        statementDigest,
       );
       const binding = this.database.get(
         "SELECT approval_id FROM external_action_approval_bindings WHERE approval_id=?",
-        input.id,
+        verified.approval_id,
       );
-      if (binding !== undefined && input.decision === "accepted") {
-        const decisionAuditId = `approval-${sha256(`${input.id}\u0000${input.at}\u0000${input.decision}`).slice(0, 32)}`;
+      if (binding !== undefined && verified.decision === "accepted") {
         const linked = this.database.run(
           `UPDATE external_action_approval_bindings
            SET decision_audit_id=?
            WHERE approval_id=? AND decision_audit_id IS NULL`,
           decisionAuditId,
-          input.id,
+          verified.approval_id,
         );
         if (linked.changes !== 1)
           throw new SecurityError("ACTION_APPROVAL_AUDIT_BINDING_FAILED");
@@ -711,6 +1141,24 @@ export class ControlPlaneStore {
     );
   }
 
+  public describeKillSwitchClear(): KillSwitchClearSigningContext {
+    const row = this.database.get(
+      `SELECT value,revision FROM system_state
+       WHERE key='global_kill_switch'`,
+    );
+    if (row?.["value"] !== "engaged")
+      throw new SecurityError("KILL_SWITCH_NOT_ENGAGED");
+    const revision = number(row, "revision");
+    return Object.freeze({
+      controlPlaneId: this.getControlPlaneId(),
+      expectedRevision: revision,
+      contextDigestSha256: killSwitchContextDigest(
+        this.getControlPlaneId(),
+        revision,
+      ),
+    });
+  }
+
   public isKillSwitchActive(): boolean {
     try {
       const row = this.database.get(
@@ -723,7 +1171,7 @@ export class ControlPlaneStore {
            ON a.id=s.audit_reference
          WHERE s.key='global_kill_switch'`,
       );
-      return row === undefined || !validKillSwitchClear(row);
+      return row === undefined || !this.validSignedKillSwitchClear(row);
     } catch {
       return true;
     }
@@ -736,38 +1184,11 @@ export class ControlPlaneStore {
   ): { readonly active: boolean; readonly revision: number } {
     if (typeof active !== "boolean")
       throw new SecurityError("KILL_SWITCH_VALUE_INVALID");
+    if (!active) throw new SecurityError("SIGNED_KILL_SWITCH_CLEAR_REQUIRED");
     assertActor(actor, "KILL_SWITCH_ACTOR_INVALID");
     assertTimestamp(at, "KILL_SWITCH_TIMESTAMP_INVALID");
-    const value = active ? "engaged" : "clear";
+    const value = "engaged";
     const id = `kill-${sha256(`${actor}\u0000${at}\u0000${value}`).slice(0, 32)}`;
-    const operation = (): {
-      readonly active: boolean;
-      readonly revision: number;
-    } => {
-      const revision = nextKillSwitchRevision(this.database);
-      this.database.run(
-        `INSERT INTO control_plane_audit(
-          id,occurred_at,action,decision,reason_code,object_reference,payload_hash
-        ) VALUES(?,?,?,?,?,?,?)`,
-        id,
-        at,
-        "kill_switch_change",
-        value,
-        active ? "HUMAN_KILL_SWITCH_ENGAGED" : "HUMAN_KILL_SWITCH_CLEARED",
-        actor,
-        sha256(canonicalJson({ active, actor, at, revision })),
-      );
-      this.database.run(
-        `UPDATE system_state SET value=?,revision=?,updated_at=?,audit_reference=?
-         WHERE key='global_kill_switch'`,
-        value,
-        revision,
-        at,
-        id,
-      );
-      return Object.freeze({ active, revision });
-    };
-    if (!active) return this.database.transaction(operation);
     // Engagement is written first. If audit persistence fails, callers receive an
     // error but the system remains blocked instead of rolling back to unsafe state.
     const revision = nextKillSwitchRevision(this.database);
@@ -812,6 +1233,174 @@ export class ControlPlaneStore {
     return Object.freeze({ active: true, revision });
   }
 
+  public clearKillSwitch(value: SignedKillSwitchClearCommand): {
+    readonly active: false;
+    readonly revision: number;
+  } {
+    const command = validateAndFreezeSignedKillSwitchClearCommand(value);
+    return this.database.transaction(() => {
+      const observedAt = this.observeOperatorTime();
+      const context = this.describeKillSwitchClear();
+      const credential = this.getLocalOperatorCredential();
+      if (credential === undefined)
+        throw new SecurityError("OPERATOR_CREDENTIAL_REQUIRED");
+      const verified = verifySignedKillSwitchClearCommand(command, {
+        controlPlaneId: context.controlPlaneId,
+        credential,
+        sessionId: command.session_id,
+        observedAt,
+        expectedRevision: context.expectedRevision,
+        contextDigestSha256: context.contextDigestSha256,
+      });
+      this.assertAuthenticatedOperatorSession(verified, observedAt);
+      const statementDigest = killSwitchClearStatementDigest(verified);
+      this.insertOperatorStatement(
+        "kill_switch_clear",
+        statementDigest,
+        verified,
+        observedAt,
+      );
+      this.database.run(
+        `INSERT INTO signed_kill_switch_clears(
+          statement_digest,expected_revision,user_action,context_digest_sha256
+        ) VALUES(?,?,?,?)`,
+        statementDigest,
+        verified.expected_revision,
+        verified.user_action,
+        verified.context_digest_sha256,
+      );
+      const revision = context.expectedRevision + 1;
+      const auditId = `kill-${sha256(statementDigest).slice(0, 32)}`;
+      this.database.run(
+        `INSERT INTO control_plane_audit(
+          id,occurred_at,action,decision,reason_code,object_reference,payload_hash
+        ) VALUES(?,?,?,?,?,?,?)`,
+        auditId,
+        verified.issued_at,
+        "kill_switch_change",
+        "clear",
+        "HUMAN_KILL_SWITCH_CLEARED",
+        verified.operator_id,
+        statementDigest,
+      );
+      const updated = this.database.run(
+        `UPDATE system_state SET value='clear',revision=?,updated_at=?,
+          audit_reference=?
+         WHERE key='global_kill_switch' AND value='engaged' AND revision=?`,
+        revision,
+        verified.issued_at,
+        auditId,
+        context.expectedRevision,
+      );
+      if (updated.changes !== 1)
+        throw new SecurityError("KILL_SWITCH_STATE_UNAVAILABLE");
+      if (this.isKillSwitchActive())
+        throw new SecurityError("SIGNED_KILL_SWITCH_CLEAR_INVALID");
+      return Object.freeze({ active: false as const, revision });
+    });
+  }
+
+  private validSignedKillSwitchClear(row: Row): boolean {
+    if (row["value"] !== "clear") return false;
+    const revision = number(row, "revision");
+    if (revision < 1) return false;
+    const statementDigest = text(row, "audit_payload_hash");
+    const evidence = this.database.get(
+      `SELECT k.expected_revision,k.user_action,k.context_digest_sha256,
+        s.purpose,s.control_plane_id,s.operator_id,s.key_fingerprint_sha256,
+        s.key_revision,s.session_id,s.nonce,s.issued_at,s.expires_at,
+        s.verified_at,s.signature_base64url
+       FROM signed_kill_switch_clears k
+       JOIN operator_signed_statements s
+         ON s.statement_digest=k.statement_digest
+       WHERE k.statement_digest=?`,
+      statementDigest,
+    );
+    if (evidence?.["purpose"] !== "kill_switch_clear") return false;
+    const signed = Object.freeze({
+      version: 1 as const,
+      domain: KILL_SWITCH_CLEAR_DOMAIN,
+      control_plane_id: text(evidence, "control_plane_id"),
+      command: "clear" as const,
+      expected_revision: number(evidence, "expected_revision"),
+      user_action: text(evidence, "user_action"),
+      operator_id: text(evidence, "operator_id"),
+      key_fingerprint_sha256: text(evidence, "key_fingerprint_sha256"),
+      key_revision: number(evidence, "key_revision"),
+      context_digest_sha256: text(evidence, "context_digest_sha256"),
+      session_id: text(evidence, "session_id"),
+      nonce: text(evidence, "nonce"),
+      issued_at: text(evidence, "issued_at"),
+      expires_at: text(evidence, "expires_at"),
+      signature_base64url: text(evidence, "signature_base64url"),
+    });
+    const credential = this.getLocalOperatorCredential();
+    if (credential === undefined) return false;
+    const expectedRevision = revision - 1;
+    const verified = verifySignedKillSwitchClearCommand(signed, {
+      controlPlaneId: this.getControlPlaneId(),
+      credential,
+      sessionId: signed.session_id,
+      observedAt: text(evidence, "verified_at"),
+      expectedRevision,
+      contextDigestSha256: killSwitchContextDigest(
+        this.getControlPlaneId(),
+        expectedRevision,
+      ),
+    });
+    this.assertAuthenticatedOperatorSession(
+      verified,
+      text(evidence, "verified_at"),
+    );
+    const auditId = `kill-${sha256(statementDigest).slice(0, 32)}`;
+    return (
+      killSwitchClearStatementDigest(verified) === statementDigest &&
+      signed.issued_at === row["updated_at"] &&
+      row["audit_reference"] === auditId &&
+      row["audit_id"] === auditId &&
+      row["audit_occurred_at"] === signed.issued_at &&
+      row["audit_action"] === "kill_switch_change" &&
+      row["audit_decision"] === "clear" &&
+      row["audit_reason_code"] === "HUMAN_KILL_SWITCH_CLEARED" &&
+      row["audit_actor"] === signed.operator_id
+    );
+  }
+
+  private observeOperatorTime(): string {
+    let candidate: unknown;
+    try {
+      candidate = this.#now();
+    } catch {
+      throw new SecurityError("OPERATOR_CLOCK_UNAVAILABLE");
+    }
+    if (
+      typeof candidate !== "object" ||
+      candidate === null ||
+      types.isProxy(candidate) ||
+      Reflect.getPrototypeOf(candidate) !== Date.prototype
+    )
+      throw new SecurityError("OPERATOR_CLOCK_INVALID");
+    let milliseconds: unknown;
+    try {
+      const getTime: unknown = Reflect.get(Date.prototype, "getTime");
+      if (typeof getTime !== "function") throw new Error("DATE_INTRINSIC");
+      milliseconds = Reflect.apply(getTime, candidate, []);
+    } catch {
+      throw new SecurityError("OPERATOR_CLOCK_INVALID");
+    }
+    if (typeof milliseconds !== "number" || !Number.isFinite(milliseconds))
+      throw new SecurityError("OPERATOR_CLOCK_INVALID");
+    const observedAt = new Date(milliseconds).toISOString();
+    const previous = this.database.get(
+      "SELECT max(verified_at) AS verified_at FROM operator_signed_statements",
+    )?.["verified_at"];
+    if (previous !== null && previous !== undefined) {
+      if (typeof previous !== "string" || observedAt < previous)
+        throw new SecurityError("OPERATOR_CLOCK_ROLLBACK");
+    }
+    return observedAt;
+  }
+
   private assertPolicyAcceptanceEvidence(policy: StoredPolicyVersion): void {
     const acceptance = policy.acceptance;
     if (acceptance === null) return;
@@ -830,6 +1419,7 @@ export class ControlPlaneStore {
     if (approval === undefined)
       throw new SecurityError("POLICY_ACCEPTANCE_EVIDENCE_INVALID");
     new ApprovalQueue([approval]);
+    this.requireAuthenticatedApprovalDecision(approval, approval.payloadHash);
   }
 
   private assertCampaignPersistenceBindings(campaign: CampaignRecord): void {
@@ -904,6 +1494,10 @@ export class ControlPlaneStore {
       if (campaignApproval === undefined)
         throw new SecurityError("CAMPAIGN_APPROVAL_EVIDENCE_REQUIRED");
       new ApprovalQueue([campaignApproval]);
+      this.requireAuthenticatedApprovalDecision(
+        campaignApproval,
+        campaignApproval.payloadHash,
+      );
       if (this.isKillSwitchActive() || campaign.killSwitchStatus !== "clear")
         throw new SecurityError("CAMPAIGN_KILL_SWITCH");
     }
@@ -980,34 +1574,23 @@ function nextKillSwitchRevision(database: ControlPlaneDatabase): number {
   return revision + 1;
 }
 
-function validKillSwitchClear(row: Row): boolean {
-  const revision = row["revision"];
-  const at = row["updated_at"];
-  const actor = row["audit_actor"];
-  const auditReference = row["audit_reference"];
-  if (
-    row["value"] !== "clear" ||
-    typeof revision !== "number" ||
-    !Number.isSafeInteger(revision) ||
-    revision < 1 ||
-    typeof at !== "string" ||
-    !Number.isFinite(Date.parse(at)) ||
-    typeof actor !== "string" ||
-    !/^[A-Za-z0-9._@-]{1,128}$/u.test(actor) ||
-    typeof auditReference !== "string"
-  )
-    return false;
-  const expectedAuditId = `kill-${sha256(`${actor}\u0000${at}\u0000clear`).slice(0, 32)}`;
-  return (
-    auditReference === expectedAuditId &&
-    row["audit_id"] === expectedAuditId &&
-    row["audit_occurred_at"] === at &&
-    row["audit_action"] === "kill_switch_change" &&
-    row["audit_decision"] === "clear" &&
-    row["audit_reason_code"] === "HUMAN_KILL_SWITCH_CLEARED" &&
-    row["audit_payload_hash"] ===
-      sha256(canonicalJson({ active: false, actor, at, revision }))
+function killSwitchContextDigest(
+  controlPlaneId: string,
+  revision: number,
+): string {
+  return sha256(
+    canonicalJson({
+      domain: "bugbounty-copilot:control-plane:kill-switch-state:v1",
+      controlPlaneId,
+      key: "global_kill_switch",
+      value: "engaged",
+      revision,
+    }),
   );
+}
+
+function systemClock(): Date {
+  return new Date();
 }
 
 type Row = Readonly<

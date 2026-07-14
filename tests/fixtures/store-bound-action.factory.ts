@@ -1,9 +1,9 @@
 import { ApprovalQueue } from "../../packages/control-plane/approval-queue.js";
 import { campaignApprovalDigest } from "../../packages/control-plane/campaign-machine.js";
-import {
+import type {
+  CampaignRecord,
+  ControlPlaneDatabase,
   ControlPlaneStore,
-  type ControlPlaneDatabase,
-  type CampaignRecord,
 } from "../../packages/control-plane/index.js";
 import {
   enqueueStoreBoundExternalActionApproval,
@@ -20,11 +20,17 @@ import {
   ownedObject,
   programInput,
 } from "./control-plane.factory.js";
+import {
+  clearTestKillSwitch,
+  createTestControlPlaneStore,
+  decideTestApproval,
+  TEST_OPERATOR_ID,
+} from "./operator-auth.factory.js";
 
 export const ACTION_TIME = "2026-07-13T14:00:00.000Z";
 export const ACTION_DECISION_TIME = "2026-07-13T14:00:01.000Z";
 export const ACTION_EXECUTION_TIME = "2026-07-13T14:00:02.000Z";
-export const ACTION_OPERATOR = "local-reviewer";
+export const ACTION_OPERATOR = TEST_OPERATOR_ID;
 
 export interface SeededStoreBoundAction {
   readonly store: ControlPlaneStore;
@@ -40,6 +46,7 @@ export interface RunningCampaignSeedOptions {
   readonly clearKillSwitch: boolean;
   readonly maxRequests: number;
   readonly requestsPerMinute: number;
+  readonly approvalTime: string;
 }
 
 export function seedStoreBoundAction(
@@ -47,7 +54,7 @@ export function seedStoreBoundAction(
   actionId: ExternalActionId = "target_request",
   suffix = "1",
 ): SeededStoreBoundAction {
-  const store = new ControlPlaneStore(database);
+  const store = createTestControlPlaneStore(database, NOW);
   const running = seedRunningCampaign(store);
   const needsAccount =
     actionId === "browser_journey_start" ||
@@ -68,14 +75,11 @@ export function seedStoreBoundAction(
     operatorRef: ACTION_OPERATOR,
   });
   const approval = enqueueStoreBoundExternalActionApproval(store, proposal);
-  store.decideApproval({
-    id: approval.id,
-    expectedRevision: 0,
-    expectedPayloadHash: approval.payloadHash,
+  decideTestApproval(store, {
+    approvalId: approval.id,
     decision: "accepted",
-    actor: ACTION_OPERATOR,
     userAction: "approve_store_bound_external_action",
-    at: ACTION_DECISION_TIME,
+    issuedAt: ACTION_DECISION_TIME,
   });
   return Object.freeze({
     store,
@@ -92,6 +96,7 @@ export function seedRunningCampaign(
   const programId = options.programId ?? "program-local";
   const campaignId = options.campaignId ?? "campaign-local";
   const namespace = options.namespace ?? "action";
+  const approvalTime = options.approvalTime ?? LATER;
   const program = programInput();
   store.createProgram(
     programId === program.id
@@ -111,8 +116,8 @@ export function seedRunningCampaign(
     policy,
     createdAt: NOW,
   });
-  if (options.clearKillSwitch ?? true)
-    store.setKillSwitch(false, ACTION_OPERATOR, NOW);
+  if ((options.clearKillSwitch ?? true) && store.isKillSwitchActive())
+    clearTestKillSwitch(store, NOW);
   const policyApproval = new ApprovalQueue().enqueue({
     id: `policy-${namespace}-approval`,
     kind: "program_policy_acceptance",
@@ -125,21 +130,18 @@ export function seedRunningCampaign(
     auditReference: `audit:${namespace}-policy`,
   });
   store.persistApproval(policyApproval);
-  store.decideApproval({
-    id: policyApproval.id,
-    expectedRevision: 0,
-    expectedPayloadHash: policyApproval.payloadHash,
+  decideTestApproval(store, {
+    approvalId: policyApproval.id,
     decision: "accepted",
-    actor: ACTION_OPERATOR,
     userAction: "explicit_policy_acceptance",
-    at: LATER,
+    issuedAt: approvalTime,
   });
   store.acceptPolicy({
     programId,
     version: 1,
     expectedPolicyHash: policy.policyHash,
     acceptedBy: ACTION_OPERATOR,
-    acceptedAt: LATER,
+    acceptedAt: approvalTime,
     auditReference: `audit:${namespace}-policy`,
   });
   const base = campaign();
@@ -182,14 +184,11 @@ export function seedRunningCampaign(
     auditReference: `audit:${namespace}-campaign`,
   });
   store.persistApproval(campaignApproval);
-  store.decideApproval({
-    id: campaignApproval.id,
-    expectedRevision: 0,
-    expectedPayloadHash: campaignApproval.payloadHash,
+  decideTestApproval(store, {
+    approvalId: campaignApproval.id,
     decision: "accepted",
-    actor: ACTION_OPERATOR,
     userAction: "explicit_local_campaign_v1_approval",
-    at: LATER,
+    issuedAt: approvalTime,
   });
   store.updateCampaign(
     1,
@@ -202,7 +201,7 @@ export function seedRunningCampaign(
       state: "approved",
       revision: 2,
       humanApprovedBy: ACTION_OPERATOR,
-      humanApprovedAt: LATER,
+      humanApprovedAt: approvalTime,
     }),
   );
   const running = campaign({
@@ -214,8 +213,8 @@ export function seedRunningCampaign(
     state: "running_simulation",
     revision: 3,
     humanApprovedBy: ACTION_OPERATOR,
-    humanApprovedAt: LATER,
-    lastPolicyCheckAt: LATER,
+    humanApprovedAt: approvalTime,
+    lastPolicyCheckAt: approvalTime,
   });
   store.updateCampaign(2, running);
   return running;

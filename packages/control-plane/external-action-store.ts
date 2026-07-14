@@ -13,7 +13,11 @@ import {
   type ExternalActionProposalContext,
   type StoreBoundExternalActionAuthorization,
 } from "./external-action-evidence.js";
-import type { ControlPlaneAuditRecord, StoredPolicyVersion } from "./store.js";
+import type {
+  AuthenticatedApprovalDecisionEvidence,
+  ControlPlaneAuditRecord,
+  StoredPolicyVersion,
+} from "./store.js";
 import type {
   ApprovalRecord,
   CampaignRecord,
@@ -49,6 +53,10 @@ export interface ExternalActionEvidenceReader {
   listApprovals(): readonly ApprovalRecord[];
   listAuditEntries(): readonly ControlPlaneAuditRecord[];
   persistApproval(record: ApprovalRecord): void;
+  requireAuthenticatedApprovalDecision(
+    approval: ApprovalRecord,
+    expectedContextDigest: string,
+  ): AuthenticatedApprovalDecisionEvidence;
   isKillSwitchActive(): boolean;
 }
 
@@ -166,6 +174,22 @@ export class ExternalActionEvidenceStore {
     });
   }
 
+  public approvalContextDigest(approvalId: string): string {
+    const row = this.database.get(
+      "SELECT * FROM external_action_approval_bindings WHERE approval_id=?",
+      approvalId,
+    );
+    if (row === undefined)
+      throw new SecurityError("ACTION_APPROVAL_BINDING_REQUIRED");
+    const binding = bindingFromRow(row);
+    if (
+      binding.approvalId !== approvalId ||
+      binding.bindingDigest !== externalActionApprovalBindingDigest(binding)
+    )
+      throw new SecurityError("ACTION_APPROVAL_BINDING_INVALID");
+    return binding.bindingDigest;
+  }
+
   public authorizeAndReserve(
     input: AuthorizeExternalActionInput,
   ): StoreBoundExternalActionAuthorization {
@@ -183,7 +207,7 @@ export class ExternalActionEvidenceStore {
       });
       if (!proposalMatchesContext(input.proposal, context))
         throw new SecurityError("ACTION_PROPOSAL_EVIDENCE_MISMATCH");
-      const { binding, approval } = this.readAcceptedBinding(
+      const { binding, approval, decisionEvidence } = this.readAcceptedBinding(
         input.proposal,
         context,
         input.now,
@@ -201,6 +225,9 @@ export class ExternalActionEvidenceStore {
         binding,
         approvalPayloadHash: approval.payloadHash,
         approvalRevision: 1,
+        decisionStatementDigest: decisionEvidence.statementDigest,
+        decisionKeyFingerprintSha256: decisionEvidence.keyFingerprintSha256,
+        decisionKeyRevision: decisionEvidence.keyRevision,
       });
       const authorizationId = `action-${sha256(
         `${binding.proposalDigest}\u0000${input.now}`,
@@ -258,6 +285,9 @@ export class ExternalActionEvidenceStore {
         evidenceDigest,
         approvalPayloadHash: approval.payloadHash,
         approvalRevision: 1 as const,
+        decisionStatementDigest: decisionEvidence.statementDigest,
+        decisionKeyFingerprintSha256: decisionEvidence.keyFingerprintSha256,
+        decisionKeyRevision: decisionEvidence.keyRevision,
         reservationAuditId,
         reservedAt: input.now,
         units: 1 as const,
@@ -546,6 +576,7 @@ export class ExternalActionEvidenceStore {
   ): {
     readonly binding: ExternalActionApprovalBinding;
     readonly approval: ApprovalRecord & { readonly revision: 1 };
+    readonly decisionEvidence: AuthenticatedApprovalDecisionEvidence;
   } {
     const row = this.database.get(
       "SELECT * FROM external_action_approval_bindings WHERE approval_id=?",
@@ -615,9 +646,14 @@ export class ExternalActionEvidenceStore {
       audit.action !== "approval_decision" ||
       audit.decision !== "accepted" ||
       audit.reasonCode !== "HUMAN_APPROVAL_DECISION" ||
-      audit.objectReference !== approval.id ||
-      audit.payloadHash !== approval.payloadHash
+      audit.objectReference !== approval.id
     )
+      throw new SecurityError("ACTION_HUMAN_CHECKPOINT_REQUIRED");
+    const decisionEvidence = this.reader.requireAuthenticatedApprovalDecision(
+      approval,
+      binding.bindingDigest,
+    );
+    if (audit.payloadHash !== decisionEvidence.statementDigest)
       throw new SecurityError("ACTION_HUMAN_CHECKPOINT_REQUIRED");
     const campaign = requiredCampaign(this.reader, binding.campaignId);
     const policy = this.reader.getPolicy(
@@ -632,6 +668,7 @@ export class ExternalActionEvidenceStore {
     return {
       binding,
       approval,
+      decisionEvidence,
     };
   }
 
@@ -737,6 +774,10 @@ export class ExternalActionEvidenceStore {
       binding: current.binding,
       approvalPayloadHash: current.approval.payloadHash,
       approvalRevision: 1,
+      decisionStatementDigest: current.decisionEvidence.statementDigest,
+      decisionKeyFingerprintSha256:
+        current.decisionEvidence.keyFingerprintSha256,
+      decisionKeyRevision: current.decisionEvidence.keyRevision,
     });
     if (digest !== authorization.evidenceDigest)
       throw new SecurityError("ACTION_EVIDENCE_CHANGED");

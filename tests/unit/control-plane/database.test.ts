@@ -8,7 +8,7 @@ import {
   isTrustedControlPlaneDatabase,
 } from "../../../packages/control-plane/database.js";
 import { ApprovalQueue } from "../../../packages/control-plane/approval-queue.js";
-import { ControlPlaneStore } from "../../../packages/control-plane/store.js";
+import { externalActionApprovalBindingDigest } from "../../../packages/control-plane/external-action-evidence.js";
 import {
   campaign,
   controlPlanePolicy,
@@ -16,10 +16,15 @@ import {
   NOW,
   programInput,
 } from "../../fixtures/control-plane.factory.js";
+import {
+  clearTestKillSwitch,
+  createTestControlPlaneStore,
+  decideTestApproval,
+  enrollTestOperator,
+} from "../../fixtures/operator-auth.factory.js";
 
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
-const HASH_C = "c".repeat(64);
 const RESERVED_AT = "2026-07-13T12:30:00.000Z";
 const STARTED_AT = "2026-07-13T12:31:00.000Z";
 const FINISHED_AT = "2026-07-13T12:32:00.000Z";
@@ -108,7 +113,8 @@ describe("ControlPlaneDatabase migrations", () => {
 
   it("enforces immutable proposal bindings and single-use attempt transitions", () => {
     const database = ControlPlaneDatabase.memory();
-    const store = new ControlPlaneStore(database);
+    const store = createTestControlPlaneStore(database, NOW);
+    enrollTestOperator(store, NOW);
     store.createProgram(programInput(), NOW);
     const policy = controlPlanePolicy();
     store.addPolicyVersion({
@@ -169,37 +175,34 @@ describe("ControlPlaneDatabase migrations", () => {
       ),
     ).toThrow("EXTERNAL_ACTION_APPROVAL_BINDING_IMMUTABLE");
 
-    database.run(
-      `UPDATE approvals SET status='accepted',decided_at=?,decided_by=?,
-       user_action=?,revision=1 WHERE id=?`,
-      LATER,
-      "local-reviewer",
-      "explicit_external_action_approval",
+    expect(() =>
+      database.run(
+        `UPDATE approvals SET status='accepted',decided_at=?,decided_by=?,
+         user_action=?,revision=1 WHERE id=?`,
+        LATER,
+        "local-reviewer",
+        "explicit_external_action_approval",
+        approval.id,
+      ),
+    ).toThrow("SIGNED_APPROVAL_DECISION_REQUIRED");
+    clearTestKillSwitch(store, NOW);
+    decideTestApproval(store, {
+      approvalId: approval.id,
+      decision: "accepted",
+      userAction: "explicit_external_action_approval",
+      issuedAt: LATER,
+    });
+    const decisionAuditId = database.get(
+      `SELECT decision_audit_id FROM external_action_approval_bindings
+       WHERE approval_id=?`,
       approval.id,
-    );
-    database.run(
-      `INSERT INTO control_plane_audit(
-        id,occurred_at,action,decision,reason_code,object_reference,payload_hash
-      ) VALUES(?,?,?,?,?,?,?)`,
-      "decision-audit",
-      LATER,
-      "approval_decision",
-      "accepted",
-      "HUMAN_APPROVAL_DECISION",
-      approval.id,
-      approval.payloadHash,
-    );
-    database.run(
-      `UPDATE external_action_approval_bindings
-       SET decision_audit_id=? WHERE approval_id=?`,
-      "decision-audit",
-      approval.id,
-    );
+    )?.["decision_audit_id"];
+    expect(typeof decisionAuditId).toBe("string");
     expect(() =>
       database.run(
         `UPDATE external_action_approval_bindings
          SET decision_audit_id=? WHERE approval_id=?`,
-        "decision-audit",
+        decisionAuditId as string,
         approval.id,
       ),
     ).toThrow("EXTERNAL_ACTION_APPROVAL_EVIDENCE_INVALID");
@@ -274,7 +277,7 @@ describe("ControlPlaneDatabase migrations", () => {
 
   it("binds policy acceptances to the exact persisted hash", () => {
     const database = ControlPlaneDatabase.memory();
-    const store = new ControlPlaneStore(database);
+    const store = createTestControlPlaneStore(database, NOW);
     store.createProgram(programInput(), NOW);
     const policy = controlPlanePolicy();
     store.addPolicyVersion({
@@ -339,7 +342,7 @@ describe("ControlPlaneDatabase migrations", () => {
     const root = await mkdtemp(join(tmpdir(), "bbc-control-plane-cross-"));
     const path = join(root, "state.sqlite");
     const database = await ControlPlaneDatabase.file(path);
-    const store = new ControlPlaneStore(database);
+    const store = createTestControlPlaneStore(database, NOW);
     const policy = controlPlanePolicy();
     for (const [id, name] of [
       ["program-a", "Program A"],
@@ -353,6 +356,7 @@ describe("ControlPlaneDatabase migrations", () => {
         createdAt: NOW,
       });
     }
+    database.run("DROP TRIGGER approvals_signed_insert_guard");
     database.run(
       `INSERT INTO approvals(
         id,kind,summary,technical_details,impact,policy_version,policy_hash,
@@ -420,11 +424,13 @@ describe("ControlPlaneDatabase migrations", () => {
     await expect(ControlPlaneDatabase.file(path)).rejects.toThrow();
   });
 
-  it("migrates a phase-2-shaped database fail-closed into phase 3", async () => {
-    const root = await mkdtemp(join(tmpdir(), "bbc-control-plane-v4-"));
+  it("migrates a phase-3-shaped database fail-closed into phase 4", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bbc-control-plane-v5-"));
     const path = join(root, "state.sqlite");
     const database = await ControlPlaneDatabase.file(path);
-    const store = new ControlPlaneStore(database);
+    const store = createTestControlPlaneStore(database, NOW);
+    enrollTestOperator(store, NOW);
+    clearTestKillSwitch(store, NOW);
     store.createProgram(programInput(), NOW);
     const policy = controlPlanePolicy();
     store.addPolicyVersion({
@@ -433,7 +439,6 @@ describe("ControlPlaneDatabase migrations", () => {
       policy,
       createdAt: NOW,
     });
-    store.setKillSwitch(false, "local-reviewer", NOW);
     store.insertCampaign(campaign({ policyHash: policy.policyHash }));
     database.run(
       `UPDATE campaigns SET state='running_simulation',revision=3,
@@ -444,57 +449,75 @@ describe("ControlPlaneDatabase migrations", () => {
       "campaign-local",
     );
     const legacyApproval = new ApprovalQueue().enqueue({
-      id: "legacy-campaign-approval",
-      kind: "campaign_contract",
-      summary: "Legacy phase-2 approval",
-      technicalDetails: "Migration preservation fixture",
+      id: "legacy-policy-approval",
+      kind: "program_policy_acceptance",
+      summary: "Accept program-local policy version 1",
+      technicalDetails: "Unsigned Phase-3 migration fixture",
       impact: "Local fixture only",
       policyVersion: 1,
       policyHash: policy.policyHash,
       createdAt: NOW,
-      auditReference: "audit:legacy-campaign-approval",
+      auditReference: "audit:legacy-policy-approval",
     });
     store.persistApproval(legacyApproval);
 
-    database.run("DROP TABLE external_action_attempts");
-    database.run("DROP TABLE external_action_approval_bindings");
-    database.run("DROP INDEX owned_objects_external_action_binding");
-    database.run("DROP TRIGGER control_plane_audit_update_guard");
-    database.run("DROP TRIGGER control_plane_audit_delete_guard");
-    database.run(`CREATE TABLE approvals_v3 (
-      id TEXT PRIMARY KEY,
-      kind TEXT NOT NULL CHECK (kind IN ('program_policy_acceptance','campaign_contract','account_manual_action','tier_3_action','privacy_alert','report_bundle','triage_response')),
-      summary TEXT NOT NULL,
-      technical_details TEXT NOT NULL,
-      impact TEXT NOT NULL,
-      policy_version INTEGER,
-      policy_hash TEXT,
-      created_at TEXT NOT NULL,
-      status TEXT NOT NULL CHECK (status IN ('open','accepted','rejected')),
-      decided_at TEXT,
-      decided_by TEXT,
-      user_action TEXT,
-      audit_reference TEXT NOT NULL UNIQUE,
-      payload_hash TEXT NOT NULL,
-      revision INTEGER NOT NULL CHECK (revision >= 0)
-    ) STRICT`);
+    for (const trigger of [
+      "operator_signed_statements_update_guard",
+      "operator_signed_statements_delete_guard",
+      "local_operator_credentials_insert_guard",
+      "local_operator_credentials_update_guard",
+      "local_operator_credentials_delete_guard",
+      "signed_approval_decisions_insert_guard",
+      "signed_approval_decisions_update_guard",
+      "signed_approval_decisions_delete_guard",
+      "approvals_signed_insert_guard",
+      "approvals_signed_decision_guard",
+      "signed_kill_switch_clears_insert_guard",
+      "signed_kill_switch_clears_update_guard",
+      "signed_kill_switch_clears_delete_guard",
+      "system_state_signed_kill_clear_guard",
+    ])
+      database.run(`DROP TRIGGER ${trigger}`);
+    database.run("DROP TABLE signed_kill_switch_clears");
+    database.run("DROP TABLE signed_approval_decisions");
+    database.run("DROP TABLE local_operator_credentials");
+    database.run("DROP TABLE operator_signed_statements");
+    database.run("DROP TABLE control_plane_identity");
+    database.run("DELETE FROM schema_migrations WHERE version=5");
     database.run(
-      `INSERT INTO approvals_v3 SELECT id,kind,summary,technical_details,impact,
-       policy_version,policy_hash,created_at,status,decided_at,decided_by,
-       user_action,audit_reference,payload_hash,revision FROM approvals`,
+      `UPDATE approvals SET status='accepted',decided_at=?,decided_by=?,
+       user_action='legacy_unsigned_acceptance',revision=1 WHERE id=?`,
+      LATER,
+      "local-reviewer",
+      legacyApproval.id,
     );
-    database.run("DROP TABLE approvals");
-    database.run("ALTER TABLE approvals_v3 RENAME TO approvals");
-    database.run("DELETE FROM schema_migrations WHERE version=4");
+    database.run(
+      `INSERT INTO policy_acceptances(
+        program_id,version,policy_hash,accepted_by,accepted_at,audit_reference
+      ) VALUES(?,?,?,?,?,?)`,
+      "program-local",
+      1,
+      policy.policyHash,
+      "local-reviewer",
+      LATER,
+      legacyApproval.auditReference,
+    );
+    database.run(
+      `UPDATE programs SET rule_acceptance_status='accepted'
+       WHERE id='program-local'`,
+    );
     database.close();
 
     const migrated = await ControlPlaneDatabase.file(path);
-    expect(migrated.migrationVersion()).toBe(4);
+    expect(migrated.migrationVersion()).toBe(5);
     expect(
       migrated.get(
-        "SELECT kind FROM approvals WHERE id='legacy-campaign-approval'",
+        "SELECT kind,status FROM approvals WHERE id='legacy-policy-approval'",
       ),
-    ).toMatchObject({ kind: "campaign_contract" });
+    ).toMatchObject({
+      kind: "program_policy_acceptance",
+      status: "accepted",
+    });
     expect(
       migrated.get(
         "SELECT state,revision,human_approved_by,kill_switch_status FROM campaigns WHERE id='campaign-local'",
@@ -512,9 +535,23 @@ describe("ControlPlaneDatabase migrations", () => {
     ).toMatchObject({ value: "engaged", audit_reference: null });
     expect(
       migrated.get(
-        "SELECT name FROM sqlite_schema WHERE type='table' AND name='external_action_attempts'",
+        "SELECT rule_acceptance_status FROM programs WHERE id='program-local'",
       ),
-    ).toMatchObject({ name: "external_action_attempts" });
+    ).toMatchObject({ rule_acceptance_status: "pending" });
+    expect(
+      migrated.get("SELECT count(*) AS value FROM policy_acceptances"),
+    ).toMatchObject({ value: 0 });
+    const migratedStore = createTestControlPlaneStore(migrated, NOW);
+    const unsigned = migratedStore
+      .listApprovals()
+      .find((approval) => approval.id === legacyApproval.id);
+    expect(unsigned).toBeDefined();
+    expect(() =>
+      migratedStore.requireAuthenticatedApprovalDecision(
+        unsigned!,
+        legacyApproval.payloadHash,
+      ),
+    ).toThrow("SIGNED_APPROVAL_DECISION_REQUIRED");
     migrated.close();
   });
 });
@@ -527,6 +564,30 @@ function insertBinding(
     readonly proposalDigest?: string;
   } = {},
 ): void {
+  const proposalDigest = options.proposalDigest ?? HASH_A;
+  const bindingDigest = externalActionApprovalBindingDigest({
+    approvalId: options.approvalId ?? "external-action-approval",
+    proposalId: "proposal-1",
+    proposalDigest,
+    actionId: "platform_api_read",
+    programId: "program-local",
+    campaignId: "campaign-local",
+    campaignRevision: 0,
+    campaignDigest: HASH_B,
+    policyVersion: 1,
+    policyHash,
+    scopeRef: "scope-1",
+    accountId: null,
+    accountRole: null,
+    identityDigest: null,
+    objectRef: null,
+    ownershipDigest: null,
+    payloadRef: null,
+    operatorId: "local-reviewer",
+    createdAt: NOW,
+    expiresAt: LATER,
+    decisionAuditId: null,
+  });
   database.run(
     `INSERT INTO external_action_approval_bindings(
       approval_id,proposal_id,proposal_digest,action_id,program_id,campaign_id,
@@ -537,7 +598,7 @@ function insertBinding(
     ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     options.approvalId ?? "external-action-approval",
     "proposal-1",
-    options.proposalDigest ?? HASH_A,
+    proposalDigest,
     "platform_api_read",
     "program-local",
     "campaign-local",
@@ -555,7 +616,7 @@ function insertBinding(
     "local-reviewer",
     NOW,
     LATER,
-    HASH_C,
+    bindingDigest,
     null,
   );
 }

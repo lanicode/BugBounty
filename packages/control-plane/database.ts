@@ -646,6 +646,275 @@ SET state='paused',revision=revision+1,human_approved_by=NULL,
 WHERE state IN ('approved','running_simulation');
 `,
   }),
+  Object.freeze({
+    version: 5,
+    sql: `
+CREATE TABLE control_plane_identity (
+  singleton INTEGER PRIMARY KEY CHECK (singleton=1),
+  control_plane_id TEXT NOT NULL UNIQUE
+    CHECK (length(control_plane_id)=64 AND control_plane_id NOT GLOB '*[^0-9a-f]*')
+) STRICT;
+INSERT INTO control_plane_identity(singleton,control_plane_id)
+VALUES(1,lower(hex(randomblob(32))));
+CREATE TRIGGER control_plane_identity_insert_guard
+BEFORE INSERT ON control_plane_identity BEGIN
+  SELECT RAISE(ABORT,'CONTROL_PLANE_IDENTITY_IMMUTABLE');
+END;
+CREATE TRIGGER control_plane_identity_update_guard
+BEFORE UPDATE ON control_plane_identity BEGIN
+  SELECT RAISE(ABORT,'CONTROL_PLANE_IDENTITY_IMMUTABLE');
+END;
+CREATE TRIGGER control_plane_identity_delete_guard
+BEFORE DELETE ON control_plane_identity BEGIN
+  SELECT RAISE(ABORT,'CONTROL_PLANE_IDENTITY_IMMUTABLE');
+END;
+
+CREATE TABLE operator_signed_statements (
+  statement_digest TEXT PRIMARY KEY
+    CHECK (length(statement_digest)=64 AND statement_digest NOT GLOB '*[^0-9a-f]*'),
+  purpose TEXT NOT NULL CHECK (purpose IN (
+    'operator_enrollment','approval_decision','kill_switch_clear'
+  )),
+  control_plane_id TEXT NOT NULL
+    REFERENCES control_plane_identity(control_plane_id) ON DELETE RESTRICT,
+  operator_id TEXT NOT NULL
+    CHECK (length(operator_id) BETWEEN 1 AND 128 AND operator_id NOT GLOB '*[^A-Za-z0-9._@-]*'),
+  key_fingerprint_sha256 TEXT NOT NULL
+    CHECK (length(key_fingerprint_sha256)=64 AND key_fingerprint_sha256 NOT GLOB '*[^0-9a-f]*'),
+  key_revision INTEGER NOT NULL CHECK (key_revision > 0),
+  session_id TEXT NOT NULL CHECK (
+    length(session_id)=43 AND session_id NOT GLOB '*[^A-Za-z0-9_-]*'
+  ),
+  nonce TEXT NOT NULL UNIQUE CHECK (
+    length(nonce)=43 AND nonce NOT GLOB '*[^A-Za-z0-9_-]*'
+  ),
+  issued_at TEXT NOT NULL CHECK (length(issued_at)=24),
+  expires_at TEXT NOT NULL CHECK (length(expires_at)=24 AND expires_at>issued_at),
+  verified_at TEXT NOT NULL CHECK (
+    length(verified_at)=24 AND verified_at>=issued_at AND verified_at<expires_at
+  ),
+  signature_base64url TEXT NOT NULL CHECK (
+    length(signature_base64url)=86 AND signature_base64url NOT GLOB '*[^A-Za-z0-9_-]*'
+  )
+) STRICT;
+CREATE INDEX operator_signed_statements_session_lookup
+ON operator_signed_statements(
+  purpose,control_plane_id,operator_id,key_fingerprint_sha256,key_revision,
+  session_id,verified_at,expires_at
+);
+CREATE TRIGGER operator_signed_statements_clock_guard
+BEFORE INSERT ON operator_signed_statements BEGIN
+  SELECT RAISE(ABORT,'OPERATOR_CLOCK_ROLLBACK')
+  WHERE NEW.verified_at < COALESCE(
+    (SELECT max(verified_at) FROM operator_signed_statements),
+    NEW.verified_at
+  );
+END;
+CREATE TRIGGER operator_signed_statements_update_guard
+BEFORE UPDATE ON operator_signed_statements BEGIN
+  SELECT RAISE(ABORT,'OPERATOR_STATEMENT_IMMUTABLE');
+END;
+CREATE TRIGGER operator_signed_statements_delete_guard
+BEFORE DELETE ON operator_signed_statements BEGIN
+  SELECT RAISE(ABORT,'OPERATOR_STATEMENT_IMMUTABLE');
+END;
+
+CREATE TABLE local_operator_credentials (
+  singleton INTEGER PRIMARY KEY CHECK (singleton=1),
+  control_plane_id TEXT NOT NULL
+    REFERENCES control_plane_identity(control_plane_id) ON DELETE RESTRICT,
+  operator_id TEXT NOT NULL UNIQUE
+    CHECK (length(operator_id) BETWEEN 1 AND 128 AND operator_id NOT GLOB '*[^A-Za-z0-9._@-]*'),
+  public_key_spki_base64url TEXT NOT NULL UNIQUE CHECK (
+    length(public_key_spki_base64url) BETWEEN 40 AND 128
+    AND public_key_spki_base64url NOT GLOB '*[^A-Za-z0-9_-]*'
+  ),
+  key_fingerprint_sha256 TEXT NOT NULL UNIQUE
+    CHECK (length(key_fingerprint_sha256)=64 AND key_fingerprint_sha256 NOT GLOB '*[^0-9a-f]*'),
+  key_revision INTEGER NOT NULL UNIQUE CHECK (key_revision > 0),
+  enrollment_statement_digest TEXT NOT NULL UNIQUE
+    REFERENCES operator_signed_statements(statement_digest) ON DELETE RESTRICT,
+  enrolled_at TEXT NOT NULL CHECK (length(enrolled_at)=24),
+  UNIQUE(operator_id,key_fingerprint_sha256,key_revision)
+) STRICT;
+CREATE TRIGGER local_operator_credentials_insert_guard
+BEFORE INSERT ON local_operator_credentials BEGIN
+  SELECT RAISE(ABORT,'OPERATOR_ENROLLMENT_EVIDENCE_INVALID')
+  WHERE (SELECT count(*) FROM local_operator_credentials)<>0
+     OR NOT EXISTS (
+       SELECT 1 FROM operator_signed_statements s
+       WHERE s.statement_digest=NEW.enrollment_statement_digest
+         AND s.purpose='operator_enrollment'
+         AND s.control_plane_id=NEW.control_plane_id
+         AND s.operator_id=NEW.operator_id
+         AND s.key_fingerprint_sha256=NEW.key_fingerprint_sha256
+         AND s.key_revision=NEW.key_revision
+         AND s.issued_at=NEW.enrolled_at
+     );
+END;
+CREATE TRIGGER local_operator_credentials_update_guard
+BEFORE UPDATE ON local_operator_credentials BEGIN
+  SELECT RAISE(ABORT,'OPERATOR_CREDENTIAL_IMMUTABLE');
+END;
+CREATE TRIGGER local_operator_credentials_delete_guard
+BEFORE DELETE ON local_operator_credentials BEGIN
+  SELECT RAISE(ABORT,'OPERATOR_CREDENTIAL_IMMUTABLE');
+END;
+
+CREATE TABLE signed_approval_decisions (
+  approval_id TEXT PRIMARY KEY REFERENCES approvals(id) ON DELETE RESTRICT,
+  statement_digest TEXT NOT NULL UNIQUE
+    REFERENCES operator_signed_statements(statement_digest) ON DELETE RESTRICT,
+  approval_kind TEXT NOT NULL CHECK (approval_kind IN (
+    'program_policy_acceptance','campaign_contract','account_manual_action',
+    'external_action','tier_3_action','privacy_alert','report_bundle','triage_response'
+  )),
+  approval_payload_hash_sha256 TEXT NOT NULL
+    CHECK (length(approval_payload_hash_sha256)=64 AND approval_payload_hash_sha256 NOT GLOB '*[^0-9a-f]*'),
+  expected_revision INTEGER NOT NULL CHECK (expected_revision=0),
+  decision TEXT NOT NULL CHECK (decision IN ('accepted','rejected')),
+  user_action TEXT NOT NULL CHECK (length(user_action) BETWEEN 1 AND 500),
+  context_digest_sha256 TEXT NOT NULL
+    CHECK (length(context_digest_sha256)=64 AND context_digest_sha256 NOT GLOB '*[^0-9a-f]*')
+) STRICT;
+CREATE TRIGGER signed_approval_decisions_insert_guard
+BEFORE INSERT ON signed_approval_decisions BEGIN
+  SELECT RAISE(ABORT,'SIGNED_APPROVAL_EVIDENCE_INVALID')
+  WHERE NOT EXISTS (
+    SELECT 1 FROM approvals q JOIN operator_signed_statements s
+      ON s.statement_digest=NEW.statement_digest
+    WHERE q.id=NEW.approval_id
+      AND q.kind=NEW.approval_kind
+      AND q.payload_hash=NEW.approval_payload_hash_sha256
+      AND q.status='open' AND q.revision=NEW.expected_revision
+      AND s.purpose='approval_decision'
+  );
+END;
+CREATE TRIGGER signed_approval_decisions_update_guard
+BEFORE UPDATE ON signed_approval_decisions BEGIN
+  SELECT RAISE(ABORT,'SIGNED_APPROVAL_DECISION_IMMUTABLE');
+END;
+CREATE TRIGGER signed_approval_decisions_delete_guard
+BEFORE DELETE ON signed_approval_decisions BEGIN
+  SELECT RAISE(ABORT,'SIGNED_APPROVAL_DECISION_IMMUTABLE');
+END;
+CREATE TRIGGER approvals_signed_insert_guard
+BEFORE INSERT ON approvals
+WHEN NEW.status IN ('accepted','rejected') BEGIN
+  SELECT RAISE(ABORT,'SIGNED_APPROVAL_DECISION_REQUIRED');
+END;
+CREATE TRIGGER approvals_signed_decision_guard
+BEFORE UPDATE OF status,decided_at,decided_by,user_action,revision ON approvals
+WHEN NEW.status IN ('accepted','rejected') BEGIN
+  SELECT RAISE(ABORT,'SIGNED_APPROVAL_DECISION_REQUIRED')
+  WHERE OLD.status<>'open' OR OLD.revision<>0
+     OR NOT EXISTS (
+       SELECT 1
+       FROM signed_approval_decisions d
+       JOIN operator_signed_statements s ON s.statement_digest=d.statement_digest
+       WHERE d.approval_id=NEW.id
+         AND d.approval_kind=NEW.kind
+         AND d.approval_payload_hash_sha256=NEW.payload_hash
+         AND d.expected_revision=OLD.revision
+         AND d.decision=NEW.status
+         AND d.user_action=NEW.user_action
+         AND s.purpose='approval_decision'
+         AND s.operator_id=NEW.decided_by
+         AND s.issued_at=NEW.decided_at
+     );
+END;
+
+DROP TRIGGER external_action_approval_binding_decision_guard;
+CREATE TRIGGER external_action_approval_binding_decision_guard
+BEFORE UPDATE OF decision_audit_id ON external_action_approval_bindings BEGIN
+  SELECT RAISE(ABORT,'EXTERNAL_ACTION_APPROVAL_EVIDENCE_INVALID')
+  WHERE OLD.decision_audit_id IS NOT NULL
+     OR NEW.decision_audit_id IS NULL
+     OR NOT EXISTS (
+       SELECT 1
+       FROM approvals q
+       JOIN signed_approval_decisions d ON d.approval_id=q.id
+       JOIN operator_signed_statements s ON s.statement_digest=d.statement_digest
+       JOIN control_plane_audit a ON a.id=NEW.decision_audit_id
+       WHERE q.id=NEW.approval_id
+         AND q.kind='external_action'
+         AND q.status='accepted'
+         AND q.revision=1
+         AND q.policy_version=NEW.policy_version
+         AND q.policy_hash=NEW.policy_hash
+         AND q.decided_by=NEW.operator_id
+         AND q.decided_at=a.occurred_at
+         AND d.context_digest_sha256=NEW.binding_digest
+         AND d.decision='accepted'
+         AND s.operator_id=NEW.operator_id
+         AND a.action='approval_decision'
+         AND a.decision='accepted'
+         AND a.reason_code='HUMAN_APPROVAL_DECISION'
+         AND a.object_reference=q.id
+         AND a.payload_hash=d.statement_digest
+     );
+END;
+
+CREATE TABLE signed_kill_switch_clears (
+  statement_digest TEXT PRIMARY KEY
+    REFERENCES operator_signed_statements(statement_digest) ON DELETE RESTRICT,
+  expected_revision INTEGER NOT NULL CHECK (expected_revision>=0),
+  user_action TEXT NOT NULL CHECK (length(user_action) BETWEEN 1 AND 500),
+  context_digest_sha256 TEXT NOT NULL
+    CHECK (length(context_digest_sha256)=64 AND context_digest_sha256 NOT GLOB '*[^0-9a-f]*')
+) STRICT;
+CREATE TRIGGER signed_kill_switch_clears_insert_guard
+BEFORE INSERT ON signed_kill_switch_clears BEGIN
+  SELECT RAISE(ABORT,'SIGNED_KILL_SWITCH_EVIDENCE_INVALID')
+  WHERE NOT EXISTS (
+    SELECT 1 FROM operator_signed_statements s
+    WHERE s.statement_digest=NEW.statement_digest
+      AND s.purpose='kill_switch_clear'
+  );
+END;
+CREATE TRIGGER signed_kill_switch_clears_update_guard
+BEFORE UPDATE ON signed_kill_switch_clears BEGIN
+  SELECT RAISE(ABORT,'SIGNED_KILL_SWITCH_CLEAR_IMMUTABLE');
+END;
+CREATE TRIGGER signed_kill_switch_clears_delete_guard
+BEFORE DELETE ON signed_kill_switch_clears BEGIN
+  SELECT RAISE(ABORT,'SIGNED_KILL_SWITCH_CLEAR_IMMUTABLE');
+END;
+CREATE TRIGGER system_state_signed_kill_clear_guard
+BEFORE UPDATE OF value,revision,updated_at,audit_reference ON system_state
+WHEN OLD.key='global_kill_switch' AND NEW.value='clear' BEGIN
+  SELECT RAISE(ABORT,'SIGNED_KILL_SWITCH_CLEAR_REQUIRED')
+  WHERE NEW.revision<>OLD.revision+1
+     OR NOT EXISTS (
+       SELECT 1
+       FROM signed_kill_switch_clears k
+       JOIN operator_signed_statements s ON s.statement_digest=k.statement_digest
+       JOIN control_plane_audit a ON a.id=NEW.audit_reference
+       WHERE k.expected_revision=OLD.revision
+         AND s.purpose='kill_switch_clear'
+         AND s.issued_at=NEW.updated_at
+         AND a.occurred_at=NEW.updated_at
+         AND a.action='kill_switch_change'
+         AND a.decision='clear'
+         AND a.reason_code='HUMAN_KILL_SWITCH_CLEARED'
+         AND a.object_reference=s.operator_id
+         AND a.payload_hash=s.statement_digest
+     );
+END;
+
+DELETE FROM policy_acceptances;
+UPDATE programs SET rule_acceptance_status='pending';
+UPDATE system_state
+SET value='engaged',revision=revision+1,
+    updated_at='2026-07-14T00:00:00.000Z',audit_reference=NULL
+WHERE key='global_kill_switch';
+UPDATE campaigns
+SET state='paused',revision=revision+1,human_approved_by=NULL,
+    human_approved_at=NULL,kill_switch_status='engaged',
+    last_policy_check_at='2026-07-14T00:00:00.000Z'
+WHERE state IN ('approved','running_simulation');
+`,
+  }),
 ]);
 
 export const CONTROL_PLANE_SCHEMA_VERSION = MIGRATIONS.length;

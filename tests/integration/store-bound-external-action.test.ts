@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ControlPlaneDatabase,
-  ControlPlaneStore,
   type ControlPlaneStore as ControlPlaneStoreType,
 } from "../../packages/control-plane/index.js";
 import {
@@ -21,6 +20,10 @@ import {
 } from "../../packages/phase2-config/index.js";
 import { controlPlanePolicy } from "../fixtures/control-plane.factory.js";
 import {
+  createTestControlPlaneStore,
+  decideTestApproval,
+} from "../fixtures/operator-auth.factory.js";
+import {
   ACTION_EXECUTION_TIME,
   ACTION_DECISION_TIME,
   ACTION_OPERATOR,
@@ -31,6 +34,9 @@ import {
 
 const databases: ControlPlaneDatabase[] = [];
 const temporaryRoots: string[] = [];
+const SECOND_CAMPAIGN_APPROVAL_TIME = ACTION_EXECUTION_TIME;
+const SECOND_ACTION_DECISION_TIME = "2026-07-13T14:00:03.000Z";
+const SECOND_ACTION_EXECUTION_TIME = "2026-07-13T14:00:04.000Z";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -47,7 +53,7 @@ afterEach(async () => {
 describe("persisted store-bound external actions", () => {
   it("enforces the persisted per-campaign rolling rate budget", async () => {
     const database = trackedDatabase();
-    const store = new ControlPlaneStore(database);
+    const store = createTestControlPlaneStore(database, ACTION_TIME);
     const campaign = seedRunningCampaign(store, { requestsPerMinute: 1 });
     const first = approvePlatformProposal(store, campaign.id, "1");
     const second = approvePlatformProposal(store, campaign.id, "2");
@@ -78,16 +84,28 @@ describe("persisted store-bound external actions", () => {
 
   it("blocks clock rollback before creating another reservation", async () => {
     const database = trackedDatabase();
-    const store = new ControlPlaneStore(database);
+    const store = createTestControlPlaneStore(database, ACTION_TIME);
     const firstCampaign = seedRunningCampaign(store);
     const secondCampaign = seedRunningCampaign(store, {
       programId: "program-second",
       campaignId: "campaign-second",
       namespace: "second",
       clearKillSwitch: false,
+      approvalTime: SECOND_CAMPAIGN_APPROVAL_TIME,
     });
-    const first = approvePlatformProposal(store, firstCampaign.id, "1");
-    const second = approvePlatformProposal(store, secondCampaign.id, "2");
+    vi.setSystemTime(ACTION_EXECUTION_TIME);
+    const first = approvePlatformProposal(
+      store,
+      firstCampaign.id,
+      "1",
+      SECOND_ACTION_DECISION_TIME,
+    );
+    const second = approvePlatformProposal(
+      store,
+      secondCampaign.id,
+      "2",
+      SECOND_ACTION_DECISION_TIME,
+    );
     vi.setSystemTime("2026-07-13T14:00:10.000Z");
     await pipeline(
       store,
@@ -130,7 +148,10 @@ describe("persisted store-bound external actions", () => {
     databases.splice(databases.indexOf(database), 1);
     database = await ControlPlaneDatabase.file(path);
     databases.push(database);
-    const reopened = new ControlPlaneStore(database);
+    const reopened = createTestControlPlaneStore(
+      database,
+      ACTION_EXECUTION_TIME,
+    );
     expect(reopened.listExternalActionAttempts()).toMatchObject([
       { proposalId: "proposal-1", status: "reserved", revision: 0 },
     ]);
@@ -151,7 +172,9 @@ describe("persisted store-bound external actions", () => {
       campaignId: "campaign-second",
       namespace: "second",
       clearKillSwitch: false,
+      approvalTime: SECOND_CAMPAIGN_APPROVAL_TIME,
     });
+    vi.setSystemTime(ACTION_EXECUTION_TIME);
     const secondProposal = prepareStoreBoundExternalActionProposal(
       first.store,
       {
@@ -169,16 +192,13 @@ describe("persisted store-bound external actions", () => {
       first.store,
       secondProposal,
     );
-    first.store.decideApproval({
-      id: secondApproval.id,
-      expectedRevision: 0,
-      expectedPayloadHash: secondApproval.payloadHash,
+    decideTestApproval(first.store, {
+      approvalId: secondApproval.id,
       decision: "accepted",
-      actor: ACTION_OPERATOR,
       userAction: "approve_store_bound_external_action",
-      at: ACTION_DECISION_TIME,
+      issuedAt: SECOND_ACTION_DECISION_TIME,
     });
-    vi.setSystemTime(ACTION_EXECUTION_TIME);
+    vi.setSystemTime(SECOND_ACTION_EXECUTION_TIME);
     await pipeline(
       first.store,
       new DeterministicMockActionRunner({ "proposal-1": { ok: true } }),
@@ -203,7 +223,9 @@ describe("persisted store-bound external actions", () => {
       campaignId: "campaign-second",
       namespace: "second",
       clearKillSwitch: false,
+      approvalTime: SECOND_CAMPAIGN_APPROVAL_TIME,
     });
+    vi.setSystemTime(ACTION_EXECUTION_TIME);
     const secondProposal = prepareStoreBoundExternalActionProposal(
       first.store,
       {
@@ -221,16 +243,13 @@ describe("persisted store-bound external actions", () => {
       first.store,
       secondProposal,
     );
-    first.store.decideApproval({
-      id: secondApproval.id,
-      expectedRevision: 0,
-      expectedPayloadHash: secondApproval.payloadHash,
+    decideTestApproval(first.store, {
+      approvalId: secondApproval.id,
       decision: "accepted",
-      actor: ACTION_OPERATOR,
       userAction: "approve_store_bound_external_action",
-      at: ACTION_DECISION_TIME,
+      issuedAt: SECOND_ACTION_DECISION_TIME,
     });
-    vi.setSystemTime(ACTION_EXECUTION_TIME);
+    vi.setSystemTime(SECOND_ACTION_EXECUTION_TIME);
     const runner = new DeterministicMockActionRunner(
       {
         "proposal-1": { first: true },
@@ -269,7 +288,10 @@ describe("persisted store-bound external actions", () => {
     databases.splice(databases.indexOf(database), 1);
     database = await ControlPlaneDatabase.file(path);
     databases.push(database);
-    const reopened = new ControlPlaneStore(database);
+    const reopened = createTestControlPlaneStore(
+      database,
+      ACTION_EXECUTION_TIME,
+    );
     vi.setSystemTime("2026-07-13T14:00:03.000Z");
     const replayRunner = new DeterministicMockActionRunner({
       "proposal-1": { unexpected: true },
@@ -294,14 +316,11 @@ describe("persisted store-bound external actions", () => {
       reopened,
       secondProposal,
     );
-    reopened.decideApproval({
-      id: secondApproval.id,
-      expectedRevision: 0,
-      expectedPayloadHash: secondApproval.payloadHash,
+    decideTestApproval(reopened, {
+      approvalId: secondApproval.id,
       decision: "accepted",
-      actor: ACTION_OPERATOR,
       userAction: "approve_store_bound_external_action",
-      at: "2026-07-13T14:00:05.000Z",
+      issuedAt: "2026-07-13T14:00:05.000Z",
     });
     vi.setSystemTime("2026-07-13T14:00:06.000Z");
     const budgetRunner = new DeterministicMockActionRunner({
@@ -442,6 +461,7 @@ function approvePlatformProposal(
   store: ControlPlaneStoreType,
   campaignRef: string,
   suffix: string,
+  decisionTime = ACTION_DECISION_TIME,
 ) {
   const proposal = prepareStoreBoundExternalActionProposal(store, {
     proposalId: `proposal-${suffix}`,
@@ -454,14 +474,11 @@ function approvePlatformProposal(
     operatorRef: ACTION_OPERATOR,
   });
   const approval = enqueueStoreBoundExternalActionApproval(store, proposal);
-  store.decideApproval({
-    id: approval.id,
-    expectedRevision: 0,
-    expectedPayloadHash: approval.payloadHash,
+  decideTestApproval(store, {
+    approvalId: approval.id,
     decision: "accepted",
-    actor: ACTION_OPERATOR,
     userAction: "approve_store_bound_external_action",
-    at: ACTION_DECISION_TIME,
+    issuedAt: decisionTime,
   });
   return proposal;
 }

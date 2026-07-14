@@ -53,6 +53,9 @@ export interface StoreBoundExternalActionAuthorization extends ExternalActionApp
   readonly evidenceDigest: string;
   readonly approvalPayloadHash: string;
   readonly approvalRevision: 1;
+  readonly decisionStatementDigest: string;
+  readonly decisionKeyFingerprintSha256: string;
+  readonly decisionKeyRevision: number;
   readonly reservationAuditId: string;
   readonly reservedAt: string;
   readonly units: 1;
@@ -195,6 +198,9 @@ export function externalActionEvidenceDigest(input: {
   readonly binding: ExternalActionApprovalBinding;
   readonly approvalPayloadHash: string;
   readonly approvalRevision: 1;
+  readonly decisionStatementDigest: string;
+  readonly decisionKeyFingerprintSha256: string;
+  readonly decisionKeyRevision: number;
 }): string {
   return sha256(
     canonicalJson({
@@ -202,6 +208,9 @@ export function externalActionEvidenceDigest(input: {
       decisionAuditId: input.binding.decisionAuditId,
       approvalPayloadHash: input.approvalPayloadHash,
       approvalRevision: input.approvalRevision,
+      decisionStatementDigest: input.decisionStatementDigest,
+      decisionKeyFingerprintSha256: input.decisionKeyFingerprintSha256,
+      decisionKeyRevision: input.decisionKeyRevision,
     }),
   );
 }

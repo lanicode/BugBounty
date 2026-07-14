@@ -21,6 +21,7 @@ import {
   ACTION_TIME,
   seedStoreBoundAction,
 } from "../fixtures/store-bound-action.factory.js";
+import { decideTestApproval } from "../fixtures/operator-auth.factory.js";
 
 const databases: ControlPlaneDatabase[] = [];
 
@@ -126,14 +127,11 @@ describe("persistent global kill switch composition", () => {
       seeded.store,
       secondProposal,
     );
-    seeded.store.decideApproval({
-      id: secondApproval.id,
-      expectedRevision: 0,
-      expectedPayloadHash: secondApproval.payloadHash,
+    decideTestApproval(seeded.store, {
+      approvalId: secondApproval.id,
       decision: "accepted",
-      actor: ACTION_OPERATOR,
       userAction: "approve_store_bound_external_action",
-      at: "2026-07-13T14:00:04.000Z",
+      issuedAt: "2026-07-13T14:00:04.000Z",
     });
     vi.setSystemTime("2026-07-13T14:00:05.000Z");
     const budgetRunner = new DeterministicMockActionRunner({
