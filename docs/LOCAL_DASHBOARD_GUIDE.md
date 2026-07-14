@@ -17,6 +17,31 @@ security add-generic-password -U -s bugbounty-copilot -a event-store-v1 -w "$(op
 
 Die 24 zufälligen Binärbytes werden durch Base64 zu exakt 32 ASCII-Bytes und unter der Referenz `keychain://bugbounty-copilot/event-store-v1` gespeichert. Den Wert weder anzeigen noch in Shell-Historien, Skripte, Logs oder das Repository kopieren. Fehlt der Eintrag, ist er unlesbar oder nicht exakt 32 Byte lang, endet der Lauf mit `SIMULATION_EVENT_SECRET_UNAVAILABLE`, bevor der Kill Switch freigegeben oder Control-Plane-Zustand verändert wird. Auf anderen Betriebssystemen bleibt dieser Produktpfad fail-closed deaktiviert.
 
+## Lokale Operator-Credential einrichten
+
+Phase 4 verlangt für Simulation, Approval-Entscheidungen und Kill-Clear einen
+Ed25519-PKCS#8-Schlüssel aus demselben macOS-Schlüsselbund. Die Bereitstellung
+ist bewusst ein manueller lokaler Administrationsschritt und erfolgt nicht
+durch die Anwendung:
+
+```sh
+security add-generic-password -U -s bugbounty-copilot -a operator-ed25519-v1 -T /usr/bin/security -X "$(openssl genpkey -algorithm ED25519 -outform DER 2>/dev/null | xxd -p -c 256)"
+```
+
+Danach ausschließlich die nicht geheimen Metadaten setzen:
+
+```sh
+export BUGBOUNTY_OPERATOR_KEY_REFERENCE=keychain://bugbounty-copilot/operator-ed25519-v1
+export BUGBOUNTY_OPERATOR_ID=local-reviewer
+export BUGBOUNTY_OPERATOR_KEY_REVISION=1
+```
+
+Der private Schlüssel darf niemals als Datei, Umgebungsvariablenwert, Log oder
+Repositoryinhalt abgelegt werden. Fehlende Metadaten deaktivieren die lokale
+Signierfähigkeit. Partielle/ungültige Metadaten, Keychain-Lesefehler oder ein
+ungültiger Schlüssel lassen den Start fail-closed abbrechen. Eine bereits
+eingeschriebene andere Credential wird nicht automatisch ersetzt.
+
 ## Start
 
 Im Repository ausführen:
@@ -41,7 +66,7 @@ Jede Seite zeigt sichtbar:
 - `SIMULATIONSMODUS`
 - `EXTERNE INTEGRATIONEN DEAKTIVIERT`
 
-Eine neue lokale Datenbank und jeder Dashboard-Start aktiviert den globalen Kill Switch. Clear-Zustände sind an Revision, Zeitstempel, Actor, Audit-ID und Payload-Hash gebunden. Fehlende, unlesbare oder inkonsistente Zustände werden als aktiv behandelt. Engagement pausiert aktive Kampagnen. Die Oberfläche schützt mutierende Requests mit exakter Host-/Origin-Prüfung und einem zufälligen CSRF-Token; Skripte und Styles werden nur als eigene statische Ressourcen unter einer restriktiven Content Security Policy ausgeliefert.
+Eine neue lokale Datenbank und jeder Dashboard-Start aktiviert den globalen Kill Switch. Clear-Zustände sind an Control-Plane-ID, Credential, Schlüsselrevision, Session, Nonce, Revision, Zeitfenster, Signatur, Audit-ID und Kontextdigest gebunden. Fehlende, unlesbare oder inkonsistente Zustände werden als aktiv behandelt. Engagement pausiert aktive Kampagnen. Die Oberfläche schützt mutierende Requests mit exakter Host-/Origin-Prüfung und einem zufälligen CSRF-Token; Skripte und Styles werden nur als eigene statische Ressourcen unter einer restriktiven Content Security Policy ausgeliefert.
 
 ## Simulation ausführen
 
@@ -50,6 +75,11 @@ Eine neue lokale Datenbank und jeder Dashboard-Start aktiviert den globalen Kill
 3. Simulation starten.
 4. Die 18 Schritte, Policy-Diff, Kampagnenstatus, Testidentitäten, Ownership Ledger, Freigaben und Report-Entwurf prüfen.
 5. Den globalen Kill Switch jederzeit über „Sofort stoppen“ aktivieren.
+
+Das Dashboard übernimmt die konfigurierte Operator-ID schreibgeschützt. Ohne
+injizierte lokale Signierfähigkeit blockieren Simulation, Approval und
+Kill-Clear mit `OPERATOR_SIGNER_REQUIRED`; die jederzeit sichere Aktivierung
+des Kill Switches bleibt verfügbar.
 
 Die sechs Bestätigungen sind exakt:
 

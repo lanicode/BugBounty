@@ -1,0 +1,127 @@
+PHASE 4 TEST RESULTS
+====================
+
+Date: 2026-07-14
+Branch: codex/phase-4-signed-operator-approvals
+Phase-3 baseline: 46c98815bb6e99ce19b7f348886191c467cb84bc
+Node.js: v24.14.0
+pnpm: 11.7.0
+
+FINAL QUALITY GATES
+-------------------
+
+PASS  pnpm typecheck
+      tsc --noEmit
+
+PASS  pnpm lint
+      eslint . --max-warnings 0
+      0 warnings, 0 errors
+
+PASS  pnpm format:check
+      prettier --check .
+
+PASS  pnpm build
+      tsc -p tsconfig.build.json
+
+PASS  pnpm test
+      54/54 test files passed
+      276/276 tests passed
+
+PASS  pnpm test:coverage
+      54/54 test files passed
+      276/276 tests passed
+
+      Statements: 87.64% (3595/4102)
+      Branches:   82.37% (2454/2979)
+      Functions:  95.36% (762/799)
+      Lines:      88.85% (3477/3913)
+
+PASS  pnpm exec vitest run tests/property
+      8/8 test files passed
+      19/19 tests passed
+
+PASS  pnpm exec vitest run tests/integration
+      11/11 test files passed
+      48/48 tests passed
+      All listening sockets used 127.0.0.1 only.
+
+PASS  pnpm test:egress
+      4/4 test files passed
+      11/11 tests passed
+
+PASS  pnpm test:platform-source
+      4/4 test files passed
+      12/12 tests passed
+
+PASS  pnpm audit --audit-level high
+      No known vulnerabilities found
+      Network use was limited to the official npm package source.
+
+PASS  git diff --check
+
+PASS  git diff --name-only
+      0f0f508765ebec663c2d09dc22fa408c1de46a4f..HEAD --
+      packages/config packages/egress-guard packages/redaction
+      packages/secret-store packages/event-store packages/policy
+      packages/audit-log packages/recorder packages/shared apps/cli
+      No protected Phase-1 path changed.
+
+ADDITIONAL SECURITY TESTS
+-------------------------
+
+PASS  Operator-auth unit, boundary, property and persistence tests cover:
+      * Ed25519-only PKCS#8 import through a keychain:// SecretStore reference
+      * temporary private-key byte zeroization
+      * exact plain-object and descriptor validation
+      * all enrollment, approval and kill-clear signed fields
+      * wrong key, fingerprint, revision, store, context and signature
+      * expired/future statements, clock rollback and nonce replay
+      * immutable credentials and signature evidence across reopen
+      * unsigned SQL transitions and forged relational evidence
+
+PASS  External-action tamper tests prove revalidation:
+      * before reservation
+      * before runner start
+      * before successful settlement
+      * no unsigned or manipulated decision reaches the runner
+
+PASS  Dashboard and simulation tests prove:
+      * no positive decision without an explicitly configured signer
+      * no state mutation on signerless rejection
+      * kill engagement remains available without a signer
+      * kill clear requires a fresh signed statement
+
+DIAGNOSTIC RUNS
+---------------
+
+The first final-gate invocation in the resumed desktop session used the short
+`pnpm` command before the bundled runtime path had been loaded and exited 127
+with `command not found`. The same four commands passed after the documented
+workspace Node/pnpm path was supplied. This was an execution-environment PATH
+issue, not a repository failure.
+
+The first format check after adding the completion documents found only
+`PHASE4_EXTERNAL_ACTIONS.md`. Prettier formatted that new document and the
+final repository-wide format check passed.
+
+An early unprivileged integration run encountered operating-system listen
+EPERM errors when tests attempted to bind local 127.0.0.1 mock servers. The
+same tests passed with explicit loopback permission. This was a sandbox
+restriction, not a product or assertion failure.
+
+An intermediate dashboard run timed out after the UI actor default changed.
+The harness was corrected to use the persisted configured operator identity;
+the final dashboard suite passed 6/6 tests. No security check was weakened.
+
+No test was disabled, skipped, relaxed or rewritten merely to obtain a green
+result.
+
+NOTES
+-----
+
+* Node.js emitted its documented ExperimentalWarning for node:sqlite.
+* No real platform, HackerOne, Bugcrowd, example or bug-bounty target host was
+  contacted.
+* Product network and browser tests used only in-process mocks or 127.0.0.1.
+* Real integrations, active security tests, account automation, report
+  submission, triage delivery and LLM-driven requests remained disabled.

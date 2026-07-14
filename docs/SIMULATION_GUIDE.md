@@ -12,6 +12,19 @@ security add-generic-password -U -s bugbounty-copilot -a event-store-v1 -w "$(op
 
 Der Wert wird nicht in der Control Plane gespeichert. Fehlen, Lesefehler oder falsche Länge blockieren vor jeder Simulationsfachdaten-Mutation; vorbereitende Verzeichnis- und Schema-Erstellung kann bereits erfolgt sein. Tests injizieren ausschließlich einen In-Memory-Testschlüssel und beweisen diesen fail-closed Preflight; der Produktpfad besitzt keinen Fallback.
 
+Zusätzlich ist eine manuell bereitgestellte Ed25519-Operator-Credential nötig:
+
+```sh
+security add-generic-password -U -s bugbounty-copilot -a operator-ed25519-v1 -T /usr/bin/security -X "$(openssl genpkey -algorithm ED25519 -outform DER 2>/dev/null | xxd -p -c 256)"
+export BUGBOUNTY_OPERATOR_KEY_REFERENCE=keychain://bugbounty-copilot/operator-ed25519-v1
+export BUGBOUNTY_OPERATOR_ID=local-reviewer
+export BUGBOUNTY_OPERATOR_KEY_REVISION=1
+```
+
+Die drei Umgebungsvariablen enthalten nur Referenz, Operator-ID und Revision,
+niemals Schlüsselmaterial. Die CLI verlangt alle drei Werte und einen lesbaren
+PKCS#8-Schlüssel; Dashboard und CLI besitzen keinen Klartext-Fallback.
+
 ## CLI
 
 ```sh
@@ -55,4 +68,4 @@ Schritt 6 materialisiert ausschließlich vorautorisierte, checkpoint-freie Owner
 
 Der Abschluss meldet `mode: simulation`, `externalIntegrationsEnabled: false`, `networkConnections: 0`, `externalSubmissions: 0`, zwei Policy-Versionen, drei Identitäten, ein kontrolliertes Objekt, drei verschlüsselte Events, einen offenen Report-Kontrollpunkt und genau 18 Schritte.
 
-Ein während des Ablaufs aktivierter, unlesbarer oder audit-/revisionsinkonsistenter Kill Switch bricht vor dem nächsten Schritt geschlossen ab und pausiert aktive Kampagnen. Er verhindert außerdem Kampagnenstart, Resume, Freigabeverarbeitung und Runner-Aufrufe. Der deterministische External-Action-Simulations-Evaluator ist proposal-gebunden, aber in Phase 2 noch nicht an persistierte fachliche Evidence gekoppelt; deshalb existiert kein realer Runner.
+Ein während des Ablaufs aktivierter, unlesbarer oder audit-/revisionsinkonsistenter Kill Switch bricht vor dem nächsten Schritt geschlossen ab und pausiert aktive Kampagnen. Er verhindert außerdem Kampagnenstart, Resume, Freigabeverarbeitung und Runner-Aufrufe. Jede lokale Policy-/Kampagnenentscheidung wird zum tatsächlichen Laufzeitpunkt frisch signiert; die zuvor erfassten menschlichen Bestätigungszeiten bleiben separat im hashgebundenen Approval-Payload erhalten. Der External-Action-Evaluator revalidiert persistierte Signatur-Evidence vor Reservation, Start und Settlement. Der einzige Runner bleibt ein deterministischer In-Process-Mock ohne Netzwerktransport.

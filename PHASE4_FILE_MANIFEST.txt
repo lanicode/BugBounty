@@ -1,0 +1,49 @@
+PHASE 4 FILE MANIFEST
+=====================
+
+Baseline: 46c98815bb6e99ce19b7f348886191c467cb84bc
+Branch: codex/phase-4-signed-operator-approvals
+
+M  AGENTS.md
+A  PHASE4_COMPLETION_REPORT.md
+A  PHASE4_EXTERNAL_ACTIONS.md
+A  PHASE4_FILE_MANIFEST.txt
+A  PHASE4_KNOWN_RISKS.md
+A  PHASE4_SECURITY_CORE_CHANGES.md
+A  PHASE4_TEST_RESULTS.txt
+M  README.md
+M  apps/dashboard/index.ts
+M  apps/phase2-cli/index.ts
+M  docs/LOCAL_DASHBOARD_GUIDE.md
+A  docs/PHASE3_BASELINE.md
+A  docs/PHASE4_ACCEPTANCE_CRITERIA.md
+A  docs/PHASE4_SIGNED_OPERATOR_APPROVALS.md
+M  docs/ROADMAP.md
+M  docs/SIMULATION_GUIDE.md
+M  docs/TESTING.md
+M  packages/control-plane/database.ts
+M  packages/control-plane/external-action-evidence.ts
+M  packages/control-plane/external-action-store.ts
+M  packages/control-plane/store.ts
+M  packages/dashboard/assets.ts
+M  packages/dashboard/server.ts
+A  packages/operator-auth/envelope.ts
+A  packages/operator-auth/index.ts
+A  packages/operator-auth/signer.ts
+A  packages/operator-auth/types.ts
+A  packages/operator-auth/verifier.ts
+M  packages/simulation/orchestrator.ts
+A  tests/fixtures/operator-auth.factory.ts
+M  tests/fixtures/store-bound-action.factory.ts
+M  tests/integration/dashboard.test.ts
+M  tests/integration/external-action-kill-switch.test.ts
+A  tests/integration/operator-auth-external-action-tamper.test.ts
+A  tests/integration/operator-auth-persistence.test.ts
+M  tests/integration/phase2-simulation.test.ts
+M  tests/integration/store-bound-external-action.test.ts
+A  tests/property/operator-auth.property.test.ts
+M  tests/unit/control-plane/database.test.ts
+M  tests/unit/control-plane/store.test.ts
+A  tests/unit/operator-auth-boundary.test.ts
+A  tests/unit/operator-auth.test.ts
+M  tests/unit/store-bound-external-actions.test.ts
