@@ -1,0 +1,151 @@
+PHASE 6 TEST RESULTS
+====================
+
+Date: 2026-07-14
+Branch: codex/phase-6-control-plane-recovery
+Phase-5 baseline: 872e9fe4766dbfd11f46c5b15c71afe7c92d6e60
+Tested implementation: 7b2240f plus this documentation-only commit
+Node.js: v24.14.0
+pnpm: 11.7.0
+
+FINAL QUALITY GATES
+-------------------
+
+PASS  pnpm typecheck
+      tsc --noEmit
+
+PASS  pnpm lint
+      eslint . --max-warnings 0
+      0 warnings, 0 errors
+
+PASS  pnpm format:check
+      prettier --check .
+
+PASS  pnpm build
+      tsc -p tsconfig.build.json
+
+PASS  pnpm test
+      73/73 test files passed
+      383/383 tests passed
+
+PASS  pnpm test:coverage
+      vitest run --coverage --maxWorkers=1
+      73/73 test files passed
+      383/383 tests passed
+
+      Statements: 88.00% (4657/5292)
+      Branches:   82.65% (3064/3707)
+      Functions:  96.23% (921/957)
+      Lines:      89.18% (4495/5040)
+
+      audit-log:
+        Statements 86.64%, Branches 81.17%, Functions 100%, Lines 87.39%
+      control-plane aggregate:
+        Statements 86.69%, Branches 82.17%, Functions 99.10%, Lines 88.25%
+      control-plane/database.ts:
+        Statements 88.08%, Branches 76.02%, Functions 100%, Lines 91.33%
+      control-plane/store.ts:
+        Statements 84.49%, Branches 79.25%, Functions 99.22%, Lines 86.64%
+
+PASS  pnpm exec vitest run tests/property
+      12/12 test files passed
+      27/27 tests passed
+
+PASS  pnpm exec vitest run tests/integration
+      18/18 test files passed
+      69/69 tests passed
+      All listening product sockets used local 127.0.0.1 mocks only.
+
+PASS  pnpm test:egress
+      4/4 test files passed
+      11/11 tests passed
+
+PASS  pnpm test:platform-source
+      4/4 test files passed
+      12/12 tests passed
+
+PASS  focused Phase-6 suite
+      7/7 test files passed
+      50/50 tests passed
+
+PASS  pnpm audit --audit-level high
+      No known vulnerabilities found
+      Network use was limited to the official npm package source.
+
+PASS  git diff --check
+
+PASS  protected Phase-1 path audit against Phase 5
+      Exactly packages/audit-log/audit.ts changed.
+      This is the required and documented Phase-6 Security-Core change.
+      All other protected Phase-1 paths remained unchanged.
+
+PHASE-6 SECURITY TESTS
+----------------------
+
+PASS  ControlPlaneDatabase tests prove:
+      * absolute canonical path and private 0700 directory
+      * private 0600 regular database and accepted DELETE journal only
+      * symlink, hardlink, owner, permission and unsafe sidecar rejection
+      * verified foreign_keys, trusted_schema, journal_mode, synchronous,
+        fullfsync, locking_mode, busy_timeout and temp_store pragmas
+      * migration checksum, integrity_check and foreign_key_check on reopen
+      * deterministic CONTROL_PLANE_BUSY under independent writer contention
+      * nested savepoint rollback and fail-closed poisoned rollback state
+      * SIGKILL rolls back an open transaction and preserves prior commits
+      * a committed child-process write survives process exit and reopen
+
+PASS  AuditLog tests prove:
+      * full persisted-head reload and verification before every append
+      * sequence/hash continuation after object and process restart
+      * exact data descriptors, closed schema and canonical JSONL
+      * invalid UTF-8, extra fields, accessors, prototypes, blank lines,
+        missing newline, partial records and hash/sequence changes block
+      * private canonical parent, file and mutation-lock boundaries
+      * no symlink, hardlink, wrong owner/mode or path-swap acceptance
+      * 4 KiB record, 16 MiB file and 50,000-entry limits
+      * file and parent-directory fsync before success
+      * concurrent local processes append one linear chain
+      * a live lock blocks and explicit stale recovery requires ESRCH plus the
+        exact local offline confirmation
+
+PASS  Kill-switch tests prove:
+      * engagement is committed before pause and audit continuation
+      * later failure cannot roll engagement back to clear
+      * store construction treats missing/invalid clear evidence as engaged
+      * SIGKILL after engagement is reconciled to a paused campaign on reopen
+      * reconciliation never fabricates signed consent or automatically clears
+      * signed clear retains its atomic operator/evidence boundary
+
+PASS  Existing safety regressions prove:
+      * external integrations remain false and fail closed
+      * no real adapter or transport was added
+      * External-Action evaluation remains store-bound and revalidated
+      * event encryption, key lifecycle, policy, egress and redaction remain
+        active and unchanged except for the documented AuditLog core change
+
+DIAGNOSTIC RUNS
+---------------
+
+Initial database child-process tests treated Node's documented node:sqlite
+ExperimentalWarning on stderr as unexpected output. The fixture invocation was
+changed to use --no-warnings. This suppresses only the child runtime warning;
+no product check, assertion or test was disabled or weakened.
+
+Early coverage commands overlapped because long-running exec sessions were not
+polled before another run was started. Resource contention produced one
+dashboard timeout. The official test:coverage script was then serialized with
+--maxWorkers=1 and completed 73/73 files and 383/383 tests successfully. No
+timeout or security assertion was loosened.
+
+No test was disabled, skipped, relaxed or rewritten merely to obtain a green
+result.
+
+NOTES
+-----
+
+* Node.js still classifies node:sqlite as experimental.
+* No real platform, HackerOne, Bugcrowd, example or bug-bounty target host was
+  contacted.
+* Product network and browser tests used only in-process mocks or 127.0.0.1.
+* Real integrations, active security tests, account automation, report
+  submission, triage delivery and LLM-driven requests remained disabled.

@@ -55,7 +55,7 @@ Reale Plattformadapter, Account-Erstellung, Browser-Sessions, aktive Tests und R
 6. Echte Kindprozess-, SIGKILL-, Pre-link-, Post-link-, Restart-, Property-
    und lokale Integrationstests.
 
-## Phase 6 – weitere Crash-/Mehrprozesshärtung
+## Phase 6 – weitere Crash-/Mehrprozesshärtung (abgeschlossen)
 
 1. Approval Queue, Kill Switch, Audit Log und Control Plane gezielt gegen
    Crash, Restart und konkurrierende lokale Prozesse qualifizieren.
@@ -65,6 +65,24 @@ Reale Plattformadapter, Account-Erstellung, Browser-Sessions, aktive Tests und R
 
 Reale Integrationen bleiben auch in Phase 6 deaktiviert; alle Netzwerk- und
 Browsertests bleiben auf Loopback beschränkt.
+
+Umgesetzt sind private und integritätsgeprüfte SQLite-Persistenz mit
+deterministischem Busy-Fail-Closed, echte Commit-/Rollback-/SIGKILL-Nachweise,
+restart-sichere Kill-Switch-Reconciliation sowie ein kanonisches Audit-Log mit
+prozessübergreifender Lease und expliziter Offline-Recovery. Allgemeiner
+Active-active- oder Netzwerkdateisystembetrieb bleibt ausdrücklich
+unqualifiziert.
+
+## Phase 7 – rein lokale Browserjourneys
+
+1. Playwright-Testharness ausschließlich gegen die vorhandene Demo-SaaS auf
+   `127.0.0.1` ausbauen.
+2. Einen deterministischen Referenzablauf mit Rollen-/A/B-Replay und
+   geschlossenem UI-Zustandsgraph definieren.
+3. Screenshots nur nach lokaler Redaktion und niemals als Rohsession
+   persistieren.
+4. Keine Plattform-, Account-, Ziel- oder externe Browserintegration
+   aktivieren.
 
 ## Spätere Phase – Journey-Automation
 

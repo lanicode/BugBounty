@@ -1,0 +1,37 @@
+PHASE 6 FILE MANIFEST
+=====================
+
+Baseline: 872e9fe4766dbfd11f46c5b15c71afe7c92d6e60
+Branch: codex/phase-6-control-plane-recovery
+
+M  AGENTS.md
+A  PHASE6_COMPLETION_REPORT.md
+A  PHASE6_EXTERNAL_ACTIONS.md
+A  PHASE6_FILE_MANIFEST.txt
+A  PHASE6_KNOWN_RISKS.md
+A  PHASE6_SECURITY_CORE_CHANGES.md
+A  PHASE6_TEST_RESULTS.txt
+M  README.md
+M  docs/LOCAL_DASHBOARD_GUIDE.md
+A  docs/PHASE5_BASELINE.md
+A  docs/PHASE6_ACCEPTANCE_CRITERIA.md
+A  docs/PHASE6_CONTROL_PLANE_RECOVERY.md
+M  docs/ROADMAP.md
+M  docs/TESTING.md
+M  package.json
+M  packages/audit-log/audit.ts
+M  packages/control-plane/database.ts
+M  packages/control-plane/store.ts
+A  tests/fixtures/audit-log-appender.ts
+A  tests/fixtures/audit-log-lock-holder.ts
+M  tests/fixtures/audit.valid.jsonl
+A  tests/fixtures/control-plane-transaction-child.ts
+A  tests/fixtures/kill-switch-engagement-child.ts
+A  tests/integration/audit-log-process.test.ts
+A  tests/integration/control-plane-database-crash.test.ts
+A  tests/integration/kill-switch-recovery.test.ts
+A  tests/property/audit-log.property.test.ts
+A  tests/unit/audit-log.test.ts
+A  tests/unit/control-plane/database-hardening.test.ts
+M  tests/unit/control-plane/store.test.ts
+M  tests/unit/storage.test.ts

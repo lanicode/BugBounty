@@ -2,7 +2,7 @@
 
 ## Geltungsbereich
 
-Der produktive Code in `apps/` und `packages/` enthält den Phase-1-Sicherheitskern, die lokale Phase-2-Control-Plane, den store-gebundenen Phase-3-External-Action-Evaluator, die lokale signierte Phase-4-Operatorgrenze und den restart-sicheren Phase-5-Event-Key-Lifecycle. Phase 5 ändert zwingend und dokumentiert ausschließlich `packages/event-store` innerhalb des Phase-1-Kerns. `legacy/mvp/` ist ausschließlich eine unsichere, nicht produktive Audit-Referenz.
+Der produktive Code in `apps/` und `packages/` enthält den Phase-1-Sicherheitskern, die lokale Phase-2-Control-Plane, den store-gebundenen Phase-3-External-Action-Evaluator, die lokale signierte Phase-4-Operatorgrenze, den restart-sicheren Phase-5-Event-Key-Lifecycle und die lokale Phase-6-Crash-/Mehrprozesshärtung. Phase 6 ändert innerhalb des Phase-1-Kerns zwingend und dokumentiert ausschließlich `packages/audit-log`. `legacy/mvp/` ist ausschließlich eine unsichere, nicht produktive Audit-Referenz.
 
 ## Nicht verhandelbare Regeln
 
@@ -39,8 +39,17 @@ Der produktive Code in `apps/` und `packages/` enthält den Phase-1-Sicherheitsk
 - Event-Key-Adoption, -Rotation und -Recovery sind lokale Offline-
   Adminoperationen bei beendetem Dashboard. Kein Dashboard-, HTTP-, Browser-,
   LLM- oder External-Action-Pfad darf sie auslösen.
+- Das dateibasierte Audit-Log rehydriert und verifiziert den vollständigen
+  kanonischen Head unter einer privaten prozessübergreifenden Mutation-Lease.
+  Teilzeilen werden niemals still ignoriert oder gekürzt. Lease-Recovery ist
+  nur als exakt bestätigter lokaler Offline-Schritt bei zweimal nachweislich
+  nicht existierender Eigentümer-PID zulässig.
+- File-backed SQLite verwendet einen privaten lokalen Pfad, `DELETE`-Journal,
+  `synchronous=FULL`, `fullfsync=ON`, verifizierte Foreign Keys und
+  Integritätsprüfungen beim Reopen. WAL/SHM, user-owned Symlink-Ahnen,
+  unerwartete Sidecars und Busy/Locked-Zustände blockieren fail-closed.
 - `external_integrations_enabled` bleibt standardmäßig sowie bei fehlender oder fehlerhafter Konfiguration effektiv `false`.
-- Der globale Kill Switch ist fail-closed; Lesefehler, fehlende Audit-Referenzen, Revisionsfehler und inkonsistente Clear-Zustände gelten als aktiv. Engagement pausiert aktive Kampagnen vor der Audit-Fortsetzung.
+- Der globale Kill Switch ist fail-closed; Lesefehler, fehlende Audit-Referenzen, Revisionsfehler und inkonsistente Clear-Zustände gelten als aktiv. Engagement, durable Kampagnenpause und Audit-Fortsetzung bilden drei geordnete Grenzen. Ein Auditfehler darf weder Engagement noch Pause zurückrollen; Reopen versöhnt nur in Richtung `engaged`/`paused`.
 - Sicherheitsgrenzen benötigen direkte Unit-, Property- und Integrationstests. Tests dürfen nicht zur Fehlerbehebung gelockert werden.
 - Neue Abhängigkeiten werden exakt gepinnt und in `docs/DEPENDENCIES.md` begründet.
 
@@ -57,7 +66,9 @@ Der produktive Code in `apps/` und `packages/` enthält den Phase-1-Sicherheitsk
   Mindestversionsanker, verzeichnisweite Mutation-Lease und explizite lokale
   Recovery; einzige Aktivierungsgrenze für Event-Key-Versionen.
 - `packages/policy`: Phase-1-Vertrag, Budgets, Kill Switch und deterministische Reason Codes.
-- `packages/audit-log`: bodyfreies append-only JSONL mit Hash-Verkettung.
+- `packages/audit-log`: bodyfreies, kanonisches append-only JSONL mit
+  Hash-Verkettung, prozessübergreifender Lease, Restart-Rehydration und
+  expliziter lokaler stale-Lease-Recovery.
 - `packages/platform-source`: lokale, strikt validierte Plattform-Snapshots ohne HTTP-Client.
 - `packages/control-plane`: lokale SQLite-Datenmodelle, Migrationen und Zustandsmaschinen.
 - `packages/external-actions`: einzige Registry und Gate-Pipeline für künftige externe Wirkungen.

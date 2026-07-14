@@ -170,7 +170,20 @@ automatisch ausgeführt.
 
 ## Lokale Laufzeitdaten
 
-Das Dashboard schreibt ausschließlich nach `.local/dashboard/`; die SQLite-Datei erhält Modus `0600`, das Verzeichnis `0700`. Der Pfad ist per `.gitignore` ausgeschlossen. Simulationsevents werden nur als versionierte AES-256-GCM-Hüllen gespeichert; die authentifizierte State-Chain enthält ausschließlich nicht geheime Metadaten. Schlüssel verbleiben im macOS-Schlüsselbund. Roh-HARs, Klartext-Secrets und unredigierte Responses werden nicht erzeugt.
+Das Dashboard schreibt ausschließlich nach `.local/dashboard/`; die
+SQLite-Datei erhält Modus `0600`, das Verzeichnis `0700`. Bereits vorhandene
+breitere Rechte, user-owned Symlink-Ahnen, Hardlinks, WAL/SHM oder unbekannte
+Sidecars blockieren und werden nicht automatisch repariert. Beim Reopen werden
+Migration-Checksums, SQLite-Integrität und Foreign Keys geprüft. Ein nach
+Engagement-Crash noch als laufend persistierter Kampagnenzustand wird nur in
+Richtung `paused` versöhnt; ein Clear bleibt signaturpflichtig. Details stehen
+in `PHASE6_CONTROL_PLANE_RECOVERY.md`.
+
+Der Pfad ist per `.gitignore` ausgeschlossen. Simulationsevents werden nur als
+versionierte AES-256-GCM-Hüllen gespeichert; die authentifizierte State-Chain
+enthält ausschließlich nicht geheime Metadaten. Schlüssel verbleiben im
+macOS-Schlüsselbund. Roh-HARs, Klartext-Secrets und unredigierte Responses
+werden nicht erzeugt.
 
 Zum Zurücksetzen zuerst den Server beenden und anschließend nur die lokalen Demo-Daten entfernen:
 

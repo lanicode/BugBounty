@@ -24,9 +24,11 @@ Active-active-Betrieb.
 
 ## Control-Plane-Datenbank
 
-1. File-backed SQLite akzeptiert nur einen lokalen absoluten kanonischen Pfad,
-   ein privates reguläres Datenbankfile und einen privaten realen Elternpfad;
-   Symlinks und unerwartete Sidecar-Dateitypen blockieren.
+1. File-backed SQLite akzeptiert nur einen lokalen absoluten normalisierten
+   Pfad, ein privates reguläres Datenbankfile und einen privaten realen
+   Elternpfad; user-owned Symlinks und unerwartete Sidecar-Dateitypen
+   blockieren. Ausschließlich root-owned macOS-Systemaliase gehören zur
+   dokumentierten lokalen OS-TCB.
 2. Die Datenbank erzwingt und verifiziert Foreign Keys, deaktiviertes Trusted
    Schema, `synchronous=FULL`, eine explizite lokale Journalstrategie und ein
    begrenztes Busy-Timeout.

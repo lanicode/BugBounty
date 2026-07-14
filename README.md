@@ -1,4 +1,4 @@
-# Bug Bounty Copilot – lokale Phase-5-Control-Plane
+# Bug Bounty Copilot – lokale Phase-6-Control-Plane
 
 Bug Bounty Copilot ist ein eigenes, lokal betriebenes Produkt für die sichere Vorbereitung künftiger Bug-Bounty-Workflows. Phase 3 bindet die External-Action-Pipeline an atomare, aktuelle und persistierte Policy-, Kampagnen-, Scope-, Ownership-, Budget- und Approval-Evidence.
 
@@ -15,6 +15,15 @@ lesbar bleiben. Eine verzeichnisweite Mutation-Lease serialisiert Init,
 Legacy-Adoption, Writes und Rotation auch über Prozesse hinweg. Dafür wurde
 `packages/event-store` als zwingende **Security-Core-Änderung** gehärtet; die
 anderen Phase-1-Komponenten bleiben unverändert.
+
+Phase 6 qualifiziert die lokale SQLite-Control-Plane, den globalen Kill Switch
+und das Phase-1-Audit-Log für kontrollierte Prozessabbrüche, Restart und
+konkurrierende lokale Prozesse. SQLite prüft Pfad, Rechte, Sidecars,
+Durability-Pragmas und Integrität beim Reopen. Kill-Switch-Engagement,
+Kampagnenpause und Audit-Fortsetzung besitzen geordnete Commitgrenzen. Das
+Audit-Log rehydriert seinen Hashketten-Head unter einer privaten
+prozessübergreifenden Lease; verwaiste Leases werden ausschließlich durch
+einen expliziten lokalen Offline-Recovery-Schritt entfernt.
 
 Die Anwendung ist weiterhin **kein Live-Scanner**. Sie führt keine aktiven Sicherheitstests aus, erstellt keine realen Konten, besitzt keine funktionsfähige Plattformintegration und reicht keine Reports ein. Sämtliche Demonstrationen laufen deterministisch gegen In-Process-Mocks oder Loopback-Server. Externe Integrationen sind standardmäßig, bei fehlender oder fehlerhafter Konfiguration und bei Laufzeitfehlern deaktiviert.
 
@@ -80,6 +89,13 @@ in `docs/PHASE5_EVENT_KEY_LIFECYCLE.md` beschrieben. Rotation und Recovery
 erfolgen nur bei beendetem Dashboard. Weder alte Hüllen noch alte Keychain-
 Einträge werden automatisch umgeschrieben oder gelöscht.
 
+Die Control-Plane-Datenbank und das Audit-Log akzeptieren ausschließlich
+private lokale Verzeichnisse. Neu angelegte Laufzeitverzeichnisse besitzen
+`0700`, Dateien `0600`. Ein bereits vorhandenes Verzeichnis oder eine Datei
+mit breiteren Rechten wird nicht automatisch repariert, sondern blockiert bis
+zur lokalen Offline-Prüfung. Die Phase-6-Recovery- und Betriebssemantik steht
+in `docs/PHASE6_CONTROL_PLANE_RECOVERY.md`.
+
 ## Sicherheitsmodell
 
 Jede künftig extern wirksame Aktion muss die folgende technisch erzwungene Kette durchlaufen:
@@ -115,6 +131,11 @@ Externe Runner sind nicht implementiert; `external_integrations_enabled` ist imm
 - `packages/event-store`: zwingend geänderter Phase-1-Sicherheitskern mit
   versionierten AES-256-GCM-Hüllen, expliziten Leseversionen,
   Hüllengrößenprüfung vor Dateianlage sowie Datei- und Verzeichnis-`fsync`.
-- `packages/config`, `packages/egress-guard`, `packages/redaction`, `packages/secret-store`, `packages/policy` und `packages/audit-log`: in Phase 5 unveränderte Phase-1-Komponenten.
+- `packages/audit-log`: zwingend geänderter Phase-1-Sicherheitskern mit
+  strikter kanonischer Hashkette, Restart-Rehydration, privater
+  Mutation-Lease und expliziter stale-Lease-Recovery.
+- `packages/config`, `packages/egress-guard`, `packages/redaction`,
+  `packages/secret-store` und `packages/policy`: in Phase 6 unveränderte
+  Phase-1-Komponenten.
 
-Bedienung und Grenzen stehen in `docs/LOCAL_DASHBOARD_GUIDE.md` und `docs/SIMULATION_GUIDE.md`. Die signierte Operatorgrenze ist in `docs/PHASE4_SIGNED_OPERATOR_APPROVALS.md`, der Event-Key-Lifecycle in `docs/PHASE5_EVENT_KEY_LIFECYCLE.md` beschrieben. Der vollständige Phase-5-Nachweis steht in `PHASE5_COMPLETION_REPORT.md`.
+Bedienung und Grenzen stehen in `docs/LOCAL_DASHBOARD_GUIDE.md` und `docs/SIMULATION_GUIDE.md`. Die signierte Operatorgrenze ist in `docs/PHASE4_SIGNED_OPERATOR_APPROVALS.md`, der Event-Key-Lifecycle in `docs/PHASE5_EVENT_KEY_LIFECYCLE.md` und die lokale Recovery-Semantik in `docs/PHASE6_CONTROL_PLANE_RECOVERY.md` beschrieben. Der vollständige Phase-6-Nachweis steht in `PHASE6_COMPLETION_REPORT.md`.
