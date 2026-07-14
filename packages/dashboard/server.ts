@@ -13,6 +13,7 @@ import type {
   ControlPlaneStore,
   StoredPolicyVersion,
 } from "../control-plane/store.js";
+import type { ApprovalRecord, CampaignRecord } from "../control-plane/types.js";
 import type { DemoSaas, DemoSaasSnapshot } from "../demo-saas/domain.js";
 import {
   LocalProductWorkflow,
@@ -33,14 +34,39 @@ import { SIMULATION_CONFIRMATION_ORDER } from "../simulation/orchestrator.js";
 import { errorCode, SecurityError } from "../shared/errors.js";
 import { canonicalJson, sha256 } from "../shared/canonical.js";
 import {
+  detectHackerOnePolicyDrift,
+  type HackerOneIntegrationStatus,
+  type HackerOneMetadataService,
+  type HackerOnePolicySnapshot,
+  type HackerOneProgram,
+  type HackerOneProgramSuitability,
+  type StoredHackerOnePolicySnapshot,
+  type StoredHackerOneProgram,
+} from "../hackerone-readonly/index.js";
+import {
   DASHBOARD_CSS,
   DASHBOARD_HTML,
   DASHBOARD_JAVASCRIPT,
 } from "./assets.js";
 import { DASHBOARD_PHASE8_JAVASCRIPT } from "./phase8-assets.js";
+import { HACKERONE_DASHBOARD_JAVASCRIPT } from "./hackerone-assets.js";
 
 const LOOPBACK_HOST = "127.0.0.1";
 const MAX_BODY_BYTES = 65_536;
+const HACKERONE_CREDENTIAL_FRAME_MAGIC = Object.freeze([
+  0x48, 0x31, 0x43, 0x52,
+] as const);
+const HACKERONE_CREDENTIAL_FRAME_VERSION = 1;
+const HACKERONE_CREDENTIAL_FRAME_HEADER_BYTES = 9;
+const MAX_HACKERONE_CREDENTIAL_BYTES = 3_000;
+const MAX_HACKERONE_CREDENTIAL_FRAME_BYTES =
+  HACKERONE_CREDENTIAL_FRAME_HEADER_BYTES + MAX_HACKERONE_CREDENTIAL_BYTES * 2;
+const MAX_HACKERONE_MANUAL_IMPORT_SOURCE_BYTES = 1_048_576;
+const MAX_HACKERONE_MANUAL_IMPORT_BODY_BYTES =
+  MAX_HACKERONE_MANUAL_IMPORT_SOURCE_BYTES * 2 + 1_024;
+const MAX_HACKERONE_DASHBOARD_PROGRAMS = 1_000;
+const MAX_HACKERONE_DASHBOARD_POLICY_VERSIONS = 20;
+const MAX_HACKERONE_DASHBOARD_CAMPAIGNS = 100;
 const ACTOR = /^[A-Za-z0-9._@-]{1,128}$/u;
 const SECURITY_HEADERS = Object.freeze({
   "cache-control": "no-store",
@@ -73,6 +99,7 @@ export interface DashboardDependencies {
   readonly simulation?: SimulationOrchestrator;
   readonly operatorSigner?: OperatorSigner;
   readonly readiness: RuntimeReadiness;
+  readonly hackerOne?: HackerOneMetadataService;
   readonly now?: () => Date;
 }
 
@@ -142,7 +169,7 @@ export async function startDashboardServer(
     const pathname = parseCanonicalPath(request.url, expectedHost);
 
     if (request.method === "GET") {
-      serveGet(response, pathname, () =>
+      await serveGet(response, pathname, () =>
         buildDashboardState(
           dependencies,
           csrfToken,
@@ -158,10 +185,42 @@ export async function startDashboardServer(
       response.setHeader("allow", "GET, POST");
       throw new DashboardHttpError(405, "DASHBOARD_METHOD_BLOCKED");
     }
-    assertMutationHeaders(request, origin, csrfToken);
     if (!isPostRoute(pathname))
       throw new DashboardHttpError(404, "DASHBOARD_ROUTE_NOT_FOUND");
-    const body = await readJsonBody(request);
+    if (pathname === "/api/hackerone/credentials/store") {
+      assertSecureCoreReady(dependencies);
+      const declaredLength = assertCredentialMutationHeaders(
+        request,
+        origin,
+        csrfToken,
+      );
+      const payload = await readBoundedCredentialBody(request, declaredLength);
+      let credentials:
+        | {
+            readonly identifier: Uint8Array;
+            readonly token: Uint8Array;
+          }
+        | undefined;
+      try {
+        credentials = parseHackerOneCredentialFrame(payload);
+        await requireHackerOne(dependencies).storeCredentialBytes(
+          credentials.identifier,
+          credentials.token,
+        );
+        sendJson(response, 200, { stored: true, adapterEnabled: false });
+      } finally {
+        credentials?.identifier.fill(0);
+        credentials?.token.fill(0);
+        payload.fill(0);
+      }
+      return;
+    }
+    const maximumBodyBytes =
+      pathname === "/api/hackerone/manual-import"
+        ? MAX_HACKERONE_MANUAL_IMPORT_BODY_BYTES
+        : MAX_BODY_BYTES;
+    assertMutationHeaders(request, origin, csrfToken, maximumBodyBytes);
+    const body = await readJsonBody(request, maximumBodyBytes);
 
     switch (pathname) {
       case "/api/local-product/action": {
@@ -182,6 +241,157 @@ export async function startDashboardServer(
             throw new DashboardHttpError(409, error.message);
           throw error;
         }
+        return;
+      }
+      case "/api/hackerone/credentials/remove": {
+        assertSecureCoreReady(dependencies);
+        assertEmptyObject(body, "HACKERONE_DASHBOARD_REQUEST_INVALID");
+        await requireHackerOne(dependencies).removeCredentials();
+        sendJson(response, 200, { removed: true, adapterEnabled: false });
+        return;
+      }
+      case "/api/hackerone/integration/enable": {
+        assertSecureCoreReady(dependencies);
+        assertEmptyObject(body, "HACKERONE_DASHBOARD_REQUEST_INVALID");
+        const service = requireHackerOne(dependencies);
+        const serviceStatus = await service.status();
+        if (!serviceStatus.adapterConfigured)
+          throw new SecurityError("HACKERONE_METADATA_CAPABILITY_DISABLED");
+        if (serviceStatus.killSwitchActive)
+          throw new SecurityError("HACKERONE_KILL_SWITCH");
+        const at = timestamp(now);
+        const signer = requireOperatorSigner(dependencies);
+        ensureOperatorEnrolled(
+          dependencies.store,
+          signer,
+          operatorSessionId,
+          at,
+        );
+        const approval = await service.prepareActivationApproval({
+          approvalId: `h1activation-${randomBytes(16).toString("hex")}`,
+          operatorId: signer.credential.operator_id,
+          createdAt: at,
+        });
+        const decided = decideDashboardApproval(
+          dependencies.store,
+          signer,
+          operatorSessionId,
+          approval.id,
+          "accepted",
+          "explicit_local_hackerone_metadata_activation",
+          at,
+        );
+        service.completeActivation();
+        sendJson(response, 200, {
+          enabled: decided.status === "accepted",
+          approvalId: decided.id,
+        });
+        return;
+      }
+      case "/api/hackerone/integration/disable": {
+        assertSecureCoreReady(dependencies);
+        assertEmptyObject(body, "HACKERONE_DASHBOARD_REQUEST_INVALID");
+        await requireHackerOne(dependencies).disable();
+        sendJson(response, 200, { enabled: false });
+        return;
+      }
+      case "/api/hackerone/connection-test": {
+        assertSecureCoreReady(dependencies);
+        assertEmptyObject(body, "HACKERONE_DASHBOARD_REQUEST_INVALID");
+        const result = await requireHackerOne(dependencies).testConnection();
+        sendJson(response, 200, result);
+        return;
+      }
+      case "/api/hackerone/programs/synchronize": {
+        assertSecureCoreReady(dependencies);
+        assertEmptyObject(body, "HACKERONE_DASHBOARD_REQUEST_INVALID");
+        const result =
+          await requireHackerOne(dependencies).synchronizePrograms();
+        sendJson(response, 200, result);
+        return;
+      }
+      case "/api/hackerone/program/select": {
+        assertSecureCoreReady(dependencies);
+        const input = parseHackerOneProgramReference(body);
+        await requireHackerOne(dependencies).selectProgram(input.programRef);
+        sendJson(response, 200, { selected: true });
+        return;
+      }
+      case "/api/hackerone/program/synchronize": {
+        assertSecureCoreReady(dependencies);
+        const input = parseHackerOneProgramReference(body);
+        const result = await requireHackerOne(
+          dependencies,
+        ).synchronizeSelectedProgram(input.programRef);
+        sendJson(response, 200, result);
+        return;
+      }
+      case "/api/hackerone/campaign/bind": {
+        assertSecureCoreReady(dependencies);
+        const input = parseHackerOneCampaignBinding(body);
+        const service = requireHackerOne(dependencies);
+        if (service.selectedProgramRef() !== input.programRef)
+          throw new SecurityError(
+            "HACKERONE_DASHBOARD_SELECTED_PROGRAM_CONFLICT",
+          );
+        await service.bindDependentCampaign(input.programRef, input.campaignId);
+        sendJson(response, 200, {
+          bound: true,
+          programRef: input.programRef,
+          campaignId: input.campaignId,
+        });
+        return;
+      }
+      case "/api/hackerone/policy/accept": {
+        assertSecureCoreReady(dependencies);
+        if (dependencies.store.isKillSwitchActive())
+          throw new SecurityError("HACKERONE_POLICY_ACCEPTANCE_KILL_SWITCH");
+        const input = parseHackerOnePolicyAcceptance(body);
+        const at = timestamp(now);
+        const signer = requireOperatorSigner(dependencies);
+        ensureOperatorEnrolled(
+          dependencies.store,
+          signer,
+          operatorSessionId,
+          at,
+        );
+        const service = requireHackerOne(dependencies);
+        const approval = await service.preparePolicyAcceptanceApproval({
+          approvalId: `h1policy-${randomBytes(16).toString("hex")}`,
+          operatorId: signer.credential.operator_id,
+          programLocalRef: input.programRef,
+          snapshotDigest: input.snapshotDigest,
+          createdAt: at,
+        });
+        decideDashboardApproval(
+          dependencies.store,
+          signer,
+          operatorSessionId,
+          approval.id,
+          "accepted",
+          "explicit_local_hackerone_snapshot_acceptance",
+          at,
+        );
+        const result = service.currentSnapshot(input.programRef);
+        if (result?.snapshot.snapshotDigest !== input.snapshotDigest)
+          throw new SecurityError("HACKERONE_POLICY_ACCEPTANCE_CONFLICT");
+        sendJson(response, 200, {
+          accepted: !result.acceptancePending,
+          snapshotDigest: result.snapshot.snapshotDigest,
+        });
+        return;
+      }
+      case "/api/hackerone/manual-import": {
+        assertSecureCoreReady(dependencies);
+        const input = parseHackerOneManualImport(body);
+        const result = await requireHackerOne(dependencies).importManual(
+          input.source,
+        );
+        sendJson(response, 201, {
+          programRef: result.programLocalRef,
+          snapshotDigest: result.snapshot.snapshotDigest,
+          source: result.snapshot.source,
+        });
         return;
       }
       case "/api/programs/import": {
@@ -219,14 +429,21 @@ export async function startDashboardServer(
         const at = timestamp(now);
         const engaging = pathname.endsWith("/engage");
         if (!engaging) assertSecureCoreReady(dependencies);
-        const result = engaging
-          ? dependencies.store.setKillSwitch(true, input.actor, at)
-          : clearKillSwitchWithSigner(
-              dependencies,
-              operatorSessionId,
-              input.actor,
-              at,
-            );
+        let result: { readonly active: boolean; readonly revision: number };
+        if (engaging) {
+          try {
+            result = dependencies.store.setKillSwitch(true, input.actor, at);
+          } finally {
+            dependencies.hackerOne?.engageKillSwitch();
+          }
+        } else {
+          result = clearKillSwitchWithSigner(
+            dependencies,
+            operatorSessionId,
+            input.actor,
+            at,
+          );
+        }
         sendJson(response, 200, result);
         return;
       }
@@ -420,11 +637,11 @@ function assertSecureCoreReady(dependencies: DashboardDependencies): void {
     throw new DashboardHttpError(409, "DASHBOARD_SECURE_CORE_NOT_READY");
 }
 
-function serveGet(
+async function serveGet(
   response: ServerResponse,
   pathname: string,
-  state: () => unknown,
-): void {
+  state: () => Promise<unknown>,
+): Promise<void> {
   switch (pathname) {
     case "/":
       sendText(response, 200, "text/html; charset=utf-8", DASHBOARD_HTML);
@@ -445,11 +662,19 @@ function serveGet(
         DASHBOARD_PHASE8_JAVASCRIPT,
       );
       return;
+    case "/hackerone.js":
+      sendText(
+        response,
+        200,
+        "text/javascript; charset=utf-8",
+        HACKERONE_DASHBOARD_JAVASCRIPT,
+      );
+      return;
     case "/styles.css":
       sendText(response, 200, "text/css; charset=utf-8", DASHBOARD_CSS);
       return;
     case "/api/state":
-      sendJson(response, 200, state());
+      sendJson(response, 200, await state());
       return;
     case "/health":
       sendJson(response, 200, {
@@ -463,14 +688,14 @@ function serveGet(
   }
 }
 
-function buildDashboardState(
+async function buildDashboardState(
   dependencies: DashboardDependencies,
   csrfToken: string,
   generatedAt: string,
   simulationRunning: boolean,
   lastSimulation: SimulationSummary | undefined,
   localProduct: LocalProductWorkflow,
-): unknown {
+): Promise<unknown> {
   const programs = dependencies.store.listPrograms();
   const storedPolicies = programs.flatMap((program) =>
     dependencies.store.listPolicies(program.id),
@@ -495,6 +720,10 @@ function buildDashboardState(
     dependencies.store,
   );
   const completed = lastSimulation !== undefined || reports.length > 0;
+  const hackerOne = await buildHackerOneDashboardState(
+    dependencies.hackerOne,
+    campaigns,
+  );
 
   return {
     version: 1,
@@ -523,6 +752,7 @@ function buildDashboardState(
             ? "valid_bound"
             : "stale_blocked",
     },
+    hackerOne,
     phase1SecurityStatus: "enforced",
     simulationStatus: simulationRunning
       ? "running"
@@ -668,20 +898,347 @@ function buildDashboardState(
       adapterStatus: [
         "MockPlatformAdapter: lokal verfügbar",
         "Demo-SaaS: " + demo.organization.organizationRef,
-        "HackerOne/Bugcrowd: deaktiviert und nicht implementiert",
+        `HackerOne-Metadaten: ${hackerOneStatusText(hackerOne)}`,
+        "Bugcrowd und alle schreibenden Plattformadapter: deaktiviert",
       ],
       eventStore: [
         "Eventdaten: ausschließlich AES-256-GCM-verschlüsselt",
         "Roh-HAR und unredigierte Responses: deaktiviert",
       ],
       configurationDiagnosis: [
-        "external_integrations_enabled: false",
-        "Netzwerkzielklasse: ausschließlich 127.0.0.1",
+        "Allgemeine external_integrations_enabled: false",
+        "Allgemeine Zielrequest-Klasse: ausschließlich 127.0.0.1",
+        "Separate HackerOne-Capability: nur Metadaten-GETs bei expliziter Aktivierung",
         `Globaler Kill Switch: ${killSwitchActive ? "aktiv" : "freigegeben"}`,
         "Fehlerzustände werden fail-closed behandelt.",
       ],
     },
   };
+}
+
+function hackerOneStatusText(value: unknown): string {
+  if (value === null || typeof value !== "object") return "deaktiviert";
+  try {
+    const status: unknown = Reflect.get(value, "status");
+    if (status === null || typeof status !== "object") return "deaktiviert";
+    return Reflect.get(status, "adapterEnabled") === true
+      ? "read-only aktiviert"
+      : "deaktiviert";
+  } catch {
+    return "deaktiviert";
+  }
+}
+
+async function buildHackerOneDashboardState(
+  service: HackerOneMetadataService | undefined,
+  campaigns: readonly CampaignRecord[],
+): Promise<unknown> {
+  if (service === undefined)
+    return Object.freeze({
+      available: false,
+      status: Object.freeze({
+        actionClass: "HACKERONE_METADATA_READ",
+        status: "deactivated",
+        externalIntegrationsEnabled: false,
+        adapterConfigured: false,
+        adapterEnabled: false,
+        killSwitchActive: true,
+        identifierPresent: false,
+        tokenPresent: false,
+        tokenFingerprint: null,
+        lastConnectionTestAt: null,
+        lastSuccessfulConnectionAt: null,
+        lastConnectionResult: null,
+        lastSynchronizationAt: null,
+        lastSynchronizationResult: null,
+        importedProgramCount: 0,
+        lastErrorCode: "HACKERONE_SERVICE_UNAVAILABLE",
+        selectedHandle: null,
+        apiMode: "read_only",
+        targetRequestsEnabled: false,
+        reportSubmissionEnabled: false,
+      }),
+      programs: Object.freeze([]),
+      programCount: 0,
+      programsTruncated: false,
+      selectedProgramRef: null,
+      currentSnapshot: null,
+      policyVersions: Object.freeze([]),
+      policyVersionCount: 0,
+      policyVersionsTruncated: false,
+      previousPolicy: null,
+      campaigns: Object.freeze([]),
+      campaignCount: campaigns.length,
+      campaignsTruncated: campaigns.length > MAX_HACKERONE_DASHBOARD_CAMPAIGNS,
+      drift: null,
+    });
+  const status = await service.status();
+  const allPrograms = service.listPrograms();
+  const selectedProgramRef = service.selectedProgramRef();
+  const current =
+    selectedProgramRef === null
+      ? undefined
+      : service.currentSnapshot(selectedProgramRef);
+  const versions =
+    selectedProgramRef === null
+      ? Object.freeze([])
+      : service.policyVersions(selectedProgramRef);
+  const previous = versions.at(-2);
+  const drift =
+    previous === undefined || current === undefined
+      ? null
+      : detectHackerOnePolicyDrift(
+          previous.snapshot,
+          current.snapshot,
+          selectedProgramRef !== null &&
+            service.hasPausedDependentCampaigns(selectedProgramRef),
+        );
+  const programs = boundedHackerOnePrograms(
+    allPrograms,
+    selectedProgramRef,
+    service,
+  );
+  const versionOffset = Math.max(
+    0,
+    versions.length - MAX_HACKERONE_DASHBOARD_POLICY_VERSIONS,
+  );
+  const projectedVersions = versions
+    .slice(versionOffset)
+    .map((version, index) =>
+      projectHackerOnePolicyVersion(version, versionOffset + index + 1),
+    );
+  return Object.freeze({
+    available: true,
+    status: projectHackerOneStatus(status),
+    programs,
+    programCount: allPrograms.length,
+    programsTruncated: programs.length < allPrograms.length,
+    selectedProgramRef,
+    currentSnapshot:
+      current === undefined ? null : projectCurrentHackerOneSnapshot(current),
+    policyVersions: Object.freeze(projectedVersions),
+    policyVersionCount: versions.length,
+    policyVersionsTruncated: projectedVersions.length < versions.length,
+    previousPolicy:
+      previous === undefined ? null : projectPreviousHackerOnePolicy(previous),
+    campaigns: boundedHackerOneCampaigns(campaigns),
+    campaignCount: campaigns.length,
+    campaignsTruncated: campaigns.length > MAX_HACKERONE_DASHBOARD_CAMPAIGNS,
+    drift,
+  });
+}
+
+function boundedHackerOneCampaigns(
+  campaigns: readonly CampaignRecord[],
+): readonly unknown[] {
+  return Object.freeze(
+    campaigns.slice(0, MAX_HACKERONE_DASHBOARD_CAMPAIGNS).map((campaign) =>
+      Object.freeze({
+        id: campaign.id,
+        programId: campaign.programId,
+        policyVersion: campaign.policyVersion,
+        policyHash: campaign.policyHash,
+        state: campaign.state,
+        revision: campaign.revision,
+        killSwitchStatus: campaign.killSwitchStatus,
+      }),
+    ),
+  );
+}
+
+function boundedHackerOnePrograms(
+  programs: readonly StoredHackerOneProgram[],
+  selectedProgramRef: string | null,
+  service: HackerOneMetadataService,
+): readonly unknown[] {
+  const bounded = programs.slice(0, MAX_HACKERONE_DASHBOARD_PROGRAMS);
+  if (
+    selectedProgramRef !== null &&
+    !bounded.some(({ localRef }) => localRef === selectedProgramRef)
+  ) {
+    const selected = programs.find(
+      ({ localRef }) => localRef === selectedProgramRef,
+    );
+    if (selected !== undefined) {
+      if (bounded.length === MAX_HACKERONE_DASHBOARD_PROGRAMS) bounded.pop();
+      bounded.push(selected);
+    }
+  }
+  return Object.freeze(
+    bounded.map((program) =>
+      projectHackerOneProgramSummary(
+        program,
+        service.currentSnapshot(program.localRef)?.snapshot.suitability ?? null,
+      ),
+    ),
+  );
+}
+
+function projectHackerOneStatus(
+  status: HackerOneIntegrationStatus,
+): Readonly<Record<string, unknown>> {
+  return Object.freeze({
+    actionClass: status.actionClass,
+    status: status.status,
+    externalIntegrationsEnabled: status.externalIntegrationsEnabled,
+    adapterConfigured: status.adapterConfigured,
+    adapterEnabled: status.adapterEnabled,
+    killSwitchActive: status.killSwitchActive,
+    identifierPresent: status.identifierPresent,
+    tokenPresent: status.tokenPresent,
+    tokenFingerprint: status.tokenFingerprint,
+    lastConnectionTestAt: status.lastConnectionTestAt,
+    lastSuccessfulConnectionAt: status.lastSuccessfulConnectionAt,
+    lastConnectionResult: status.lastConnectionResult,
+    lastSynchronizationAt: status.lastSynchronizationAt,
+    lastSynchronizationResult: status.lastSynchronizationResult,
+    importedProgramCount: status.importedProgramCount,
+    lastErrorCode: status.lastErrorCode,
+    selectedHandle: status.selectedHandle,
+    apiMode: status.apiMode,
+    targetRequestsEnabled: status.targetRequestsEnabled,
+    reportSubmissionEnabled: status.reportSubmissionEnabled,
+  });
+}
+
+function projectHackerOneProgramSummary(
+  record: StoredHackerOneProgram,
+  suitability: HackerOneProgramSuitability | null,
+): Readonly<Record<string, unknown>> {
+  return Object.freeze({
+    localRef: record.localRef,
+    source: record.program.source,
+    catalogActive: record.catalogActive,
+    catalogDriftPending: record.catalogDriftPending,
+    currentSnapshotDigest: record.currentSnapshotDigest,
+    suitability:
+      suitability === null
+        ? null
+        : Object.freeze({
+            score: suitability.score,
+            reasons: Object.freeze([...suitability.reasons]),
+            automationPermission: suitability.automationPermission,
+            accountWorkflows: suitability.accountWorkflows,
+            legalDecisionMade: suitability.legalDecisionMade,
+          }),
+    program: projectHackerOneProgram(record.program, false),
+  });
+}
+
+function projectHackerOneProgram(
+  program: HackerOneProgram,
+  includePolicy: boolean,
+): Readonly<Record<string, unknown>> {
+  return Object.freeze({
+    hackerOneId: program.hackerOneId,
+    handle: program.handle,
+    name: program.name,
+    currency: program.currency,
+    ...(includePolicy ? { policy: program.policy } : {}),
+    submissionState: program.submissionState,
+    programState: program.programState,
+    offersBounties: program.offersBounties,
+    openScope: program.openScope,
+    goldStandardSafeHarbor: program.goldStandardSafeHarbor,
+    bookmarked: program.bookmarked,
+    ownReportCount: program.ownReportCount,
+    ownValidReportCount: program.ownValidReportCount,
+    startedAcceptingAt: program.startedAcceptingAt,
+    createdAt: program.createdAt,
+    updatedAt: program.updatedAt,
+    synchronizedAt: program.synchronizedAt,
+    source: program.source,
+  });
+}
+
+function projectCurrentHackerOneSnapshot(
+  stored: StoredHackerOnePolicySnapshot,
+): Readonly<Record<string, unknown>> {
+  const snapshot = stored.snapshot;
+  return Object.freeze({
+    programLocalRef: stored.programLocalRef,
+    acceptancePending: stored.acceptancePending,
+    snapshot: Object.freeze({
+      program: projectHackerOneProgram(snapshot.program, true),
+      structuredScopes: Object.freeze(
+        snapshot.structuredScopes.map((scope) =>
+          Object.freeze({
+            id: scope.id,
+            assetType: scope.assetType,
+            assetIdentifier: scope.assetIdentifier,
+            assetIdentifierDigest: scope.assetIdentifierDigest,
+            eligibleForSubmission: scope.eligibleForSubmission,
+            eligibleForBounty: scope.eligibleForBounty,
+            instruction: scope.instruction,
+            maximumSeverity: scope.maximumSeverity,
+            createdAt: scope.createdAt,
+            updatedAt: scope.updatedAt,
+            confidentialityRequirement: scope.confidentialityRequirement,
+            integrityRequirement: scope.integrityRequirement,
+            availabilityRequirement: scope.availabilityRequirement,
+          }),
+        ),
+      ),
+      scopeExclusions: Object.freeze(
+        snapshot.scopeExclusions.map((exclusion) =>
+          Object.freeze({
+            id: exclusion.id,
+            category: exclusion.category,
+            details: exclusion.details,
+            createdAt: exclusion.createdAt,
+            updatedAt: exclusion.updatedAt,
+          }),
+        ),
+      ),
+      fetchedAt: snapshot.fetchedAt,
+      adapterVersion: snapshot.adapterVersion,
+      schemaVersion: snapshot.schemaVersion,
+      snapshotDigest: snapshot.snapshotDigest,
+      policyDigest: snapshot.policyDigest,
+      previousSnapshotDigest: snapshot.previousSnapshotDigest,
+      suitability: Object.freeze({
+        score: snapshot.suitability.score,
+        reasons: Object.freeze([...snapshot.suitability.reasons]),
+        automationPermission: snapshot.suitability.automationPermission,
+        accountWorkflows: snapshot.suitability.accountWorkflows,
+        legalDecisionMade: snapshot.suitability.legalDecisionMade,
+      }),
+      source: snapshot.source,
+    }),
+  });
+}
+
+function projectHackerOnePolicyVersion(
+  stored: StoredHackerOnePolicySnapshot,
+  versionNumber: number,
+): Readonly<Record<string, unknown>> {
+  const snapshot: HackerOnePolicySnapshot = stored.snapshot;
+  return Object.freeze({
+    versionNumber,
+    programLocalRef: stored.programLocalRef,
+    acceptancePending: stored.acceptancePending,
+    snapshot: Object.freeze({
+      snapshotDigest: snapshot.snapshotDigest,
+      policyDigest: snapshot.policyDigest,
+      previousSnapshotDigest: snapshot.previousSnapshotDigest,
+      fetchedAt: snapshot.fetchedAt,
+      adapterVersion: snapshot.adapterVersion,
+      schemaVersion: snapshot.schemaVersion,
+      source: snapshot.source,
+    }),
+  });
+}
+
+function projectPreviousHackerOnePolicy(
+  stored: StoredHackerOnePolicySnapshot,
+): Readonly<Record<string, unknown>> {
+  return Object.freeze({
+    snapshotDigest: stored.snapshot.snapshotDigest,
+    policyDigest: stored.snapshot.policyDigest,
+    fetchedAt: stored.snapshot.fetchedAt,
+    source: stored.snapshot.source,
+    policy: stored.snapshot.program.policy,
+  });
 }
 
 function unavailableSimulationReview(): unknown {
@@ -802,12 +1359,113 @@ function parseCanonicalPath(rawUrl: string | undefined, host: string): string {
 function isPostRoute(pathname: string): boolean {
   return (
     pathname === "/api/local-product/action" ||
+    pathname === "/api/hackerone/credentials/store" ||
+    pathname === "/api/hackerone/credentials/remove" ||
+    pathname === "/api/hackerone/integration/enable" ||
+    pathname === "/api/hackerone/integration/disable" ||
+    pathname === "/api/hackerone/connection-test" ||
+    pathname === "/api/hackerone/programs/synchronize" ||
+    pathname === "/api/hackerone/program/select" ||
+    pathname === "/api/hackerone/program/synchronize" ||
+    pathname === "/api/hackerone/campaign/bind" ||
+    pathname === "/api/hackerone/policy/accept" ||
+    pathname === "/api/hackerone/manual-import" ||
     pathname === "/api/programs/import" ||
     pathname === "/api/simulation/run" ||
     pathname === "/api/approvals/decide" ||
     pathname === "/api/kill-switch/engage" ||
     pathname === "/api/kill-switch/clear"
   );
+}
+
+function requireHackerOne(
+  dependencies: DashboardDependencies,
+): HackerOneMetadataService {
+  if (dependencies.hackerOne === undefined)
+    throw new SecurityError("HACKERONE_SERVICE_UNAVAILABLE");
+  return dependencies.hackerOne;
+}
+
+function parseHackerOneProgramReference(value: unknown): {
+  readonly programRef: string;
+} {
+  assertExactObject(
+    value,
+    ["programRef"],
+    "HACKERONE_DASHBOARD_PROGRAM_REF_INVALID",
+  );
+  const programRef = value["programRef"];
+  if (
+    typeof programRef !== "string" ||
+    !/^h1[am]_[0-9a-f]{64}$/u.test(programRef)
+  )
+    throw new SecurityError("HACKERONE_DASHBOARD_PROGRAM_REF_INVALID");
+  return Object.freeze({ programRef });
+}
+
+function parseHackerOnePolicyAcceptance(value: unknown): {
+  readonly programRef: string;
+  readonly snapshotDigest: string;
+} {
+  assertExactObject(
+    value,
+    ["confirmed", "programRef", "snapshotDigest"],
+    "HACKERONE_DASHBOARD_POLICY_ACCEPTANCE_INVALID",
+  );
+  const programRef = value["programRef"];
+  const snapshotDigest = value["snapshotDigest"];
+  if (
+    value["confirmed"] !== true ||
+    typeof programRef !== "string" ||
+    !/^h1[am]_[0-9a-f]{64}$/u.test(programRef) ||
+    typeof snapshotDigest !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(snapshotDigest)
+  )
+    throw new SecurityError("HACKERONE_DASHBOARD_POLICY_ACCEPTANCE_INVALID");
+  return Object.freeze({ programRef, snapshotDigest });
+}
+
+function parseHackerOneCampaignBinding(value: unknown): {
+  readonly programRef: string;
+  readonly campaignId: string;
+} {
+  assertExactObject(
+    value,
+    ["campaignId", "programRef"],
+    "HACKERONE_DASHBOARD_CAMPAIGN_BINDING_INVALID",
+  );
+  const programRef = value["programRef"];
+  const campaignId = value["campaignId"];
+  if (
+    typeof programRef !== "string" ||
+    !/^h1[am]_[0-9a-f]{64}$/u.test(programRef) ||
+    typeof campaignId !== "string" ||
+    !/^[A-Za-z0-9_-]{1,128}$/u.test(campaignId)
+  )
+    throw new SecurityError("HACKERONE_DASHBOARD_CAMPAIGN_BINDING_INVALID");
+  return Object.freeze({ programRef, campaignId });
+}
+
+function parseHackerOneManualImport(value: unknown): {
+  readonly source: string;
+} {
+  assertExactObject(
+    value,
+    ["source"],
+    "HACKERONE_DASHBOARD_MANUAL_IMPORT_INVALID",
+  );
+  const source = value["source"];
+  if (
+    typeof source !== "string" ||
+    source.length < 1 ||
+    Buffer.byteLength(source, "utf8") > MAX_HACKERONE_MANUAL_IMPORT_SOURCE_BYTES
+  )
+    throw new SecurityError("HACKERONE_DASHBOARD_MANUAL_IMPORT_INVALID");
+  return Object.freeze({ source });
+}
+
+function assertEmptyObject(value: unknown, code: string): void {
+  assertExactObject(value, [], code);
 }
 
 function parseApprovalDecisionRequest(
@@ -922,6 +1580,34 @@ function clearKillSwitchWithSigner(
   );
 }
 
+function decideDashboardApproval(
+  store: ControlPlaneStore,
+  signer: OperatorSigner,
+  sessionId: string,
+  approvalId: string,
+  decision: "accepted" | "rejected",
+  userAction: string,
+  at: string,
+): ApprovalRecord {
+  const context = store.describeApprovalDecision(approvalId);
+  return store.decideApproval(
+    signer.signApprovalDecision({
+      controlPlaneId: context.controlPlaneId,
+      approvalId: context.approvalId,
+      approvalKind: context.approvalKind,
+      approvalPayloadHashSha256: context.approvalPayloadHashSha256,
+      expectedRevision: context.expectedRevision,
+      decision,
+      userAction,
+      contextDigestSha256: context.contextDigestSha256,
+      sessionId,
+      nonce: randomBytes(32).toString("base64url"),
+      issuedAt: at,
+      expiresAt: operatorStatementExpiry(at),
+    }),
+  );
+}
+
 function operatorStatementExpiry(issuedAt: string): string {
   const milliseconds = Date.parse(issuedAt);
   if (!Number.isFinite(milliseconds))
@@ -933,6 +1619,7 @@ function assertMutationHeaders(
   request: IncomingMessage,
   origin: string,
   csrfToken: string,
+  maximumBodyBytes: number,
 ): void {
   if (request.headers.origin !== origin)
     throw new DashboardHttpError(403, "DASHBOARD_ORIGIN_BLOCKED");
@@ -940,18 +1627,42 @@ function assertMutationHeaders(
   if (typeof supplied !== "string" || !safeEqual(supplied, csrfToken))
     throw new DashboardHttpError(403, "DASHBOARD_CSRF_BLOCKED");
   const contentType = request.headers["content-type"];
-  if (
-    typeof contentType !== "string" ||
-    contentType.split(";", 1)[0]?.trim().toLowerCase() !== "application/json"
-  )
+  if (typeof contentType !== "string")
+    throw new DashboardHttpError(415, "DASHBOARD_CONTENT_TYPE_BLOCKED");
+  if (contentType.split(";", 1)[0]?.trim().toLowerCase() !== "application/json")
     throw new DashboardHttpError(415, "DASHBOARD_CONTENT_TYPE_BLOCKED");
   const length = request.headers["content-length"];
   if (length !== undefined) {
     if (!/^(?:0|[1-9][0-9]*)$/u.test(length))
       throw new DashboardHttpError(400, "DASHBOARD_CONTENT_LENGTH_INVALID");
-    if (Number(length) > MAX_BODY_BYTES)
+    if (Number(length) > maximumBodyBytes)
       throw new DashboardHttpError(413, "DASHBOARD_BODY_TOO_LARGE");
   }
+}
+
+function assertCredentialMutationHeaders(
+  request: IncomingMessage,
+  origin: string,
+  csrfToken: string,
+): number {
+  if (request.headers.origin !== origin)
+    throw new DashboardHttpError(403, "DASHBOARD_ORIGIN_BLOCKED");
+  const supplied = request.headers["x-csrf-token"];
+  if (typeof supplied !== "string" || !safeEqual(supplied, csrfToken))
+    throw new DashboardHttpError(403, "DASHBOARD_CSRF_BLOCKED");
+  if (request.headers["content-type"] !== "application/octet-stream")
+    throw new DashboardHttpError(415, "DASHBOARD_CONTENT_TYPE_BLOCKED");
+  const length = request.headers["content-length"];
+  if (
+    typeof length !== "string" ||
+    !/^[1-9][0-9]*$/u.test(length) ||
+    !Number.isSafeInteger(Number(length))
+  )
+    throw new DashboardHttpError(400, "DASHBOARD_CONTENT_LENGTH_INVALID");
+  const parsed = Number(length);
+  if (parsed > MAX_HACKERONE_CREDENTIAL_FRAME_BYTES)
+    throw new DashboardHttpError(413, "DASHBOARD_BODY_TOO_LARGE");
+  return parsed;
 }
 
 function safeEqual(left: string, right: string): boolean {
@@ -963,7 +1674,10 @@ function safeEqual(left: string, right: string): boolean {
   );
 }
 
-function readJsonBody(request: IncomingMessage): Promise<unknown> {
+function readJsonBody(
+  request: IncomingMessage,
+  maximumBodyBytes: number,
+): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let bytes = 0;
@@ -987,7 +1701,7 @@ function readJsonBody(request: IncomingMessage): Promise<unknown> {
         return;
       }
       bytes += chunk.byteLength;
-      if (bytes > MAX_BODY_BYTES) {
+      if (bytes > maximumBodyBytes) {
         fail(new DashboardHttpError(413, "DASHBOARD_BODY_TOO_LARGE"));
         return;
       }
@@ -1024,6 +1738,143 @@ function readJsonBody(request: IncomingMessage): Promise<unknown> {
     request.once("error", onError);
     request.once("aborted", onAborted);
   });
+}
+
+function readBoundedCredentialBody(
+  request: IncomingMessage,
+  declaredLength: number,
+): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    let failure: DashboardHttpError | undefined;
+    let settled = false;
+    const eraseChunks = (): void => {
+      for (const chunk of chunks) chunk.fill(0);
+      chunks.length = 0;
+    };
+    const cleanup = (): void => {
+      request.off("data", onData);
+      request.off("end", onEnd);
+      request.off("error", onError);
+      request.off("aborted", onAborted);
+    };
+    const fail = (error: DashboardHttpError): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      eraseChunks();
+      reject(error);
+    };
+    const onData = (chunk: unknown): void => {
+      if (!Buffer.isBuffer(chunk)) {
+        failure ??= new DashboardHttpError(400, "DASHBOARD_BODY_INVALID");
+        return;
+      }
+      let copy: Buffer | undefined;
+      try {
+        if (failure !== undefined) return;
+        bytes += chunk.byteLength;
+        if (
+          bytes > declaredLength ||
+          bytes > MAX_HACKERONE_CREDENTIAL_FRAME_BYTES
+        ) {
+          failure = new DashboardHttpError(
+            bytes > MAX_HACKERONE_CREDENTIAL_FRAME_BYTES ? 413 : 400,
+            bytes > MAX_HACKERONE_CREDENTIAL_FRAME_BYTES
+              ? "DASHBOARD_BODY_TOO_LARGE"
+              : "DASHBOARD_CONTENT_LENGTH_INVALID",
+          );
+          eraseChunks();
+          return;
+        }
+        copy = Buffer.from(chunk);
+        chunks.push(copy);
+        copy = undefined;
+      } finally {
+        copy?.fill(0);
+        chunk.fill(0);
+      }
+    };
+    const onEnd = (): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (failure !== undefined || bytes !== declaredLength) {
+        eraseChunks();
+        reject(
+          failure ??
+            new DashboardHttpError(400, "DASHBOARD_CONTENT_LENGTH_INVALID"),
+        );
+        return;
+      }
+      let payload: Buffer | undefined;
+      try {
+        payload = Buffer.concat(chunks, bytes);
+        resolve(payload);
+        payload = undefined;
+      } catch {
+        reject(new DashboardHttpError(400, "DASHBOARD_BODY_INVALID"));
+      } finally {
+        payload?.fill(0);
+        eraseChunks();
+      }
+    };
+    const onError = (): void => {
+      fail(new DashboardHttpError(400, "DASHBOARD_BODY_READ_FAILED"));
+    };
+    const onAborted = (): void => {
+      fail(new DashboardHttpError(400, "DASHBOARD_BODY_ABORTED"));
+    };
+    request.on("data", onData);
+    request.once("end", onEnd);
+    request.once("error", onError);
+    request.once("aborted", onAborted);
+  });
+}
+
+function parseHackerOneCredentialFrame(payload: Uint8Array): {
+  readonly identifier: Uint8Array;
+  readonly token: Uint8Array;
+} {
+  if (
+    payload.byteLength < HACKERONE_CREDENTIAL_FRAME_HEADER_BYTES ||
+    HACKERONE_CREDENTIAL_FRAME_MAGIC.some(
+      (expected, index) => payload[index] !== expected,
+    ) ||
+    payload[4] !== HACKERONE_CREDENTIAL_FRAME_VERSION
+  )
+    throw new SecurityError("HACKERONE_CREDENTIAL_FRAME_INVALID");
+  const view = new DataView(
+    payload.buffer,
+    payload.byteOffset,
+    HACKERONE_CREDENTIAL_FRAME_HEADER_BYTES,
+  );
+  const identifierLength = view.getUint16(5, false);
+  const tokenLength = view.getUint16(7, false);
+  if (
+    identifierLength < 1 ||
+    identifierLength > MAX_HACKERONE_CREDENTIAL_BYTES ||
+    tokenLength < 1 ||
+    tokenLength > MAX_HACKERONE_CREDENTIAL_BYTES ||
+    payload.byteLength !==
+      HACKERONE_CREDENTIAL_FRAME_HEADER_BYTES + identifierLength + tokenLength
+  )
+    throw new SecurityError("HACKERONE_CREDENTIAL_FRAME_INVALID");
+  const identifier = payload.subarray(
+    HACKERONE_CREDENTIAL_FRAME_HEADER_BYTES,
+    HACKERONE_CREDENTIAL_FRAME_HEADER_BYTES + identifierLength,
+  );
+  const token = payload.subarray(
+    HACKERONE_CREDENTIAL_FRAME_HEADER_BYTES + identifierLength,
+  );
+  if (!isPrintableCredential(identifier) || !isPrintableCredential(token))
+    throw new SecurityError("HACKERONE_CREDENTIAL_FRAME_INVALID");
+  return Object.freeze({ identifier, token });
+}
+
+function isPrintableCredential(value: Uint8Array): boolean {
+  return value.every((byte) => byte >= 0x21 && byte <= 0x7e);
 }
 
 function parseImportRequest(value: unknown): {

@@ -27,6 +27,8 @@
     "policy:verify": "tsx apps/cli/index.ts policy:verify",
     "audit:verify": "tsx apps/cli/index.ts audit:verify",
     "event-key:admin": "tsx apps/event-key-cli/index.ts",
+    "hackerone:credentials": "tsx apps/hackerone-credentials-cli/index.ts",
+    "hackerone:connection-test": "tsx apps/hackerone-cli/index.ts",
     "phase2:simulate": "tsx apps/phase2-cli/index.ts simulate"
   },
   "dependencies": {

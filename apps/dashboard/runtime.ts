@@ -25,6 +25,16 @@ import {
 } from "../../packages/operator-auth/index.js";
 import { MacOSKeychainSecretStore } from "../../packages/secret-store/index.js";
 import { SimulationOrchestrator } from "../../packages/simulation/index.js";
+import { HackerOneMetadataActionGate } from "../../packages/external-actions/index.js";
+import {
+  HackerOneCredentialVault,
+  HackerOneHttpsTransport,
+  HackerOneMetadataService,
+  HackerOneMetadataStore,
+  HackerOneReadOnlyClient,
+  MacOSHackerOneKeychainMutationBackend,
+  resolveHackerOneMetadataReadRuntime,
+} from "../../packages/hackerone-readonly/index.js";
 
 const DASHBOARD_PORT = 4173;
 const EVENT_KEY_BYTES = 32;
@@ -32,6 +42,8 @@ const POSITIVE_DECIMAL = /^[1-9][0-9]*$/u;
 
 export interface LocalApplicationEnvironment {
   readonly eventKeyMinimumVersion?: string;
+  readonly externalIntegrationsEnabled?: string;
+  readonly hackerOneReadonlyEnabled?: string;
   readonly operatorKeyReference?: string;
   readonly operatorId?: string;
   readonly operatorKeyRevision?: string;
@@ -104,6 +116,13 @@ export async function startLocalApplication(
       platform,
       now,
     );
+    const hackerOne = prepareHackerOneMetadata(
+      database,
+      store,
+      environment,
+      platform,
+      now,
+    );
     const readiness = deriveRuntimeReadiness({
       platform,
       eventKeyMinimumVersion: environment.eventKeyMinimumVersion,
@@ -119,6 +138,7 @@ export async function startLocalApplication(
       store,
       demo,
       readiness,
+      hackerOne,
       ...(prepared.simulation === undefined
         ? {}
         : { simulation: prepared.simulation }),
@@ -279,6 +299,71 @@ function environmentFromProcess(): LocalApplicationEnvironment {
       : {
           operatorKeyRevision: process.env["BUGBOUNTY_OPERATOR_KEY_REVISION"],
         }),
+    ...(process.env["BUGBOUNTY_EXTERNAL_INTEGRATIONS_ENABLED"] === undefined
+      ? {}
+      : {
+          externalIntegrationsEnabled:
+            process.env["BUGBOUNTY_EXTERNAL_INTEGRATIONS_ENABLED"],
+        }),
+    ...(process.env["BUGBOUNTY_HACKERONE_READONLY_ENABLED"] === undefined
+      ? {}
+      : {
+          hackerOneReadonlyEnabled:
+            process.env["BUGBOUNTY_HACKERONE_READONLY_ENABLED"],
+        }),
+  });
+}
+
+function prepareHackerOneMetadata(
+  database: ControlPlaneDatabase,
+  controlPlane: ControlPlaneStore,
+  environment: LocalApplicationEnvironment,
+  platform: NodeJS.Platform,
+  now: () => Date,
+): HackerOneMetadataService {
+  const runtime = resolveHackerOneMetadataReadRuntime({
+    version: 1,
+    capability: "HACKERONE_METADATA_READ",
+    external_integrations_enabled:
+      environment.externalIntegrationsEnabled === "true",
+    enabled: environment.hackerOneReadonlyEnabled === "true",
+    request_budget: {
+      max_requests_total: 100,
+      requests_per_minute: 60,
+      max_concurrency: 1,
+    },
+  });
+  const metadata = new HackerOneMetadataStore(database);
+  const actionGate = new HackerOneMetadataActionGate(
+    database,
+    controlPlane,
+    runtime,
+  );
+  const credentials = new HackerOneCredentialVault(
+    new MacOSKeychainSecretStore(undefined, platform),
+    new MacOSHackerOneKeychainMutationBackend(platform),
+  );
+  const killSwitch = Object.freeze({
+    isActive: (): boolean => controlPlane.isKillSwitchActive(),
+  });
+  const client = new HackerOneReadOnlyClient({
+    runtime,
+    credentials,
+    transport: new HackerOneHttpsTransport(),
+    actionGate,
+    audit: (event) => {
+      metadata.recordRequestAudit(event);
+    },
+    now,
+  });
+  return new HackerOneMetadataService({
+    runtime,
+    store: metadata,
+    credentials,
+    client,
+    actionGate,
+    killSwitch,
+    now,
   });
 }
 

@@ -1,3 +1,5 @@
+import { HACKERONE_DASHBOARD_HTML } from "./hackerone-assets.js";
+
 export const DASHBOARD_HTML = `<!doctype html>
 <html lang="de">
 <head>
@@ -7,6 +9,7 @@ export const DASHBOARD_HTML = `<!doctype html>
   <link rel="stylesheet" href="/styles.css">
   <script src="/app.js" defer></script>
   <script src="/phase8.js" defer></script>
+  <script src="/hackerone.js" defer></script>
 </head>
 <body>
   <header class="masthead">
@@ -33,6 +36,7 @@ export const DASHBOARD_HTML = `<!doctype html>
       <a href="#phase8-inventory">Inventory</a>
       <a href="#phase8-candidates">Kandidaten</a>
       <a href="#phase8-evidence">Evidence</a>
+      <a href="#hackerone-integration">HackerOne</a>
       <a href="#system">System</a>
       <a href="#expert">Expertenansicht</a>
     </nav>
@@ -183,6 +187,8 @@ export const DASHBOARD_HTML = `<!doctype html>
       <div class="section-heading"><div><p class="eyebrow">Zentrale Readiness</p><h2>Produktstatus</h2></div><span id="phase8-runtime-state" class="capability-badge">FAIL-CLOSED</span></div>
       <div id="phase8-runtime-details" class="product-grid" aria-live="polite"></div>
     </section>
+
+    ${HACKERONE_DASHBOARD_HTML}
 
     <section id="programs" class="panel">
       <div class="section-heading"><div><p class="eyebrow">Registry</p><h2>Programme</h2></div></div>

@@ -1070,7 +1070,16 @@ describe("local dashboard browser UI", () => {
       await page
         .getByRole("heading", { name: "Geführter vollständiger Demoablauf" })
         .waitFor();
-      expect(await page.locator('input[type="password"]').count()).toBe(0);
+      const keychainInputs = page.locator(
+        "#hackerone-identifier, #hackerone-token",
+      );
+      expect(await keychainInputs.count()).toBe(2);
+      expect(await page.locator('input[type="password"]').count()).toBe(2);
+      await page
+        .getByText("weder angezeigt noch in Browser-Speichern persistiert", {
+          exact: false,
+        })
+        .waitFor();
       expect(
         await page
           .locator("#phase8-primary-action")
