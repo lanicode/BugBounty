@@ -124,6 +124,7 @@ export class ControlPlaneStore {
       throw new SecurityError("CONTROL_PLANE_CLOCK_UNTRUSTED");
     this.#now = now;
     this.externalActions = new ExternalActionEvidenceStore(database, this);
+    this.reconcileKillSwitchSafety();
     trustedControlPlaneStores.add(this);
     Object.freeze(this);
   }
@@ -640,41 +641,41 @@ export class ControlPlaneStore {
     readonly acceptedAt: string;
     readonly auditReference: string;
   }): StoredPolicyVersion {
-    if (this.isKillSwitchActive())
-      throw new SecurityError("POLICY_ACCEPTANCE_KILL_SWITCH");
-    const program = this.getProgram(input.programId);
-    if (program === undefined) throw new SecurityError("PROGRAM_NOT_FOUND");
-    const policy = this.getPolicy(input.programId, input.version);
-    if (policy === undefined) throw new SecurityError("POLICY_NOT_FOUND");
-    if (policy.policy.policyHash !== input.expectedPolicyHash)
-      throw new SecurityError("POLICY_ACCEPTANCE_HASH_MISMATCH");
-    assertActor(input.acceptedBy, "POLICY_ACCEPTOR_INVALID");
-    assertTimestamp(input.acceptedAt, "POLICY_ACCEPTANCE_TIMESTAMP_INVALID");
-    if (Date.parse(input.acceptedAt) < Date.parse(policy.createdAt))
-      throw new SecurityError("POLICY_ACCEPTANCE_TIMESTAMP_INVALID");
-    assertReference(input.auditReference, "AUDIT_REFERENCE_INVALID");
-    if (
-      program.currentPolicyVersion !== input.version ||
-      program.currentPolicyHash !== input.expectedPolicyHash
-    )
-      throw new SecurityError("POLICY_ACCEPTANCE_STALE");
-    const approval = this.listApprovals().find(
-      (candidate) =>
-        candidate.kind === "program_policy_acceptance" &&
-        candidate.status === "accepted" &&
-        candidate.summary ===
-          `Accept ${input.programId} policy version ${String(input.version)}` &&
-        candidate.policyVersion === input.version &&
-        candidate.policyHash === input.expectedPolicyHash &&
-        candidate.decidedBy === input.acceptedBy &&
-        candidate.decidedAt === input.acceptedAt &&
-        candidate.auditReference === input.auditReference,
-    );
-    if (approval === undefined)
-      throw new SecurityError("POLICY_ACCEPTANCE_EVIDENCE_REQUIRED");
-    new ApprovalQueue([approval]);
-    this.requireAuthenticatedApprovalDecision(approval, approval.payloadHash);
-    this.database.transaction(() => {
+    return this.database.transaction(() => {
+      if (this.isKillSwitchActive())
+        throw new SecurityError("POLICY_ACCEPTANCE_KILL_SWITCH");
+      const program = this.getProgram(input.programId);
+      if (program === undefined) throw new SecurityError("PROGRAM_NOT_FOUND");
+      const policy = this.getPolicy(input.programId, input.version);
+      if (policy === undefined) throw new SecurityError("POLICY_NOT_FOUND");
+      if (policy.policy.policyHash !== input.expectedPolicyHash)
+        throw new SecurityError("POLICY_ACCEPTANCE_HASH_MISMATCH");
+      assertActor(input.acceptedBy, "POLICY_ACCEPTOR_INVALID");
+      assertTimestamp(input.acceptedAt, "POLICY_ACCEPTANCE_TIMESTAMP_INVALID");
+      if (Date.parse(input.acceptedAt) < Date.parse(policy.createdAt))
+        throw new SecurityError("POLICY_ACCEPTANCE_TIMESTAMP_INVALID");
+      assertReference(input.auditReference, "AUDIT_REFERENCE_INVALID");
+      if (
+        program.currentPolicyVersion !== input.version ||
+        program.currentPolicyHash !== input.expectedPolicyHash
+      )
+        throw new SecurityError("POLICY_ACCEPTANCE_STALE");
+      const approval = this.listApprovals().find(
+        (candidate) =>
+          candidate.kind === "program_policy_acceptance" &&
+          candidate.status === "accepted" &&
+          candidate.summary ===
+            `Accept ${input.programId} policy version ${String(input.version)}` &&
+          candidate.policyVersion === input.version &&
+          candidate.policyHash === input.expectedPolicyHash &&
+          candidate.decidedBy === input.acceptedBy &&
+          candidate.decidedAt === input.acceptedAt &&
+          candidate.auditReference === input.auditReference,
+      );
+      if (approval === undefined)
+        throw new SecurityError("POLICY_ACCEPTANCE_EVIDENCE_REQUIRED");
+      new ApprovalQueue([approval]);
+      this.requireAuthenticatedApprovalDecision(approval, approval.payloadHash);
       this.database.run(
         `INSERT INTO policy_acceptances(
           program_id,version,policy_hash,accepted_by,accepted_at,audit_reference
@@ -693,14 +694,14 @@ export class ControlPlaneStore {
         input.version,
         input.expectedPolicyHash,
       );
-    });
-    return freezePolicy({
-      ...policy,
-      acceptance: Object.freeze({
-        acceptedBy: input.acceptedBy,
-        acceptedAt: input.acceptedAt,
-        auditReference: input.auditReference,
-      }),
+      return freezePolicy({
+        ...policy,
+        acceptance: Object.freeze({
+          acceptedBy: input.acceptedBy,
+          acceptedAt: input.acceptedAt,
+          auditReference: input.auditReference,
+        }),
+      });
     });
   }
 
@@ -788,36 +789,38 @@ export class ControlPlaneStore {
     validateCampaign(campaign);
     if (campaign.revision !== expectedRevision + 1)
       throw new SecurityError("CAMPAIGN_REVISION_INVALID");
-    const current = this.getCampaign(campaign.id);
-    if (current?.revision !== expectedRevision)
-      throw new SecurityError("CAMPAIGN_REVISION_CONFLICT");
-    assertCampaignIdentityStable(current, campaign);
-    assertCampaignTransition(current, campaign);
-    this.assertCampaignPersistenceBindings(campaign);
-    const result = this.database.run(
-      `UPDATE campaigns SET policy_version=?,policy_hash=?,approved_assets_json=?,
-       approved_risk_tiers_json=?,account_refs_json=?,allowed_action_classes_json=?,
-       contract_json=?,state=?,revision=?,human_approved_by=?,human_approved_at=?,
-       last_policy_check_at=?,kill_switch_status=? WHERE id=? AND revision=?`,
-      campaign.policyVersion,
-      campaign.policyHash,
-      canonicalJson([...campaign.approvedAssets]),
-      canonicalJson([...campaign.approvedRiskTiers]),
-      canonicalJson([...campaign.accountRefs]),
-      canonicalJson([...campaign.allowedActionClasses]),
-      canonicalJson(campaign.contract),
-      campaign.state,
-      campaign.revision,
-      campaign.humanApprovedBy,
-      campaign.humanApprovedAt,
-      campaign.lastPolicyCheckAt,
-      campaign.killSwitchStatus,
-      campaign.id,
-      expectedRevision,
-    );
-    if (result.changes !== 1)
-      throw new SecurityError("CAMPAIGN_REVISION_CONFLICT");
-    return campaign;
+    return this.database.transaction(() => {
+      const current = this.getCampaign(campaign.id);
+      if (current?.revision !== expectedRevision)
+        throw new SecurityError("CAMPAIGN_REVISION_CONFLICT");
+      assertCampaignIdentityStable(current, campaign);
+      assertCampaignTransition(current, campaign);
+      this.assertCampaignPersistenceBindings(campaign);
+      const result = this.database.run(
+        `UPDATE campaigns SET policy_version=?,policy_hash=?,approved_assets_json=?,
+         approved_risk_tiers_json=?,account_refs_json=?,allowed_action_classes_json=?,
+         contract_json=?,state=?,revision=?,human_approved_by=?,human_approved_at=?,
+         last_policy_check_at=?,kill_switch_status=? WHERE id=? AND revision=?`,
+        campaign.policyVersion,
+        campaign.policyHash,
+        canonicalJson([...campaign.approvedAssets]),
+        canonicalJson([...campaign.approvedRiskTiers]),
+        canonicalJson([...campaign.accountRefs]),
+        canonicalJson([...campaign.allowedActionClasses]),
+        canonicalJson(campaign.contract),
+        campaign.state,
+        campaign.revision,
+        campaign.humanApprovedBy,
+        campaign.humanApprovedAt,
+        campaign.lastPolicyCheckAt,
+        campaign.killSwitchStatus,
+        campaign.id,
+        expectedRevision,
+      );
+      if (result.changes !== 1)
+        throw new SecurityError("CAMPAIGN_REVISION_CONFLICT");
+      return campaign;
+    });
   }
 
   public getCampaign(id: string): CampaignRecord | undefined {
@@ -877,31 +880,33 @@ export class ControlPlaneStore {
 
   public insertOwnedObject(object: OwnedObjectRecord): OwnedObjectRecord {
     validateOwnedObject(object);
-    if (this.isKillSwitchActive())
-      throw new SecurityError("CONTROL_PLANE_OBJECT_KILL_SWITCH");
-    this.assertOwnershipBindings(object);
-    this.database.run(
-      `INSERT INTO owned_objects(
-        object_ref,protected_actual_id_ref,program_id,campaign_id,account_id,
-        tenant_ref,object_type,canary_hmac,created_at,status,researcher_controlled,
-        allowed_actions_json,expires_at,policy_hash
-      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      object.objectRef,
-      object.protectedActualIdRef,
-      object.programId,
-      object.campaignId,
-      object.accountId,
-      object.tenantRef,
-      object.objectType,
-      object.canaryHmac,
-      object.createdAt,
-      object.status,
-      1,
-      canonicalJson([...object.allowedActions]),
-      object.expiresAt,
-      object.policyHash,
-    );
-    return object;
+    return this.database.transaction(() => {
+      if (this.isKillSwitchActive())
+        throw new SecurityError("CONTROL_PLANE_OBJECT_KILL_SWITCH");
+      this.assertOwnershipBindings(object);
+      this.database.run(
+        `INSERT INTO owned_objects(
+          object_ref,protected_actual_id_ref,program_id,campaign_id,account_id,
+          tenant_ref,object_type,canary_hmac,created_at,status,researcher_controlled,
+          allowed_actions_json,expires_at,policy_hash
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        object.objectRef,
+        object.protectedActualIdRef,
+        object.programId,
+        object.campaignId,
+        object.accountId,
+        object.tenantRef,
+        object.objectType,
+        object.canaryHmac,
+        object.createdAt,
+        object.status,
+        1,
+        canonicalJson([...object.allowedActions]),
+        object.expiresAt,
+        object.policyHash,
+      );
+      return object;
+    });
   }
 
   public assertOwnedObject(input: {
@@ -1161,17 +1166,7 @@ export class ControlPlaneStore {
 
   public isKillSwitchActive(): boolean {
     try {
-      const row = this.database.get(
-        `SELECT s.value,s.revision,s.updated_at,s.audit_reference,
-          a.id AS audit_id,a.occurred_at AS audit_occurred_at,
-          a.action AS audit_action,a.decision AS audit_decision,
-          a.reason_code AS audit_reason_code,
-          a.object_reference AS audit_actor,a.payload_hash AS audit_payload_hash
-         FROM system_state s LEFT JOIN control_plane_audit a
-           ON a.id=s.audit_reference
-         WHERE s.key='global_kill_switch'`,
-      );
-      return row === undefined || !this.validSignedKillSwitchClear(row);
+      return this.database.transaction(() => this.readKillSwitchActive());
     } catch {
       return true;
     }
@@ -1188,43 +1183,66 @@ export class ControlPlaneStore {
     assertActor(actor, "KILL_SWITCH_ACTOR_INVALID");
     assertTimestamp(at, "KILL_SWITCH_TIMESTAMP_INVALID");
     const value = "engaged";
-    const id = `kill-${sha256(`${actor}\u0000${at}\u0000${value}`).slice(0, 32)}`;
-    // Engagement is written first. If audit persistence fails, callers receive an
-    // error but the system remains blocked instead of rolling back to unsafe state.
-    const revision = nextKillSwitchRevision(this.database);
-    this.database.run(
-      `UPDATE system_state SET value='engaged',revision=?,updated_at=?,
-       audit_reference=NULL
-       WHERE key='global_kill_switch'`,
-      revision,
-      at,
-    );
-    this.database.run(
-      `UPDATE campaigns SET state='paused',revision=revision+1,
-       human_approved_by=NULL,human_approved_at=NULL,
-       last_policy_check_at=?,kill_switch_status='engaged'
-       WHERE state IN ('approved','running_simulation')`,
-      at,
-    );
-    try {
-      this.database.run(
-        `INSERT INTO control_plane_audit(
-          id,occurred_at,action,decision,reason_code,object_reference,payload_hash
-        ) VALUES(?,?,?,?,?,?,?)`,
-        id,
+    // Engagement is committed first. A later persistence or process failure can
+    // therefore leave only the safe state behind, never an implicit clear.
+    const revision = this.database.transaction(() => {
+      const nextRevision = nextKillSwitchRevision(this.database);
+      const updated = this.database.run(
+        `UPDATE system_state SET value='engaged',revision=?,updated_at=?,
+         audit_reference=NULL
+         WHERE key='global_kill_switch' AND revision=?`,
+        nextRevision,
         at,
-        "kill_switch_change",
-        "engaged",
-        "HUMAN_KILL_SWITCH_ENGAGED",
+        nextRevision - 1,
+      );
+      if (updated.changes !== 1)
+        throw new SecurityError("KILL_SWITCH_STATE_UNAVAILABLE");
+      return nextRevision;
+    });
+    const id = `kill-${sha256(
+      canonicalJson({
+        action: "kill_switch_change",
         actor,
-        sha256(canonicalJson({ active, actor, at, revision })),
-      );
-      this.database.run(
-        `UPDATE system_state SET audit_reference=?
-         WHERE key='global_kill_switch' AND revision=? AND value='engaged'`,
-        id,
+        at,
         revision,
-      );
+        value,
+      }),
+    ).slice(0, 32)}`;
+    // The pause is its own durable safety boundary. Audit failure may never
+    // roll active campaign rows back after engagement has succeeded.
+    this.database.transaction(() => {
+      this.pauseUnsafeCampaigns(at);
+      const unsafe = this.database.get(
+        `SELECT count(*) AS count FROM campaigns
+         WHERE state IN ('approved','running_simulation')`,
+      )?.["count"];
+      if (unsafe !== 0)
+        throw new SecurityError("KILL_SWITCH_CAMPAIGN_PAUSE_FAILED");
+    });
+    try {
+      this.database.transaction(() => {
+        this.database.run(
+          `INSERT INTO control_plane_audit(
+            id,occurred_at,action,decision,reason_code,object_reference,payload_hash
+          ) VALUES(?,?,?,?,?,?,?)`,
+          id,
+          at,
+          "kill_switch_change",
+          "engaged",
+          "HUMAN_KILL_SWITCH_ENGAGED",
+          actor,
+          sha256(canonicalJson({ active, actor, at, revision })),
+        );
+        const linked = this.database.run(
+          `UPDATE system_state SET audit_reference=?
+           WHERE key='global_kill_switch' AND revision=? AND value='engaged'
+             AND audit_reference IS NULL`,
+          id,
+          revision,
+        );
+        if (linked.changes !== 1)
+          throw new SecurityError("KILL_SWITCH_STATE_CONFLICT");
+      });
     } catch (error) {
       throw new SecurityError(
         `KILL_SWITCH_AUDIT_FAILED:${error instanceof Error ? error.name : "UNKNOWN"}`,
@@ -1253,6 +1271,10 @@ export class ControlPlaneStore {
         contextDigestSha256: context.contextDigestSha256,
       });
       this.assertAuthenticatedOperatorSession(verified, observedAt);
+      // A clear is allowed only after every state that could still execute has
+      // been durably reduced to paused. This also closes the crash window after
+      // the first, fail-safe engagement commit.
+      this.pauseUnsafeCampaigns(verified.issued_at);
       const statementDigest = killSwitchClearStatementDigest(verified);
       this.insertOperatorStatement(
         "kill_switch_clear",
@@ -1298,6 +1320,44 @@ export class ControlPlaneStore {
         throw new SecurityError("SIGNED_KILL_SWITCH_CLEAR_INVALID");
       return Object.freeze({ active: false as const, revision });
     });
+  }
+
+  private reconcileKillSwitchSafety(): void {
+    this.database.transaction(() => {
+      let active = true;
+      try {
+        active = this.readKillSwitchActive();
+      } catch {
+        // Invalid or incomplete evidence is an engaged switch.
+      }
+      if (active) this.pauseUnsafeCampaigns(null);
+    });
+  }
+
+  private readKillSwitchActive(): boolean {
+    const row = this.database.get(
+      `SELECT s.value,s.revision,s.updated_at,s.audit_reference,
+        a.id AS audit_id,a.occurred_at AS audit_occurred_at,
+        a.action AS audit_action,a.decision AS audit_decision,
+        a.reason_code AS audit_reason_code,
+        a.object_reference AS audit_actor,a.payload_hash AS audit_payload_hash
+       FROM system_state s LEFT JOIN control_plane_audit a
+         ON a.id=s.audit_reference
+       WHERE s.key='global_kill_switch'`,
+    );
+    return row === undefined || !this.validSignedKillSwitchClear(row);
+  }
+
+  private pauseUnsafeCampaigns(at: string | null): void {
+    this.database.run(
+      `UPDATE campaigns SET state='paused',revision=revision+1,
+       human_approved_by=NULL,human_approved_at=NULL,
+       last_policy_check_at=CASE WHEN ? IS NULL THEN last_policy_check_at ELSE ? END,
+       kill_switch_status='engaged'
+       WHERE state IN ('approved','running_simulation')`,
+      at,
+      at,
+    );
   }
 
   private validSignedKillSwitchClear(row: Row): boolean {

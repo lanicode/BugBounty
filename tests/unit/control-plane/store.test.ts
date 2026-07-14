@@ -25,6 +25,7 @@ import {
   enrollTestOperator,
   signTestApprovalDecision,
 } from "../../fixtures/operator-auth.factory.js";
+import { canonicalJson, sha256 } from "../../../packages/shared/canonical.js";
 
 describe("ControlPlaneStore", () => {
   let database: ControlPlaneDatabase;
@@ -519,10 +520,20 @@ describe("ControlPlaneStore", () => {
     store.setKillSwitch(true, "local-reviewer", LATER);
     expect(store.isKillSwitchActive()).toBe(true);
     clearTestKillSwitch(store, "2026-07-13T14:00:00.000Z");
-    expect(() => store.setKillSwitch(true, "local-reviewer", LATER)).toThrow(
-      "KILL_SWITCH_AUDIT_FAILED",
-    );
+    expect(() =>
+      store.setKillSwitch(true, "local-reviewer", LATER),
+    ).not.toThrow();
     expect(store.isKillSwitchActive()).toBe(true);
+    const replayedEngagements = store
+      .listAuditEntries()
+      .filter(
+        (entry) =>
+          entry.action === "kill_switch_change" &&
+          entry.decision === "engaged" &&
+          entry.occurredAt === LATER,
+      );
+    expect(replayedEngagements).toHaveLength(2);
+    expect(new Set(replayedEngagements.map(({ id }) => id)).size).toBe(2);
     const report = store.insertReportDraft({
       id: "report-local",
       campaignId: "campaign-local",
@@ -569,6 +580,112 @@ describe("ControlPlaneStore", () => {
     seedRunningCampaign();
     store.setKillSwitch(true, "local-reviewer", "2026-07-13T14:00:00.000Z");
     expect(store.isKillSwitchActive()).toBe(true);
+    expect(store.getCampaign("campaign-local")).toMatchObject({
+      state: "paused",
+      humanApprovedBy: null,
+      humanApprovedAt: null,
+      killSwitchStatus: "engaged",
+    });
+  });
+
+  it("keeps the campaign pause committed when engagement audit persistence fails", () => {
+    seedRunningCampaign();
+    const at = "2026-07-13T14:30:00.000Z";
+    const actor = "local-reviewer";
+    const state = database.get(
+      "SELECT revision FROM system_state WHERE key='global_kill_switch'",
+    );
+    const currentRevision = state?.["revision"];
+    if (typeof currentRevision !== "number")
+      throw new Error("TEST_REVISION_INVALID");
+    const revision = currentRevision + 1;
+    const duplicateAuditId = `kill-${sha256(
+      canonicalJson({
+        action: "kill_switch_change",
+        actor,
+        at,
+        revision,
+        value: "engaged",
+      }),
+    ).slice(0, 32)}`;
+    database.run(
+      `INSERT INTO control_plane_audit(
+        id,occurred_at,action,decision,reason_code,object_reference,payload_hash
+      ) VALUES(?,?,?,?,?,?,?)`,
+      duplicateAuditId,
+      at,
+      "test_fixture",
+      "deny",
+      "FORCED_AUDIT_COLLISION",
+      null,
+      "f".repeat(64),
+    );
+
+    expect(() => store.setKillSwitch(true, actor, at)).toThrow(
+      "KILL_SWITCH_AUDIT_FAILED",
+    );
+    expect(store.isKillSwitchActive()).toBe(true);
+    expect(
+      database.get("SELECT state FROM campaigns WHERE id='campaign-local'"),
+    ).toMatchObject({ state: "paused" });
+
+    store = createTestControlPlaneStore(database, NOW);
+    expect(store.getCampaign("campaign-local")).toMatchObject({
+      state: "paused",
+      humanApprovedBy: null,
+      humanApprovedAt: null,
+      killSwitchStatus: "engaged",
+    });
+  });
+
+  it("reconciles a persisted crash window when the store is reconstructed", () => {
+    seedRunningCampaign();
+    const state = database.get(
+      "SELECT revision FROM system_state WHERE key='global_kill_switch'",
+    );
+    const revision = state?.["revision"];
+    if (typeof revision !== "number") throw new Error("TEST_REVISION_INVALID");
+    database.run(
+      `UPDATE system_state SET value='engaged',revision=?,updated_at=?,
+       audit_reference=NULL WHERE key='global_kill_switch' AND revision=?`,
+      revision + 1,
+      "2026-07-13T14:30:00.000Z",
+      revision,
+    );
+    expect(
+      database.get("SELECT state FROM campaigns WHERE id='campaign-local'"),
+    ).toMatchObject({ state: "running_simulation" });
+
+    store = createTestControlPlaneStore(database, NOW);
+    expect(store.isKillSwitchActive()).toBe(true);
+    expect(store.getCampaign("campaign-local")).toMatchObject({
+      state: "paused",
+      humanApprovedBy: null,
+      humanApprovedAt: null,
+      killSwitchStatus: "engaged",
+    });
+  });
+
+  it("pauses a crash-window campaign inside the signed clear transaction", () => {
+    seedRunningCampaign();
+    const state = database.get(
+      "SELECT revision FROM system_state WHERE key='global_kill_switch'",
+    );
+    const revision = state?.["revision"];
+    if (typeof revision !== "number") throw new Error("TEST_REVISION_INVALID");
+    database.run(
+      `UPDATE system_state SET value='engaged',revision=?,updated_at=?,
+       audit_reference=NULL WHERE key='global_kill_switch' AND revision=?`,
+      revision + 1,
+      "2026-07-13T14:30:00.000Z",
+      revision,
+    );
+    expect(
+      database.get("SELECT state FROM campaigns WHERE id='campaign-local'"),
+    ).toMatchObject({ state: "running_simulation" });
+
+    clearTestKillSwitch(store, "2026-07-13T15:00:00.000Z");
+    expect(store.isKillSwitchActive()).toBe(false);
     expect(store.getCampaign("campaign-local")).toMatchObject({
       state: "paused",
       humanApprovedBy: null,
