@@ -1,13 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ControlPlaneDatabase } from "../../packages/control-plane/index.js";
 import {
-  DeterministicSimulationGateEvaluator,
   DeterministicMockActionRunner,
   DisabledExternalActionRunner,
   ExternalActionPipeline,
   Phase2KillSwitch,
+  StoreBoundExternalActionEvaluator,
   type DeterministicActionRunner,
-  type DeterministicSimulationGateDecisions,
-  type ExternalActionGateEvaluator,
+  type ExternalActionAuthorizationEvaluator,
   type ExternalActionProposal,
 } from "../../packages/external-actions/pipeline.js";
 import {
@@ -19,36 +19,12 @@ import {
   SAFE_PHASE2_CONFIG,
   type Phase2RuntimeState,
 } from "../../packages/phase2-config/runtime.js";
-
-const proposal = (
-  overrides: Partial<ExternalActionProposal> = {},
-): ExternalActionProposal => ({
-  version: 1,
-  proposal_id: "proposal-1",
-  action_id: "platform_api_read",
-  mode: "simulation",
-  parameters: {
-    campaign_ref: "campaign-1",
-    policy_hash_sha256: "a".repeat(64),
-    scope_ref: "scope-1",
-    account_ref: null,
-    object_ref: null,
-    payload_ref: null,
-  },
-  ...overrides,
-});
-
-const permissiveGates = (
-  overrides: Partial<DeterministicSimulationGateDecisions> = {},
-  boundProposal: ExternalActionProposal = proposal(),
-): ExternalActionGateEvaluator =>
-  new DeterministicSimulationGateEvaluator(boundProposal, {
-    policy: true,
-    scope: true,
-    ownership: true,
-    humanCheckpoint: true,
-    ...overrides,
-  });
+import {
+  ACTION_EXECUTION_TIME,
+  ACTION_TIME,
+  seedStoreBoundAction,
+  type SeededStoreBoundAction,
+} from "../fixtures/store-bound-action.factory.js";
 
 const simulationRuntime = (maxActions = 20) =>
   resolvePhase2Runtime(
@@ -59,7 +35,27 @@ const simulationRuntime = (maxActions = 20) =>
     { secretsAvailable: false, externalAdapterAvailable: false },
   );
 
-const clearKillSwitch = () => new Phase2KillSwitch({ readActive: () => false });
+function storePipeline(
+  seeded: SeededStoreBoundAction,
+  runner: DeterministicActionRunner,
+  killSwitch = new Phase2KillSwitch({
+    readActive: () => seeded.store.isKillSwitchActive(),
+  }),
+): ExternalActionPipeline {
+  return new ExternalActionPipeline(
+    simulationRuntime(),
+    runner,
+    killSwitch,
+    new StoreBoundExternalActionEvaluator(seeded.store),
+  );
+}
+
+function changeProposal(
+  proposal: ExternalActionProposal,
+  overrides: Partial<ExternalActionProposal>,
+): ExternalActionProposal {
+  return { ...proposal, ...overrides };
+}
 
 describe("trusted external action registry", () => {
   it("contains every known action as a deeply immutable blocked definition", () => {
@@ -89,141 +85,45 @@ describe("trusted external action registry", () => {
   });
 
   it("keeps report and triage human-only with no simulation target", () => {
-    for (const actionId of ["report_submit", "triage_response_send"]) {
+    for (const actionId of ["report_submit", "triage_response_send"])
       expect(getExternalActionDefinition(actionId)).toMatchObject({
         actionId,
         fixedTargetPolicy: { kind: "external_disabled", host: null },
         simulationSupported: false,
       });
-    }
   });
 });
 
-describe("external action safety chain", () => {
-  it("rejects malformed runtime budgets before constructing the pipeline", () => {
-    for (const value of [Number.NaN, Number.POSITIVE_INFINITY, 0, -1, 1.5]) {
-      const safe = simulationRuntime();
-      const malformed = {
-        ...safe,
-        config: {
-          ...safe.config,
-          budgets: {
-            ...safe.config.budgets,
-            max_actions_total: value,
-          },
-        },
-      } as Phase2RuntimeState;
-      expect(
-        () =>
-          new ExternalActionPipeline(
-            malformed,
-            new DeterministicMockActionRunner({}),
-            clearKillSwitch(),
-            permissiveGates(),
-          ),
-      ).toThrow("ACTION_RUNTIME_INVALID");
-    }
+describe("Phase 3 external action pipeline regressions", () => {
+  let database: ControlPlaneDatabase;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(ACTION_TIME);
+    database = ControlPlaneDatabase.memory();
   });
 
-  it("rejects kind-spoofed and prototype-spoofed runner callbacks", () => {
-    let callbackCalls = 0;
-    const kindSpoof: DeterministicActionRunner = {
-      kind: "simulation_mock",
-      run: () => {
-        callbackCalls += 1;
-        return Promise.resolve({ unsafe: true });
-      },
-    };
-    expect(
-      () =>
-        new ExternalActionPipeline(
-          simulationRuntime(),
-          kindSpoof,
-          clearKillSwitch(),
-          permissiveGates(),
-        ),
-    ).toThrow("ACTION_RUNNER_UNTRUSTED");
-
-    const prototypeSpoof = Object.create(
-      DeterministicMockActionRunner.prototype,
-    ) as DeterministicActionRunner;
-    expect(
-      () =>
-        new ExternalActionPipeline(
-          simulationRuntime(),
-          prototypeSpoof,
-          clearKillSwitch(),
-          permissiveGates(),
-        ),
-    ).toThrow("ACTION_RUNNER_UNTRUSTED");
-    expect(callbackCalls).toBe(0);
+  afterEach(() => {
+    database.close();
+    vi.useRealTimers();
   });
 
-  it("rejects callback-based gate evaluators before any callback can run", () => {
-    let gateCalls = 0;
-    const untrusted: ExternalActionGateEvaluator = {
-      decidePolicy: () => {
-        gateCalls += 1;
-        return true;
-      },
-      decideScope: () => true,
-      decideOwnership: () => true,
-      decideHumanCheckpoint: () => true,
-    };
-    expect(
-      () =>
-        new ExternalActionPipeline(
-          simulationRuntime(),
-          new DeterministicMockActionRunner({}),
-          clearKillSwitch(),
-          untrusted,
-        ),
-    ).toThrow("ACTION_GATES_UNTRUSTED");
-    expect(gateCalls).toBe(0);
-  });
+  function seed(
+    actionId: Parameters<typeof seedStoreBoundAction>[1] = "platform_api_read",
+  ): SeededStoreBoundAction {
+    return seedStoreBoundAction(database, actionId);
+  }
 
-  it("rejects malformed or accessor-backed deterministic gate decisions", () => {
-    expect(
-      () =>
-        new DeterministicSimulationGateEvaluator(proposal(), {
-          policy: true,
-          scope: true,
-          ownership: true,
-          humanCheckpoint: true,
-          extra: true,
-        } as DeterministicSimulationGateDecisions),
-    ).toThrow("ACTION_GATES_INVALID");
-
-    const accessorBacked = Object.defineProperty(
-      {
-        scope: true,
-        ownership: true,
-        humanCheckpoint: true,
-      },
-      "policy",
-      { enumerable: true, get: () => true },
-    );
-    expect(
-      () =>
-        new DeterministicSimulationGateEvaluator(
-          proposal(),
-          accessorBacked as DeterministicSimulationGateDecisions,
-        ),
-    ).toThrow("ACTION_GATES_INVALID");
-  });
-
-  it("executes the exact ordered chain with only registry-derived target and secret kind", async () => {
+  it("executes the exact ordered chain from persisted evidence and a registry-derived target", async () => {
+    const seeded = seed();
+    vi.setSystemTime(ACTION_EXECUTION_TIME);
     const runner = new DeterministicMockActionRunner({
       "proposal-1": { programs: 2 },
     });
-    const pipeline = new ExternalActionPipeline(
-      simulationRuntime(),
-      runner,
-      clearKillSwitch(),
-      permissiveGates(),
-    );
 
-    await expect(pipeline.execute(proposal())).resolves.toEqual({
+    await expect(
+      storePipeline(seeded, runner).execute(seeded.proposal),
+    ).resolves.toEqual({
       proposalId: "proposal-1",
       actionId: "platform_api_read",
       result: { programs: 2 },
@@ -251,360 +151,235 @@ describe("external action safety chain", () => {
     });
     expect(Object.isFrozen(seen?.proposal)).toBe(true);
     expect(Object.isFrozen(seen?.proposal.parameters)).toBe(true);
+    expect(seeded.store.listExternalActionAttempts()).toMatchObject([
+      { proposalId: "proposal-1", status: "succeeded", revision: 2 },
+    ]);
   });
 
-  it("binds deterministic gate decisions to one exact proposal", async () => {
-    const bound = proposal();
-    const runner = new DeterministicMockActionRunner({
-      "proposal-1": { ok: true },
-      "proposal-2": { unexpected: true },
-    });
-    const pipeline = new ExternalActionPipeline(
-      simulationRuntime(),
-      runner,
-      clearKillSwitch(),
-      permissiveGates({}, bound),
-    );
-    await expect(pipeline.execute(bound)).resolves.toMatchObject({
-      proposalId: "proposal-1",
-    });
-    await expect(
-      pipeline.execute(
-        proposal({
-          proposal_id: "proposal-2",
-          parameters: {
-            ...proposal().parameters,
-            policy_hash_sha256: "b".repeat(64),
+  it("rejects malformed runtime budgets before constructing a pipeline", () => {
+    for (const value of [Number.NaN, Number.POSITIVE_INFINITY, 0, -1, 1.5]) {
+      const safe = simulationRuntime();
+      const malformed = {
+        ...safe,
+        config: {
+          ...safe.config,
+          budgets: {
+            ...safe.config.budgets,
+            max_actions_total: value,
           },
-        }),
-      ),
-    ).rejects.toThrow("ACTION_POLICY_BLOCKED");
-    expect(runner.recordedExecutions()).toHaveLength(1);
-  });
-
-  it("blocks unknown actions and attempted target or secret spoofing before gates", async () => {
-    const pipeline = new ExternalActionPipeline(
-      simulationRuntime(),
-      new DeterministicMockActionRunner({}),
-      clearKillSwitch(),
-      permissiveGates(),
-    );
-
-    await expect(
-      pipeline.execute(proposal({ action_id: "unknown_action" })),
-    ).rejects.toThrow("ACTION_UNKNOWN");
-    await expect(
-      pipeline.execute({
-        ...proposal(),
-        target_url: "http://127.0.0.1:8123/spoofed",
-      }),
-    ).rejects.toThrow("ACTION_SCHEMA_INVALID");
-    await expect(
-      pipeline.execute({
-        ...proposal(),
-        required_secret_ref: "keychain://spoofed",
-      }),
-    ).rejects.toThrow("ACTION_SCHEMA_INVALID");
-    await expect(
-      pipeline.execute({
-        ...proposal(),
-        parameters: {
-          ...proposal().parameters,
-          required_secret_kind: "none",
         },
-      }),
-    ).rejects.toThrow("ACTION_SCHEMA_INVALID");
-  });
-
-  it("requires campaign, policy, and scope evidence before any gate", async () => {
-    for (const [parameters, expected] of [
-      [
-        { ...proposal().parameters, campaign_ref: null },
-        "ACTION_CAMPAIGN_REFERENCE_REQUIRED",
-      ],
-      [
-        { ...proposal().parameters, policy_hash_sha256: null },
-        "ACTION_POLICY_REFERENCE_REQUIRED",
-      ],
-      [
-        { ...proposal().parameters, scope_ref: null },
-        "ACTION_SCOPE_REFERENCE_REQUIRED",
-      ],
-    ] as const) {
-      const candidate = proposal({ parameters });
-      const runner = new DeterministicMockActionRunner({
-        "proposal-1": { unexpected: true },
-      });
-      const pipeline = new ExternalActionPipeline(
-        simulationRuntime(),
-        runner,
-        clearKillSwitch(),
-        permissiveGates({}, candidate),
-      );
-      await expect(pipeline.execute(candidate)).rejects.toThrow(expected);
-      expect(runner.recordedExecutions()).toHaveLength(0);
+      } as Phase2RuntimeState;
+      expect(
+        () =>
+          new ExternalActionPipeline(
+            malformed,
+            new DeterministicMockActionRunner({}),
+            new Phase2KillSwitch({ readActive: () => false }),
+          ),
+      ).toThrow("ACTION_RUNTIME_INVALID");
     }
   });
 
-  it("blocks legal, terms, report and triage automation", async () => {
-    const pipeline = new ExternalActionPipeline(
-      simulationRuntime(),
-      new DeterministicMockActionRunner({}),
-      clearKillSwitch(),
-      permissiveGates(),
-    );
-    for (const actionId of ["legal_accept", "terms_accept"]) {
-      await expect(
-        pipeline.execute(proposal({ action_id: actionId })),
-      ).rejects.toThrow("ACTION_UNKNOWN");
-    }
-    for (const actionId of ["report_submit", "triage_response_send"]) {
-      await expect(
-        pipeline.execute(proposal({ action_id: actionId })),
-      ).rejects.toThrow("ACTION_SIMULATION_NOT_SUPPORTED");
-    }
+  it("rejects kind-, prototype- and callback-spoofed runners without invocation", () => {
+    let callbackCalls = 0;
+    const kindSpoof: DeterministicActionRunner = {
+      kind: "simulation_mock",
+      run: () => {
+        callbackCalls += 1;
+        return Promise.resolve({ unsafe: true });
+      },
+    };
+    expect(
+      () =>
+        new ExternalActionPipeline(
+          simulationRuntime(),
+          kindSpoof,
+          new Phase2KillSwitch({ readActive: () => false }),
+        ),
+    ).toThrow("ACTION_RUNNER_UNTRUSTED");
+
+    const prototypeSpoof = Object.create(
+      DeterministicMockActionRunner.prototype,
+    ) as DeterministicActionRunner;
+    expect(
+      () =>
+        new ExternalActionPipeline(
+          simulationRuntime(),
+          prototypeSpoof,
+          new Phase2KillSwitch({ readActive: () => false }),
+        ),
+    ).toThrow("ACTION_RUNNER_UNTRUSTED");
+    expect(callbackCalls).toBe(0);
   });
 
-  it("requires trusted ownership evidence and a human checkpoint", async () => {
+  it("rejects caller callbacks, proxies and prototype-spoofed authorizers", () => {
+    let calls = 0;
+    const callback: ExternalActionAuthorizationEvaluator = {
+      authorizeAndReserve: () => {
+        calls += 1;
+        throw new Error("unsafe callback invoked");
+      },
+      start: () => {
+        calls += 1;
+      },
+      abortReservation: () => {
+        calls += 1;
+      },
+      settle: () => {
+        calls += 1;
+      },
+    };
+    const runner = new DeterministicMockActionRunner({});
+    for (const authorizer of [
+      callback,
+      Object.create(
+        StoreBoundExternalActionEvaluator.prototype,
+      ) as ExternalActionAuthorizationEvaluator,
+    ])
+      expect(
+        () =>
+          new ExternalActionPipeline(
+            simulationRuntime(),
+            runner,
+            new Phase2KillSwitch({ readActive: () => false }),
+            authorizer,
+          ),
+      ).toThrow("ACTION_AUTHORIZER_UNTRUSTED");
+
+    const seeded = seed();
+    const trusted = new StoreBoundExternalActionEvaluator(seeded.store);
+    expect(
+      () =>
+        new ExternalActionPipeline(
+          simulationRuntime(),
+          runner,
+          new Phase2KillSwitch({ readActive: () => false }),
+          new Proxy(trusted, {}),
+        ),
+    ).toThrow("ACTION_AUTHORIZER_UNTRUSTED");
+    expect(calls).toBe(0);
+  });
+
+  it("denies by default even when a fully approved proposal exists", async () => {
+    const seeded = seed();
+    vi.setSystemTime(ACTION_EXECUTION_TIME);
     const runner = new DeterministicMockActionRunner({
       "proposal-1": { unexpected: true },
     });
-    const ownershipPipeline = new ExternalActionPipeline(
+    const blocked = new ExternalActionPipeline(
       simulationRuntime(),
       runner,
-      clearKillSwitch(),
-      permissiveGates(
-        {},
-        proposal({
-          action_id: "target_request",
-          parameters: {
-            ...proposal().parameters,
-            account_ref: "account-1",
-            object_ref: null,
-          },
-        }),
-      ),
+      new Phase2KillSwitch({ readActive: () => false }),
     );
-    await expect(
-      ownershipPipeline.execute(
-        proposal({
-          action_id: "target_request",
-          parameters: {
-            ...proposal().parameters,
-            account_ref: "account-1",
-            object_ref: null,
-          },
-        }),
-      ),
-    ).rejects.toThrow("ACTION_OWNERSHIP_REFERENCE_REQUIRED");
 
-    const rejectedOwnership = new ExternalActionPipeline(
-      simulationRuntime(),
-      runner,
-      clearKillSwitch(),
-      permissiveGates(
-        { ownership: false },
-        proposal({
-          action_id: "target_request",
-          parameters: {
-            ...proposal().parameters,
-            account_ref: "account-1",
-            object_ref: "object-1",
-          },
-        }),
-      ),
+    await expect(blocked.execute(seeded.proposal)).rejects.toThrow(
+      "ACTION_STORE_EVIDENCE_REQUIRED",
     );
-    await expect(
-      rejectedOwnership.execute(
-        proposal({
-          action_id: "target_request",
-          parameters: {
-            ...proposal().parameters,
-            account_ref: "account-1",
-            object_ref: "object-1",
-          },
-        }),
-      ),
-    ).rejects.toThrow("ACTION_OWNERSHIP_BLOCKED");
-
-    const human = new ExternalActionPipeline(
-      simulationRuntime(),
-      runner,
-      clearKillSwitch(),
-      permissiveGates(
-        { humanCheckpoint: false },
-        proposal({ action_id: "test_account_register" }),
-      ),
-    );
-    await expect(
-      human.execute(proposal({ action_id: "test_account_register" })),
-    ).rejects.toThrow("ACTION_HUMAN_CHECKPOINT_REQUIRED");
     expect(runner.recordedExecutions()).toHaveLength(0);
   });
 
-  it("defaults every missing gate implementation to deny", async () => {
-    const pipeline = new ExternalActionPipeline(
-      simulationRuntime(),
-      new DeterministicMockActionRunner({ "proposal-1": { ok: true } }),
-      clearKillSwitch(),
-    );
-    await expect(pipeline.execute(proposal())).rejects.toThrow(
-      "ACTION_POLICY_BLOCKED",
-    );
-  });
-
-  it("enforces policy, scope, budget and concurrency before the runner", async () => {
-    const countingRunner = new DeterministicMockActionRunner({
-      "proposal-1": { ok: true },
-    });
-    for (const gates of [
-      permissiveGates({ policy: false }),
-      permissiveGates({ scope: false }),
-    ]) {
-      const blocked = new ExternalActionPipeline(
-        simulationRuntime(),
-        countingRunner,
-        clearKillSwitch(),
-        gates,
-      );
-      await expect(blocked.execute(proposal())).rejects.toThrow();
-    }
-    expect(countingRunner.recordedExecutions()).toHaveLength(0);
-
-    const missingScopeProposal = proposal({
-      parameters: { ...proposal().parameters, scope_ref: null },
-    });
-    const missingScope = new ExternalActionPipeline(
-      simulationRuntime(),
-      countingRunner,
-      clearKillSwitch(),
-      permissiveGates({}, missingScopeProposal),
-    );
-    await expect(missingScope.execute(missingScopeProposal)).rejects.toThrow(
-      "ACTION_SCOPE_REFERENCE_REQUIRED",
-    );
-    expect(countingRunner.recordedExecutions()).toHaveLength(0);
-
-    const once = new ExternalActionPipeline(
-      simulationRuntime(1),
-      countingRunner,
-      clearKillSwitch(),
-      permissiveGates(),
-    );
-    await once.execute(proposal());
-    await expect(once.execute(proposal())).rejects.toThrow(
-      "ACTION_BUDGET_EXCEEDED",
-    );
-
-    const blockingRunner = new DeterministicMockActionRunner(
-      { "proposal-1": { ok: true } },
-      { deferredProposalIds: ["proposal-1"] },
-    );
-    const concurrent = new ExternalActionPipeline(
-      simulationRuntime(2),
-      blockingRunner,
-      clearKillSwitch(),
-      permissiveGates(),
-    );
-    const first = concurrent.execute(proposal());
-    await expect(concurrent.execute(proposal())).rejects.toThrow(
-      "ACTION_CONCURRENCY_EXCEEDED",
-    );
-    blockingRunner.release("proposal-1");
-    await first;
-  });
-
-  it("blocks on the kill switch both before and after the runner", async () => {
-    const preKilledSwitch = clearKillSwitch();
-    preKilledSwitch.kill();
-    const preKilledRunner = new DeterministicMockActionRunner({
+  it("blocks unknown, legal, report and triage actions before authorization", async () => {
+    const seeded = seed();
+    vi.setSystemTime(ACTION_EXECUTION_TIME);
+    const runner = new DeterministicMockActionRunner({
       "proposal-1": { unexpected: true },
     });
-    const preKilled = new ExternalActionPipeline(
-      simulationRuntime(),
-      preKilledRunner,
-      preKilledSwitch,
-      permissiveGates(),
-    );
-    await expect(preKilled.execute(proposal())).rejects.toThrow(
-      "ACTION_KILL_SWITCH",
-    );
-    expect(preKilledRunner.recordedExecutions()).toHaveLength(0);
+    const pipeline = storePipeline(seeded, runner);
 
-    const duringSwitch = clearKillSwitch();
-    const duringRunner = new DeterministicMockActionRunner(
-      { "proposal-1": { ignored: true } },
-      { deferredProposalIds: ["proposal-1"] },
-    );
-    const killedDuringRun = new ExternalActionPipeline(
-      simulationRuntime(),
-      duringRunner,
-      duringSwitch,
-      permissiveGates(),
-    );
-    const pending = killedDuringRun.execute(proposal());
-    duringSwitch.kill();
-    await expect(pending).rejects.toThrow("ACTION_KILL_SWITCH");
+    for (const actionId of ["unknown_action", "legal_accept", "terms_accept"])
+      await expect(
+        pipeline.execute(
+          changeProposal(seeded.proposal, { action_id: actionId }),
+        ),
+      ).rejects.toThrow("ACTION_UNKNOWN");
+    for (const actionId of ["report_submit", "triage_response_send"])
+      await expect(
+        pipeline.execute(
+          changeProposal(seeded.proposal, { action_id: actionId }),
+        ),
+      ).rejects.toThrow("ACTION_SIMULATION_NOT_SUPPORTED");
+    expect(runner.recordedExecutions()).toHaveLength(0);
+    expect(seeded.store.listExternalActionAttempts()).toHaveLength(0);
   });
 
-  it("treats missing, throwing and persistent active state readers as killed", async () => {
-    const missingRunner = new DeterministicMockActionRunner({
+  it("rejects v1, missing evidence and attempted target or secret injection at schema validation", async () => {
+    const seeded = seed();
+    vi.setSystemTime(ACTION_EXECUTION_TIME);
+    const runner = new DeterministicMockActionRunner({
       "proposal-1": { unexpected: true },
     });
-    const missingSwitch = new Phase2KillSwitch(undefined);
-    const missing = new ExternalActionPipeline(
-      simulationRuntime(),
-      missingRunner,
-      missingSwitch,
-      permissiveGates(),
-    );
-    await expect(missing.execute(proposal())).rejects.toThrow(
-      "ACTION_KILL_SWITCH",
-    );
-    expect(missingSwitch.signal.aborted).toBe(true);
-    expect(missingRunner.recordedExecutions()).toHaveLength(0);
-
-    const throwingSwitch = new Phase2KillSwitch({
-      readActive: () => {
-        throw new Error("PERSISTENT_STATE_UNAVAILABLE");
+    const pipeline = storePipeline(seeded, runner);
+    const parametersWithoutOperator: Record<string, unknown> = {
+      ...seeded.proposal.parameters,
+    };
+    delete parametersWithoutOperator["operator_ref"];
+    const invalid: readonly unknown[] = [
+      { ...seeded.proposal, version: 1 },
+      { ...seeded.proposal, target_url: "http://127.0.0.1:8123/spoofed" },
+      { ...seeded.proposal, required_secret_ref: "keychain://spoofed" },
+      { ...seeded.proposal, parameters: parametersWithoutOperator },
+      {
+        ...seeded.proposal,
+        parameters: {
+          ...seeded.proposal.parameters,
+          required_secret_kind: "none",
+        },
       },
-    });
-    const throwing = new ExternalActionPipeline(
-      simulationRuntime(),
-      new DeterministicMockActionRunner({
-        "proposal-1": { unexpected: true },
-      }),
-      throwingSwitch,
-      permissiveGates(),
-    );
-    await expect(throwing.execute(proposal())).rejects.toThrow(
-      "ACTION_KILL_SWITCH",
-    );
-    expect(throwingSwitch.signal.aborted).toBe(true);
+      {
+        ...seeded.proposal,
+        parameters: {
+          ...seeded.proposal.parameters,
+          campaign_ref: null,
+        },
+      },
+    ];
 
-    let persistentActive = false;
-    const persistentSwitch = new Phase2KillSwitch({
-      readActive: () => persistentActive,
-    });
-    const persistentRunner = new DeterministicMockActionRunner(
-      { "proposal-1": { ignored: true } },
-      { deferredProposalIds: ["proposal-1"] },
-    );
-    const persistent = new ExternalActionPipeline(
-      simulationRuntime(),
-      persistentRunner,
-      persistentSwitch,
-      permissiveGates(),
-    );
-    const pending = persistent.execute(proposal());
-    expect(persistentRunner.recordedExecutions()).toHaveLength(1);
-    persistentActive = true;
-    await expect(pending).rejects.toThrow("ACTION_KILL_SWITCH");
-    expect(persistentSwitch.signal.aborted).toBe(true);
+    for (const candidate of invalid)
+      await expect(pipeline.execute(candidate)).rejects.toThrow(
+        "ACTION_SCHEMA_INVALID",
+      );
+    expect(runner.recordedExecutions()).toHaveLength(0);
+    expect(seeded.store.listExternalActionAttempts()).toHaveLength(0);
   });
 
-  it("keeps external mode disabled even when runtime capabilities say enabled", async () => {
-    const runtime = resolvePhase2Runtime(
+  it("requires exact ownership shapes and blocks payload references", async () => {
+    const target = seed("target_request");
+    vi.setSystemTime(ACTION_EXECUTION_TIME);
+    const targetRunner = new DeterministicMockActionRunner({
+      "proposal-1": { unexpected: true },
+    });
+    await expect(
+      storePipeline(target, targetRunner).execute({
+        ...target.proposal,
+        parameters: { ...target.proposal.parameters, object_ref: null },
+      }),
+    ).rejects.toThrow("ACTION_OWNERSHIP_REFERENCE_REQUIRED");
+    await expect(
+      storePipeline(target, targetRunner).execute({
+        ...target.proposal,
+        parameters: {
+          ...target.proposal.parameters,
+          account_role: null,
+        },
+      }),
+    ).rejects.toThrow("ACTION_OWNERSHIP_REFERENCE_REQUIRED");
+    await expect(
+      storePipeline(target, targetRunner).execute({
+        ...target.proposal,
+        parameters: {
+          ...target.proposal.parameters,
+          payload_ref: "payload-forged",
+        },
+      }),
+    ).rejects.toThrow("ACTION_PAYLOAD_REFERENCE_BLOCKED");
+    expect(targetRunner.recordedExecutions()).toHaveLength(0);
+    expect(target.store.listExternalActionAttempts()).toHaveLength(0);
+  });
+
+  it("keeps external mode and disabled runners fail-closed", async () => {
+    const seeded = seed();
+    vi.setSystemTime(ACTION_EXECUTION_TIME);
+    const externalRuntime = resolvePhase2Runtime(
       {
         ...SAFE_PHASE2_CONFIG,
         mode: "external",
@@ -613,14 +388,155 @@ describe("external action safety chain", () => {
       },
       { secretsAvailable: true, externalAdapterAvailable: true },
     );
-    const pipeline = new ExternalActionPipeline(
-      runtime,
+    const disabled = new ExternalActionPipeline(
+      externalRuntime,
       new DisabledExternalActionRunner(),
-      clearKillSwitch(),
-      permissiveGates(),
+      new Phase2KillSwitch({
+        readActive: () => seeded.store.isKillSwitchActive(),
+      }),
+      new StoreBoundExternalActionEvaluator(seeded.store),
     );
+
     await expect(
-      pipeline.execute(proposal({ mode: "external" })),
+      disabled.execute(changeProposal(seeded.proposal, { mode: "external" })),
     ).rejects.toThrow("EXTERNAL_INTEGRATIONS_DISABLED");
+    await expect(disabled.execute(seeded.proposal)).rejects.toThrow(
+      "ACTION_RUNNER_MODE_INVALID",
+    );
+    expect(seeded.store.listExternalActionAttempts()).toHaveLength(0);
+  });
+
+  it("blocks before execution and aborts a deferred runner when killed", async () => {
+    const seeded = seed();
+    vi.setSystemTime(ACTION_EXECUTION_TIME);
+    const preKilled = new Phase2KillSwitch({ readActive: () => false });
+    preKilled.kill();
+    const preKilledRunner = new DeterministicMockActionRunner({
+      "proposal-1": { unexpected: true },
+    });
+    await expect(
+      storePipeline(seeded, preKilledRunner, preKilled).execute(
+        seeded.proposal,
+      ),
+    ).rejects.toThrow("ACTION_KILL_SWITCH");
+    expect(preKilledRunner.recordedExecutions()).toHaveLength(0);
+
+    const during = new Phase2KillSwitch({ readActive: () => false });
+    const deferred = new DeterministicMockActionRunner(
+      { "proposal-1": { ignored: true } },
+      { deferredProposalIds: ["proposal-1"] },
+    );
+    const pending = storePipeline(seeded, deferred, during).execute(
+      seeded.proposal,
+    );
+    expect(deferred.recordedExecutions()).toHaveLength(1);
+    const killed = expect(pending).rejects.toThrow("ACTION_KILL_SWITCH");
+    during.kill();
+    await killed;
+    expect(seeded.store.listExternalActionAttempts()).toMatchObject([
+      { proposalId: "proposal-1", status: "aborted", revision: 2 },
+    ]);
+  });
+
+  it("treats missing, throwing and newly active persistent readers as killed", async () => {
+    const seeded = seed();
+    vi.setSystemTime(ACTION_EXECUTION_TIME);
+    for (const killSwitch of [
+      new Phase2KillSwitch(undefined),
+      new Phase2KillSwitch({
+        readActive: () => {
+          throw new Error("PERSISTENT_STATE_UNAVAILABLE");
+        },
+      }),
+    ]) {
+      const runner = new DeterministicMockActionRunner({
+        "proposal-1": { unexpected: true },
+      });
+      await expect(
+        storePipeline(seeded, runner, killSwitch).execute(seeded.proposal),
+      ).rejects.toThrow("ACTION_KILL_SWITCH");
+      expect(killSwitch.signal.aborted).toBe(true);
+      expect(runner.recordedExecutions()).toHaveLength(0);
+    }
+
+    let active = false;
+    const persistent = new Phase2KillSwitch({ readActive: () => active });
+    const deferred = new DeterministicMockActionRunner(
+      { "proposal-1": { ignored: true } },
+      { deferredProposalIds: ["proposal-1"] },
+    );
+    const pending = storePipeline(seeded, deferred, persistent).execute(
+      seeded.proposal,
+    );
+    expect(deferred.recordedExecutions()).toHaveLength(1);
+    const killed = expect(pending).rejects.toThrow("ACTION_KILL_SWITCH");
+    active = true;
+    await vi.advanceTimersByTimeAsync(10);
+    await killed;
+    expect(persistent.signal.aborted).toBe(true);
+  });
+
+  it("clones configured mock responses and rejects unsafe response graphs", async () => {
+    const seeded = seed();
+    vi.setSystemTime(ACTION_EXECUTION_TIME);
+    const configured = { nested: { value: 1 }, list: ["safe"] };
+    const runner = new DeterministicMockActionRunner({
+      "proposal-1": configured,
+    });
+    configured.nested.value = 99;
+    configured.list[0] = "mutated";
+
+    const result = await storePipeline(seeded, runner).execute(seeded.proposal);
+    expect(result.result).toEqual({ nested: { value: 1 }, list: ["safe"] });
+    const returned = result.result as {
+      list: string[];
+      nested: { value: number };
+    };
+    returned.nested.value = 77;
+    returned.list[0] = "changed-result";
+    const [execution] = runner.recordedExecutions();
+    if (execution === undefined) throw new Error("MISSING_RECORDED_EXECUTION");
+    await expect(
+      runner.run(execution, new AbortController().signal),
+    ).resolves.toEqual({ nested: { value: 1 }, list: ["safe"] });
+
+    let getterCalls = 0;
+    const accessor = Object.defineProperty({}, "unsafe", {
+      enumerable: true,
+      get: () => {
+        getterCalls += 1;
+        return "secret";
+      },
+    });
+    const cyclic: Record<string, unknown> = {};
+    cyclic["self"] = cyclic;
+    for (const unsafe of [accessor, cyclic, Number.NaN])
+      expect(
+        () =>
+          new DeterministicMockActionRunner({
+            "proposal-unsafe": unsafe,
+          }),
+      ).toThrow("MOCK_RESPONSE_INVALID");
+    expect(getterCalls).toBe(0);
+    expect(
+      () =>
+        new DeterministicMockActionRunner(
+          { "proposal-1": { ok: true } },
+          { deferredProposalIds: ["unknown"] },
+        ),
+    ).toThrow("MOCK_DEFERRED_IDS_INVALID");
+  });
+
+  it("settles a configured runner failure without returning budget", async () => {
+    const seeded = seed();
+    vi.setSystemTime(ACTION_EXECUTION_TIME);
+    const runner = new DeterministicMockActionRunner({});
+
+    await expect(
+      storePipeline(seeded, runner).execute(seeded.proposal),
+    ).rejects.toThrow("MOCK_ACTION_NOT_CONFIGURED");
+    expect(seeded.store.listExternalActionAttempts()).toMatchObject([
+      { proposalId: "proposal-1", status: "failed", units: 1, revision: 2 },
+    ]);
   });
 });
