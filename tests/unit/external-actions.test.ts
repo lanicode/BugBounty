@@ -61,6 +61,7 @@ describe("trusted external action registry", () => {
   it("contains every known action as a deeply immutable blocked definition", () => {
     const definitions = listExternalActionDefinitions();
     expect(definitions.map(({ actionId }) => actionId)).toEqual([
+      "hackerone_metadata_read",
       "platform_api_read",
       "test_account_register",
       "email_verification_open",
@@ -82,6 +83,31 @@ describe("trusted external action registry", () => {
       expect(Object.isFrozen(definition.fixedTargetPolicy)).toBe(true);
       expect(Object.isFrozen(definition.budget)).toBe(true);
     }
+  });
+
+  it("pins HackerOne metadata reads to the only permitted read-only origin", () => {
+    expect(getExternalActionDefinition("hackerone_metadata_read")).toEqual({
+      actionId: "hackerone_metadata_read",
+      category: "platform",
+      triggerComponent: "hackerone_readonly_adapter",
+      requiredSecretKind: "hackerone_api_credentials",
+      targetClass: "hackerone_metadata",
+      fixedTargetPolicy: {
+        kind: "hackerone_metadata_readonly",
+        scheme: "https",
+        host: "api.hackerone.com",
+        port: 443,
+        method: "GET",
+      },
+      policyDecision: "required",
+      scopeCheck: "required",
+      ownershipCheck: "not_applicable",
+      budget: { kind: "action_units", units: 1 },
+      humanCheckpoint: "hackerone_metadata_activation",
+      simulationSupported: false,
+      defaultState: "blocked",
+      killSwitchBehavior: "block_before_and_after_runner",
+    });
   });
 
   it("keeps report and triage human-only with no simulation target", () => {

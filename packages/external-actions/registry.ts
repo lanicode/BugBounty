@@ -1,6 +1,7 @@
 export type ExternalActionId =
   | "browser_journey_start"
   | "email_verification_open"
+  | "hackerone_metadata_read"
   | "platform_api_read"
   | "report_submit"
   | "target_request"
@@ -10,6 +11,7 @@ export type ExternalActionId =
 export type ExternalActionTargetClass =
   | "browser_journey"
   | "email_verification"
+  | "hackerone_metadata"
   | "platform_api"
   | "program_target"
   | "report_submission"
@@ -19,6 +21,7 @@ export type ExternalActionTargetClass =
 export type ExternalActionSecretKind =
   | "browser_profile"
   | "email_verification_capability"
+  | "hackerone_api_credentials"
   | "platform_api_token"
   | "test_identity_credentials"
   | "test_identity_session";
@@ -26,6 +29,7 @@ export type ExternalActionSecretKind =
 export type ExternalActionHumanCheckpoint =
   | "campaign_approval"
   | "email_verification"
+  | "hackerone_metadata_activation"
   | "manual_account_registration"
   | "not_required"
   | "report_collective_approval"
@@ -47,6 +51,13 @@ export interface ExternalActionDefinition {
         readonly kind: "registry_loopback_mock";
         readonly scheme: "http";
         readonly host: "127.0.0.1";
+      }
+    | {
+        readonly kind: "hackerone_metadata_readonly";
+        readonly scheme: "https";
+        readonly host: "api.hackerone.com";
+        readonly port: 443;
+        readonly method: "GET";
       };
   readonly requiredSecretKind: ExternalActionSecretKind;
   readonly policyDecision: "required";
@@ -79,6 +90,14 @@ const ACTION_BUDGET = Object.freeze({
   units: 1 as const,
 });
 
+const HACKERONE_METADATA_TARGET = Object.freeze({
+  kind: "hackerone_metadata_readonly" as const,
+  scheme: "https" as const,
+  host: "api.hackerone.com" as const,
+  port: 443 as const,
+  method: "GET" as const,
+});
+
 function define(
   value: Omit<
     ExternalActionDefinition,
@@ -101,6 +120,17 @@ function define(
 
 const REGISTRY: Readonly<Record<ExternalActionId, ExternalActionDefinition>> =
   Object.freeze({
+    hackerone_metadata_read: define({
+      actionId: "hackerone_metadata_read",
+      category: "platform",
+      triggerComponent: "hackerone_readonly_adapter",
+      targetClass: "hackerone_metadata",
+      fixedTargetPolicy: HACKERONE_METADATA_TARGET,
+      requiredSecretKind: "hackerone_api_credentials",
+      ownershipCheck: "not_applicable",
+      humanCheckpoint: "hackerone_metadata_activation",
+      simulationSupported: false,
+    }),
     platform_api_read: define({
       actionId: "platform_api_read",
       category: "platform",
@@ -181,6 +211,7 @@ const REGISTRY: Readonly<Record<ExternalActionId, ExternalActionDefinition>> =
   });
 
 const DEFINITIONS: readonly ExternalActionDefinition[] = Object.freeze([
+  REGISTRY.hackerone_metadata_read,
   REGISTRY.platform_api_read,
   REGISTRY.test_account_register,
   REGISTRY.email_verification_open,
@@ -194,6 +225,8 @@ export function getExternalActionDefinition(
   actionId: string,
 ): ExternalActionDefinition | undefined {
   switch (actionId) {
+    case "hackerone_metadata_read":
+      return REGISTRY.hackerone_metadata_read;
     case "platform_api_read":
       return REGISTRY.platform_api_read;
     case "test_account_register":

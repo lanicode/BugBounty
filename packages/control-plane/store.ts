@@ -129,6 +129,13 @@ export class ControlPlaneStore {
     Object.freeze(this);
   }
 
+  /** Proves that an adjacent evidence store shares this exact trusted DB. */
+  public isBoundToDatabase(database: ControlPlaneDatabase): boolean {
+    return (
+      isTrustedControlPlaneDatabase(database) && this.database === database
+    );
+  }
+
   public describeExternalActionContext(
     input: DescribeExternalActionContextInput,
   ): ExternalActionProposalContext {
@@ -1100,8 +1107,165 @@ export class ControlPlaneStore {
         if (linked.changes !== 1)
           throw new SecurityError("ACTION_APPROVAL_AUDIT_BINDING_FAILED");
       }
+      this.applyHackerOneApprovalDecision(
+        decided,
+        verified,
+        statementDigest,
+        decisionAuditId,
+        observedAt,
+      );
       return decided;
     });
+  }
+
+  private applyHackerOneApprovalDecision(
+    approval: ApprovalRecord,
+    verified: SignedApprovalDecision,
+    statementDigest: string,
+    decisionAuditId: string,
+    observedAt: string,
+  ): void {
+    if (!this.hasTable("hackerone_metadata_activation_bindings")) return;
+    const activation = this.database.get(
+      "SELECT * FROM hackerone_metadata_activation_bindings WHERE approval_id=?",
+      approval.id,
+    );
+    if (activation !== undefined) {
+      if (
+        approval.kind !== "privacy_alert" ||
+        activation["operator_id"] !== verified.operator_id ||
+        activation["approval_payload_hash"] !== approval.payloadHash ||
+        verified.context_digest_sha256 !== approval.payloadHash ||
+        activation["decision_audit_id"] !== null ||
+        activation["activated_generation"] !== null
+      )
+        throw new SecurityError("HACKERONE_ACTIVATION_EVIDENCE_INVALID");
+      if (verified.decision === "accepted") {
+        const expiresAt = activation["expires_at"];
+        if (
+          typeof expiresAt !== "string" ||
+          !Number.isFinite(Date.parse(expiresAt)) ||
+          verified.issued_at >= expiresAt ||
+          observedAt >= expiresAt
+        )
+          throw new SecurityError("HACKERONE_ACTIVATION_EXPIRED");
+        const generation = integerValue(activation["adapter_generation"]);
+        if (generation < 0)
+          throw new SecurityError("HACKERONE_ACTIVATION_EVIDENCE_INVALID");
+        const nextGeneration = generation + 1;
+        if (!Number.isSafeInteger(nextGeneration))
+          throw new SecurityError("HACKERONE_ACTIVATION_EVIDENCE_INVALID");
+        const linked = this.database.run(
+          `UPDATE hackerone_metadata_activation_bindings
+           SET decision_audit_id=?,activated_generation=?
+           WHERE approval_id=? AND decision_audit_id IS NULL
+             AND activated_generation IS NULL`,
+          decisionAuditId,
+          nextGeneration,
+          approval.id,
+        );
+        const enabled = this.database.run(
+          `UPDATE hackerone_integration_state
+           SET adapter_enabled=1,adapter_generation=?,revision=revision+1
+           WHERE singleton=1 AND adapter_enabled=0 AND adapter_generation=?`,
+          nextGeneration,
+          generation,
+        );
+        if (linked.changes !== 1 || enabled.changes !== 1)
+          throw new SecurityError("HACKERONE_ACTIVATION_STATE_CONFLICT");
+      } else {
+        const linked = this.database.run(
+          `UPDATE hackerone_metadata_activation_bindings
+           SET decision_audit_id=?
+           WHERE approval_id=? AND decision_audit_id IS NULL`,
+          decisionAuditId,
+          approval.id,
+        );
+        if (linked.changes !== 1)
+          throw new SecurityError("HACKERONE_ACTIVATION_STATE_CONFLICT");
+      }
+      return;
+    }
+    if (!this.hasTable("hackerone_policy_acceptance_bindings")) return;
+    const acceptance = this.database.get(
+      "SELECT * FROM hackerone_policy_acceptance_bindings WHERE approval_id=?",
+      approval.id,
+    );
+    if (acceptance === undefined) return;
+    if (
+      approval.kind !== "program_policy_acceptance" ||
+      acceptance["operator_id"] !== verified.operator_id ||
+      acceptance["approval_payload_hash"] !== approval.payloadHash ||
+      verified.context_digest_sha256 !== approval.payloadHash ||
+      acceptance["decision_audit_id"] !== null
+    )
+      throw new SecurityError("HACKERONE_POLICY_ACCEPTANCE_EVIDENCE_INVALID");
+    const linked = this.database.run(
+      `UPDATE hackerone_policy_acceptance_bindings
+       SET decision_audit_id=? WHERE approval_id=? AND decision_audit_id IS NULL`,
+      decisionAuditId,
+      approval.id,
+    );
+    if (linked.changes !== 1)
+      throw new SecurityError("HACKERONE_POLICY_ACCEPTANCE_CONFLICT");
+    if (verified.decision === "accepted") {
+      const snapshotDigest = strictDigestValue(
+        acceptance["snapshot_digest"],
+        "HACKERONE_POLICY_ACCEPTANCE_EVIDENCE_INVALID",
+      );
+      const programLocalRef = strictReferenceValue(
+        acceptance["program_local_ref"],
+        "HACKERONE_POLICY_ACCEPTANCE_EVIDENCE_INVALID",
+      );
+      const policyDigest = strictDigestValue(
+        acceptance["policy_digest"],
+        "HACKERONE_POLICY_ACCEPTANCE_EVIDENCE_INVALID",
+      );
+      const current = this.database.get(
+        `SELECT s.snapshot_digest
+         FROM hackerone_policy_snapshots s
+         LEFT JOIN hackerone_api_programs p ON p.local_ref=s.program_local_ref
+         LEFT JOIN hackerone_manual_programs m ON m.local_ref=s.program_local_ref
+         WHERE s.snapshot_digest=? AND s.program_local_ref=?
+           AND s.policy_digest=?
+           AND COALESCE(p.current_snapshot_digest,m.current_snapshot_digest)=s.snapshot_digest
+           AND (s.source='manual_unverified' OR
+             (p.catalog_active=1 AND p.catalog_drift_pending=0))`,
+        snapshotDigest,
+        programLocalRef,
+        policyDigest,
+      );
+      if (current === undefined)
+        throw new SecurityError(
+          "HACKERONE_SNAPSHOT_ACCEPTANCE_REQUIRES_CURRENT",
+        );
+      const inserted = this.database.run(
+        `INSERT INTO hackerone_policy_acceptances(
+          snapshot_digest,program_local_ref,approval_id,accepted_by,accepted_at,
+          decision_audit_id,statement_digest
+        ) VALUES(?,?,?,?,?,?,?)`,
+        snapshotDigest,
+        programLocalRef,
+        approval.id,
+        verified.operator_id,
+        verified.issued_at,
+        decisionAuditId,
+        statementDigest,
+      );
+      if (inserted.changes !== 1)
+        throw new SecurityError("HACKERONE_POLICY_ACCEPTANCE_CONFLICT");
+    }
+  }
+
+  private hasTable(name: string): boolean {
+    if (!/^[a-z0-9_]{1,128}$/u.test(name))
+      throw new SecurityError("CONTROL_PLANE_TABLE_NAME_INVALID");
+    return (
+      this.database.get(
+        "SELECT name FROM sqlite_schema WHERE type='table' AND name=?",
+        name,
+      ) !== undefined
+    );
   }
 
   public listAuditEntries(): readonly ControlPlaneAuditRecord[] {
@@ -2320,6 +2484,18 @@ function stringValue(value: unknown): string {
 function integerValue(value: unknown): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value))
     throw new SecurityError("CONTROL_PLANE_ROW_INVALID");
+  return value;
+}
+
+function strictDigestValue(value: unknown, code: string): string {
+  if (typeof value !== "string" || !/^[0-9a-f]{64}$/u.test(value))
+    throw new SecurityError(code);
+  return value;
+}
+
+function strictReferenceValue(value: unknown, code: string): string {
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]{1,128}$/u.test(value))
+    throw new SecurityError(code);
   return value;
 }
 

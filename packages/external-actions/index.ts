@@ -1,4 +1,5 @@
 export * from "./pipeline.js";
+export * from "./hackerone-metadata.js";
 export {
   externalActionProposalDigest,
   validateAndFreezeExternalActionProposal,
