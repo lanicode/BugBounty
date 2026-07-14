@@ -104,6 +104,28 @@ Die sechs Bestätigungen sind exakt:
 
 Owner, Member und External sind vorautorisierte, checkpoint-freie In-Process-Demo-Fixtures; der Ablauf repräsentiert keine Registrierung und akzeptiert keine Bedingungen. Konfigurierte Account-Challenges wie CAPTCHA, E-Mail-Verifikation, TOTP, Programmregeln, Bedingungen oder rechtliche Erklärungen pausieren immer und werden niemals automatisch erfüllt.
 
+## Geschlossene lokale Browserjourney testen
+
+Phase 7 besitzt einen getrennten test-only Browserpfad. Er benötigt keine
+Keychain-Credential und darf nicht aus dem Dashboard gestartet werden:
+
+```sh
+pnpm test:browser
+```
+
+Der Test startet pro Replay eine neue Demo-SaaS auf einem ephemeren
+`127.0.0.1`-Port. Owner, Member und External durchlaufen feste read-only
+GET-Graphen zweimal in umgekehrter Reihenfolge. Die Profile sind keine
+Anmeldung und kein Nachweis serverseitiger Autorisierung. Ein zweiter
+Loopback-Server beweist, dass ein fremder Port vor dem Request blockiert wird.
+
+Playwright schreibt keine Screenshots, Traces, Videos, HARs oder
+Storage-State-Dateien. Die einzige visuelle Evidence ist ein sofort
+verworfener, vollständig opak maskierter In-Memory-Puffer; nur sein
+rollen-/zustandsgebundener Digest und seine Byteanzahl gelangen in die
+minimierte Test-Evidence. Weitere Betriebsdetails stehen in
+`PHASE7_LOCAL_BROWSER_JOURNEYS.md`.
+
 ## Event-Key lokal administrieren
 
 Der Adminpfad arbeitet ausschließlich auf

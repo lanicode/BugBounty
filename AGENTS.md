@@ -2,11 +2,29 @@
 
 ## Geltungsbereich
 
-Der produktive Code in `apps/` und `packages/` enthält den Phase-1-Sicherheitskern, die lokale Phase-2-Control-Plane, den store-gebundenen Phase-3-External-Action-Evaluator, die lokale signierte Phase-4-Operatorgrenze, den restart-sicheren Phase-5-Event-Key-Lifecycle und die lokale Phase-6-Crash-/Mehrprozesshärtung. Phase 6 ändert innerhalb des Phase-1-Kerns zwingend und dokumentiert ausschließlich `packages/audit-log`. `legacy/mvp/` ist ausschließlich eine unsichere, nicht produktive Audit-Referenz.
+Der produktive Code in `apps/` und `packages/` enthält den
+Phase-1-Sicherheitskern, die lokale Phase-2-Control-Plane, den store-gebundenen
+Phase-3-External-Action-Evaluator, die lokale signierte
+Phase-4-Operatorgrenze, den restart-sicheren Phase-5-Event-Key-Lifecycle und
+die lokale Phase-6-Crash-/Mehrprozesshärtung. Phase 7 ergänzt ausschließlich
+testseitige lokale Browserqualifizierung unter `tests/browser`; sie ist kein
+Produkt- oder External-Action-Runner und ändert keinen Phase-1-Pfad. Phase 6
+ändert innerhalb des Phase-1-Kerns zwingend und dokumentiert ausschließlich
+`packages/audit-log`. `legacy/mvp/` ist ausschließlich eine unsichere, nicht
+produktive Audit-Referenz.
 
 ## Nicht verhandelbare Regeln
 
 - Netzwerk- und Browsertests laufen ausschließlich gegen Loopback-Adressen. Beispielhosts werden nie aufgelöst oder kontaktiert.
+- Playwright-Tests verwenden nur die eigene Fixture unter `tests/browser`.
+  Ein Browserkontext muss vor der ersten Page durch den Phase-1-Egress-Guard
+  und den exakten aktuellen Schritt-Guard geschützt sein. Ungeschützte
+  `page`-/`context`-Fixtures, freie URLs, Retries und produktive Browserstarts
+  sind verboten.
+- Automatische Screenshots, Traces, Videos, HARs, Attachments, Storage-State
+  und Page-Snapshots bleiben deaktiviert. Screenshotbytes dürfen nur nach
+  verifizierter vollständiger lokaler Maskierung ohne Dateipfad entstehen,
+  als streng validierter Digest freigegeben und anschließend genullt werden.
 - Jede Netzwerkentscheidung erfolgt vor dem Request, deny-by-default und fail-closed.
 - Keine aktiven Sicherheitstests, reale Kontoerstellung, Live-Plattformintegration, Report-Einreichung oder LLM-gesteuerten Requests ergänzen.
 - Phase-2-Quellen, Mock-Adapter, Demo-SaaS, Simulation und Dashboard bleiben vollständig lokal. Externe Adapter sind deaktivierte Platzhalter ohne Transport.
@@ -74,5 +92,8 @@ Der produktive Code in `apps/` und `packages/` enthält den Phase-1-Sicherheitsk
 - `packages/external-actions`: einzige Registry und Gate-Pipeline für künftige externe Wirkungen.
 - `packages/operator-auth`: einzige lokale Ed25519-Signaturgrenze für Enrollment, Approval-Entscheidungen und Kill-Switch-Clear.
 - `packages/dashboard` und `packages/demo-saas`: ausschließlich `127.0.0.1`, feste Routen und lokale Mocks.
+- `tests/browser`: geschlossene lokale Playwright-Testinfrastruktur; niemals
+  aus `apps/`, `packages/external-actions`, Control Plane oder LLM-Pfaden
+  importieren.
 
 Konservative Entscheidungen, bewusst deaktivierte Funktionen und jede zwingende Änderung am Phase-1-Kern sind in den Abschlussdokumenten festzuhalten.

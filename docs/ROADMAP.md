@@ -73,7 +73,7 @@ prozessübergreifender Lease und expliziter Offline-Recovery. Allgemeiner
 Active-active- oder Netzwerkdateisystembetrieb bleibt ausdrücklich
 unqualifiziert.
 
-## Phase 7 – rein lokale Browserjourneys
+## Phase 7 – rein lokale Browserjourneys (abgeschlossen)
 
 1. Playwright-Testharness ausschließlich gegen die vorhandene Demo-SaaS auf
    `127.0.0.1` ausbauen.
@@ -84,14 +84,25 @@ unqualifiziert.
 4. Keine Plattform-, Account-, Ziel- oder externe Browserintegration
    aktivieren.
 
-## Spätere Phase – Journey-Automation
+Umgesetzt ist ein test-only Playwright-Harness mit festen read-only
+Rollen-/Routengraphen, zwei isolierten A/B-Replays, exakter zweistufiger
+Egress-Prüfung, strikter Responseprojektion und vollständig opaken,
+rollen-/zustandsgebundenen In-Memory-Screenshot-Digests. Die Profile beweisen
+keine serverseitige Authentisierung oder Autorisierung. Ein produktiver
+`browser_journey_start`-Runner wurde nicht registriert.
 
-1. Playwright Test statt einfacher Library-Skripte.
-2. Aufzeichnung eines Referenzablaufs.
-3. Automatischer A/B-/Rollen-Replay.
-4. Sicherer UI-Zustandsgraph.
-5. Locator-Healing ohne neue Berechtigungen.
-6. Screenshots nur nach lokaler Redaktion.
+## Nächste Phase – lokale UI-Qualifizierung
+
+1. Eine statische, read-only Demo-Oberfläche für die bestehenden lokalen
+   Fixtures definieren, ohne Rollenprofile als Authentisierung oder
+   Autorisierung auszugeben.
+2. Den geschlossenen Phase-7-Referenzablauf gegen diese Oberfläche erweitern,
+   weiterhin ohne freie URLs, Schritte, Scripts oder Produkt-Runner.
+3. Semantische UI-Zustände ausschließlich aus festen, lokal geprüften
+   Selektoren ableiten; Locator-Healing bleibt deaktiviert, bis dafür ein
+   eigener fail-closed Sicherheitsvertrag existiert.
+4. Persistente visuelle Evidence erst nach einer separaten Security-Core-
+   Entscheidung zu Verschlüsselung, Lebensdauer und Löschung erwägen.
 
 ## Spätere Phase – Analyse und sichere Verifikation
 

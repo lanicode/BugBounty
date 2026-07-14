@@ -1,14 +1,17 @@
 # Testnachweis
 
-Stand: 14. Juli 2026. Der vollständige Phase-6-Lauf steht in `PHASE6_TEST_RESULTS.txt`.
+Stand: 14. Juli 2026. Der vollständige Phase-7-Lauf steht in
+`PHASE7_TEST_RESULTS.txt`.
 
 Alle Netzwerk- und Browser-Integrationstests liefen ausschließlich gegen kurzlebige Server auf `127.0.0.1`. Beispiel- und `.invalid`-Hosts wurden nur als nicht aufgelöste Testdaten verwendet.
 
 ## Aktuelles Ergebnis
 
-- Vollständige Suite: 73 Testdateien, 383 Tests, alle bestanden.
-- Property-Suite: 12 Testdateien, 27 Tests, alle bestanden.
+- Vollständige Suite: 78 Testdateien, 414 Tests, alle bestanden.
+- Property-Suite: 13 Testdateien, 30 Tests, alle bestanden.
 - Integrationssuite: 18 Testdateien, 69 Tests, alle bestanden.
+- Playwright-Test: 1 Testdatei, 2 Tests, alle bestanden.
+- Fokussierte Phase-7-Suite: 5 Testdateien, 31 Tests, alle bestanden.
 - Phase-1-Egress-Regression: 4 Testdateien, 11 Tests, alle bestanden.
 - Lokale ProgramSource-Suite: 4 Testdateien, 12 Tests, alle bestanden.
 - Statements: 88,00 % (4657/5292).
@@ -30,6 +33,33 @@ Der offizielle Coverage-Script verwendet genau einen Worker. Dadurch bleiben
 die ressourcenintensiven Child-/SIGKILL- und Dashboardtests unter
 Coverage-Instrumentierung reproduzierbar; Testmenge, Assertions, Timeouts und
 Sicherheitsprüfungen sind unverändert.
+
+## Ergänzte Phase-7-Invarianten
+
+Der Playwright-Test importiert ausschließlich eine eigene lokale Fixture. Sie
+startet pro Replay eine frische Demo-SaaS auf einem ephemeren Port und erzeugt
+den Browserkontext vor der ersten Page über `createGuardedContext`. Ein zweiter
+exakter Schritt-Guard erlaubt nur den aktuellen kanonischen GET-Pfad des
+festen Owner-, Member- oder External-Graphen. Freie URLs, Query, Fragment,
+Userinfo, fremde Ports, zusätzliche Requests, Popups, Frames, Dialoge,
+Downloads, Redirects, Service Worker und WebSockets blockieren.
+
+Zwei isolierte Läufe pro Rolle in umgekehrter Rollenreihenfolge erzeugen
+dieselbe kanonische Evidence. Die Rollen sind ausdrücklich lokale
+Replay-Profile ohne Authentisierungs- oder Autorisierungsbehauptung. Bodies
+werden nur im Speicher auf exaktes Schema, UTF-8, Kanonizität, Größe und feste
+Security-Header geprüft und anschließend genullt. Evidence enthält nur
+Enums, Counts, Statuscodes und Digests.
+
+Automatische Screenshots, Traces, Videos, HARs, Attachments, Storage-State und
+Page-Snapshots sind deaktiviert. Der einzige Screenshot wird ohne Pfad im
+Speicher erzeugt, nachdem eine exakt 1280×720 große Maske verifiziert wurde.
+Ihre Farbe bindet ausschließlich an geschlossene Rollen- und Zustandswerte.
+PNG-Signatur, Dimensionen, CRCs, Chunk-Allowlist und Größenlimit werden vor
+der Digestfreigabe geprüft; der Puffer wird immer genullt. Ein veränderter
+Rohinhalt unter derselben Maske muss denselben Digest ergeben. Nach dem Lauf
+bleibt nur Playwrights nicht sensitives `.last-run.json`; kein Browser- oder
+Sessionartefakt.
 
 ## Ergänzte Phase-6-Invarianten
 
