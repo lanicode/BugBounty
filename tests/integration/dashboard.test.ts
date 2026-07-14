@@ -15,6 +15,10 @@ import {
 } from "../../packages/dashboard/index.js";
 import { DemoSaas } from "../../packages/demo-saas/index.js";
 import { createGuardedContext } from "../../packages/egress-guard/playwright.js";
+import {
+  deriveRuntimeReadiness,
+  type RuntimeReadiness,
+} from "../../packages/local-runtime/index.js";
 import { SimulationOrchestrator } from "../../packages/simulation/index.js";
 import { InMemorySecretStore } from "../../packages/secret-store/index.js";
 import type { ProgramConfig } from "../../packages/config/types.js";
@@ -25,6 +29,38 @@ import {
 } from "../fixtures/operator-auth.factory.js";
 
 const NOW = Date.parse("2026-07-13T12:00:00.000Z");
+const PHASE8_FLOW = Object.freeze([
+  "onboarding_system_check",
+  "onboarding_secret_store_check",
+  "onboarding_select_simulation",
+  "onboarding_configure_testmail",
+  "onboarding_disable_ai",
+  "onboarding_confirm_boundaries",
+  "onboarding_initialize_demo",
+  "create_program",
+  "import_policy",
+  "accept_policy",
+  "create_campaign",
+  "approve_campaign",
+  "prepare_identities",
+  "start_journey",
+  "inspect_inventory",
+  "generate_candidates",
+  "verify_candidate",
+  "open_evidence",
+  "create_report",
+  "queue_report_review",
+  "approve_local_report",
+] as const);
+const PHASE8_CONFIRMATIONS = new Set([
+  "onboarding_confirm_boundaries",
+  "accept_policy",
+  "approve_campaign",
+  "start_journey",
+  "verify_candidate",
+  "queue_report_review",
+  "approve_local_report",
+]);
 
 interface DashboardState {
   readonly csrfToken: string;
@@ -32,6 +68,18 @@ interface DashboardState {
   readonly externalIntegrationsEnabled: false;
   readonly phase1SecurityStatus: string;
   readonly simulationStatus: string;
+  readonly simulationAvailable: boolean;
+  readonly runtimeReadiness: {
+    readonly status: string;
+    readonly aiProviderStatus: string;
+    readonly browserWorkerStatus: string;
+    readonly externalIntegrationsEnabled: false;
+  };
+  readonly localProductIntegrity: {
+    readonly status: "blocked_demo_drift" | "bound";
+    readonly evidenceStatus: "not_created" | "stale_blocked" | "valid_bound";
+    readonly reportStatus: "not_created" | "stale_blocked" | "valid_bound";
+  };
   readonly operatorAuthentication: {
     readonly signerConfigured: boolean;
     readonly operatorId: string | null;
@@ -65,6 +113,48 @@ interface DashboardState {
   }[];
   readonly expert: { readonly auditLog: readonly string[] };
   readonly simulationReview: { readonly reviewDigest: string };
+  readonly localProduct: {
+    readonly workflowStatus: string;
+    readonly stage: string;
+    readonly nextAction: string | null;
+    readonly progress: {
+      readonly completedSteps: number;
+      readonly totalSteps: 21;
+    };
+    readonly availableManagementActions: readonly string[];
+    readonly onboarding: { readonly status: string };
+    readonly program: null | { readonly lifecycle: string };
+    readonly policy: null | {
+      readonly status: string;
+      readonly policyHash: string;
+    };
+    readonly campaign: null | { readonly status: string };
+    readonly identities: readonly {
+      readonly role: string;
+      readonly sessionStatus: string;
+    }[];
+    readonly journey: null | {
+      readonly browserStarted: false;
+      readonly networkRequests: 0;
+      readonly status: string;
+    };
+    readonly inventory: null | { readonly status: string };
+    readonly candidates: readonly {
+      readonly activeTestPerformed: false;
+      readonly privacyStatus: string;
+      readonly status: string;
+    }[];
+    readonly evidence: null | { readonly status: string };
+    readonly report: null | {
+      readonly externalSubmissionPerformed: false;
+      readonly reviewStatus: string;
+      readonly artifacts: {
+        readonly markdown: string;
+        readonly html: string;
+        readonly json: string;
+      };
+    };
+  };
 }
 
 interface SimulationResponse {
@@ -75,6 +165,7 @@ interface SimulationResponse {
 
 interface Harness {
   readonly database: ControlPlaneDatabase;
+  readonly demo: DemoSaas;
   readonly store: ControlPlaneStore;
   readonly server: RunningDashboardServer;
 }
@@ -88,7 +179,11 @@ afterEach(async () => {
 });
 
 async function startHarness(
-  options: { readonly withOperatorSigner?: boolean } = {},
+  options: {
+    readonly readiness?: RuntimeReadiness;
+    readonly withOperatorSigner?: boolean;
+    readonly withSimulation?: boolean;
+  } = {},
 ): Promise<Harness> {
   const database = ControlPlaneDatabase.memory();
   let ticks = 0;
@@ -97,26 +192,52 @@ async function startHarness(
   const demo = new DemoSaas(now);
   const operatorSigner =
     options.withOperatorSigner === false ? undefined : TEST_OPERATOR_SIGNER;
-  const eventRoot = await mkdtemp(join(tmpdir(), "dashboard-events-"));
-  const eventSecrets = new InMemorySecretStore();
-  eventSecrets.set("secret://dashboard/event-key", new Uint8Array(32).fill(9));
-  const simulation = new SimulationOrchestrator(
-    store,
-    demo,
-    eventRoot,
-    eventSecrets,
-    () => "secret://dashboard/event-key",
-    now,
-    1,
-    operatorSigner,
-  );
+  let simulation: SimulationOrchestrator | undefined;
+  if (options.withSimulation !== false) {
+    const eventRoot = await mkdtemp(join(tmpdir(), "dashboard-events-"));
+    const eventSecrets = new InMemorySecretStore();
+    eventSecrets.set(
+      "secret://dashboard/event-key",
+      new Uint8Array(32).fill(9),
+    );
+    simulation = new SimulationOrchestrator(
+      store,
+      demo,
+      eventRoot,
+      eventSecrets,
+      () => "secret://dashboard/event-key",
+      now,
+      1,
+      operatorSigner,
+    );
+  }
   try {
-    const dependencies =
-      operatorSigner === undefined
-        ? { store, demo, simulation, now }
-        : { store, demo, simulation, operatorSigner, now };
+    const dependencies = {
+      store,
+      demo,
+      readiness:
+        options.readiness ??
+        deriveRuntimeReadiness({
+          platform: "darwin",
+          eventKeyMinimumVersion: simulation === undefined ? undefined : "1",
+          operatorKeyReference:
+            operatorSigner === undefined
+              ? undefined
+              : "keychain://test/operator-ed25519-v1",
+          operatorId:
+            operatorSigner === undefined ? undefined : TEST_OPERATOR_ID,
+          operatorKeyRevision: operatorSigner === undefined ? undefined : "1",
+          secretStoreProbe:
+            simulation === undefined ? "not_checked" : "available",
+          demoSaasReady: true,
+          databaseReady: true,
+        }),
+      ...(simulation === undefined ? {} : { simulation }),
+      ...(operatorSigner === undefined ? {} : { operatorSigner }),
+      now,
+    };
     const server = await startDashboardServer(dependencies, 0);
-    const harness = { database, store, server };
+    const harness = { database, demo, store, server };
     harnesses.push(harness);
     return harness;
   } catch (error) {
@@ -158,7 +279,10 @@ describe("local dashboard HTTP boundary", () => {
     expect(home.status).toBe(200);
     expect(html).toContain("SIMULATIONSMODUS");
     expect(html).toContain("EXTERNE INTEGRATIONEN DEAKTIVIERT");
+    expect(html).toContain("KEINE REALE REPORT-EINREICHUNG");
+    expect(html).toContain("Geführter vollständiger Demoablauf");
     expect(html).toContain('src="/app.js"');
+    expect(html).toContain('src="/phase8.js"');
     expect(html).toContain('href="/styles.css"');
     expect(home.headers.get("access-control-allow-origin")).toBeNull();
     const csp = home.headers.get("content-security-policy") ?? "";
@@ -169,6 +293,11 @@ describe("local dashboard HTTP boundary", () => {
     const script = await (await fetch(`${server.origin}/app.js`)).text();
     expect(script).not.toContain("innerHTML");
     expect(script).not.toContain("https://");
+    const phase8Script = await (
+      await fetch(`${server.origin}/phase8.js`)
+    ).text();
+    expect(phase8Script).not.toContain("innerHTML");
+    expect(phase8Script).not.toContain("https://");
     const initial = await state(server);
     expect(initial).toMatchObject({
       mode: "simulation",
@@ -316,6 +445,227 @@ lifecycle: active
     ]);
   });
 
+  it("keeps the UI and guided demo available when secure simulation setup is missing", async () => {
+    const { server, store } = await startHarness({
+      withOperatorSigner: false,
+      withSimulation: false,
+    });
+    const initial = await state(server);
+    expect(initial).toMatchObject({
+      simulationAvailable: false,
+      simulationStatus: "setup_required",
+      operatorAuthentication: {
+        signerConfigured: false,
+        operatorId: null,
+      },
+      runtimeReadiness: {
+        status: "setup_required",
+        externalIntegrationsEnabled: false,
+        aiProviderStatus: "disabled_not_implemented",
+        browserWorkerStatus: "test_harness_only",
+      },
+      killSwitch: { active: true },
+      localProduct: {
+        nextAction: "onboarding_system_check",
+        workflowStatus: "guided",
+      },
+    });
+
+    const blocked = await postJson(
+      server,
+      "/api/simulation/run",
+      initial.csrfToken,
+      {
+        actor: TEST_OPERATOR_ID,
+        confirmations: confirmations(),
+        confirmationTimes: confirmationTimes(),
+        reviewDigest: "a".repeat(64),
+      },
+    );
+    expect(blocked.status).toBe(409);
+    expect(await blocked.json()).toEqual({
+      error: "DASHBOARD_SECURE_CORE_NOT_READY",
+    });
+    expect(store.isKillSwitchActive()).toBe(true);
+
+    const blockedCoreMutations = [
+      await postJson(server, "/api/programs/import", initial.csrfToken, {
+        format: "json",
+        source: JSON.stringify(importRecord("blocked-program", "Blocked")),
+      }),
+      await postJson(server, "/api/kill-switch/clear", initial.csrfToken, {
+        actor: TEST_OPERATOR_ID,
+        confirmed: true,
+      }),
+      await postJson(server, "/api/approvals/decide", initial.csrfToken, {}),
+    ];
+    for (const response of blockedCoreMutations) {
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        error: "DASHBOARD_SECURE_CORE_NOT_READY",
+      });
+    }
+    expect(store.listPrograms()).toHaveLength(0);
+
+    const guided = await postJson(
+      server,
+      "/api/local-product/action",
+      initial.csrfToken,
+      { action: "onboarding_system_check" },
+    );
+    expect(guided.status).toBe(200);
+    expect((await state(server)).localProduct.progress.completedSteps).toBe(1);
+    expect(store.listPrograms()).toHaveLength(0);
+  });
+
+  it("binds onboarding checks to observed local runtime gates", async () => {
+    const databaseBlocked = deriveRuntimeReadiness({
+      platform: "darwin",
+      eventKeyMinimumVersion: undefined,
+      operatorKeyReference: undefined,
+      operatorId: undefined,
+      operatorKeyRevision: undefined,
+      secretStoreProbe: "not_checked",
+      demoSaasReady: true,
+      databaseReady: false,
+    });
+    const databaseHarness = await startHarness({
+      readiness: databaseBlocked,
+      withOperatorSigner: false,
+      withSimulation: false,
+    });
+    const databaseState = await state(databaseHarness.server);
+    const systemCheck = await postJson(
+      databaseHarness.server,
+      "/api/local-product/action",
+      databaseState.csrfToken,
+      { action: "onboarding_system_check" },
+    );
+    expect(systemCheck.status).toBe(409);
+    expect(await systemCheck.json()).toEqual({
+      error: "DASHBOARD_LOCAL_SYSTEM_CHECK_BLOCKED",
+    });
+    expect((await state(databaseHarness.server)).localProduct.progress).toEqual(
+      { completedSteps: 0, totalSteps: 21 },
+    );
+
+    const secretBlocked = deriveRuntimeReadiness({
+      platform: "darwin",
+      eventKeyMinimumVersion: undefined,
+      operatorKeyReference: undefined,
+      operatorId: undefined,
+      operatorKeyRevision: undefined,
+      secretStoreProbe: "error",
+      demoSaasReady: true,
+      databaseReady: true,
+    });
+    const secretHarness = await startHarness({
+      readiness: secretBlocked,
+      withOperatorSigner: false,
+      withSimulation: false,
+    });
+    const secretState = await state(secretHarness.server);
+    expect(
+      await postJson(
+        secretHarness.server,
+        "/api/local-product/action",
+        secretState.csrfToken,
+        { action: "onboarding_system_check" },
+      ),
+    ).toMatchObject({ status: 200 });
+    const secretCheck = await postJson(
+      secretHarness.server,
+      "/api/local-product/action",
+      secretState.csrfToken,
+      { action: "onboarding_secret_store_check" },
+    );
+    expect(secretCheck.status).toBe(409);
+    expect(await secretCheck.json()).toEqual({
+      error: "DASHBOARD_LOCAL_SECRET_STORE_CHECK_BLOCKED",
+    });
+    expect((await state(secretHarness.server)).localProduct.progress).toEqual({
+      completedSteps: 1,
+      totalSteps: 21,
+    });
+  });
+
+  it("blocks the guided projection when its bound Demo-SaaS snapshot drifts", async () => {
+    const { demo, server } = await startHarness();
+    const initial = await state(server);
+    demo.createProject({
+      actorRef: "identity-owner-001",
+      projectRef: "project-drift-001",
+      displayName: "Intentional local drift fixture",
+    });
+
+    const response = await postJson(
+      server,
+      "/api/local-product/action",
+      initial.csrfToken,
+      { action: "onboarding_system_check" },
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: "DASHBOARD_LOCAL_DEMO_DRIFT_BLOCKED",
+    });
+    const drifted = await state(server);
+    expect(drifted.localProduct.progress.completedSteps).toBe(0);
+    expect(drifted.localProductIntegrity).toMatchObject({
+      status: "blocked_demo_drift",
+      evidenceStatus: "not_created",
+      reportStatus: "not_created",
+    });
+
+    const reportHarness = await startHarness();
+    for (const action of PHASE8_FLOW) {
+      const before = await state(reportHarness.server);
+      const completed = await postJson(
+        reportHarness.server,
+        "/api/local-product/action",
+        before.csrfToken,
+        phase8Payload(action),
+      );
+      expect(completed.status).toBe(200);
+    }
+    reportHarness.demo.createProject({
+      actorRef: "identity-owner-001",
+      projectRef: "project-report-drift-001",
+      displayName: "Post-report local drift fixture",
+    });
+    expect(
+      (await state(reportHarness.server)).localProductIntegrity,
+    ).toMatchObject({
+      status: "blocked_demo_drift",
+      evidenceStatus: "stale_blocked",
+      reportStatus: "stale_blocked",
+    });
+    const browser = await chromium.launch({ headless: true });
+    const context = await createGuardedContext(
+      browser,
+      dashboardPolicy(reportHarness.server),
+    );
+    try {
+      const page = await context.newPage();
+      await page.goto(reportHarness.server.origin);
+      await page
+        .locator("#phase8-guidance")
+        .filter({ hasText: "App beenden und mit pnpm app neu starten" })
+        .waitFor();
+      expect(await page.locator("#phase8-primary-action").isDisabled()).toBe(
+        true,
+      );
+      expect(
+        await page.locator("#phase8-report-preview").textContent(),
+      ).toContain("BLOCKIERT: Demo-SaaS-Drift");
+      expect(
+        await page.locator("#phase8-journey-result-preview").textContent(),
+      ).toContain("BLOCKIERT: Demo-SaaS-Drift");
+    } finally {
+      await context.close();
+      await browser.close();
+    }
+  });
+
   it("runs all 18 local steps only after six confirmations and controls the kill switch", async () => {
     const { server } = await startHarness();
     const initial = await state(server);
@@ -426,7 +776,103 @@ lifecycle: active
     ).toBe(true);
   });
 
-  it("fails closed for positive operations when no operator signer is configured", async () => {
+  it("executes the closed Phase-8 product flow without network or core-store mutations", async () => {
+    const { server, store } = await startHarness();
+    const initial = await state(server);
+    expect(initial.localProduct).toMatchObject({
+      workflowStatus: "guided",
+      stage: "onboarding",
+      nextAction: "onboarding_system_check",
+      progress: { completedSteps: 0, totalSteps: 21 },
+    });
+    const initialCounts = initial.counts;
+
+    const forged = await postJson(
+      server,
+      "/api/local-product/action",
+      initial.csrfToken,
+      { action: "create_program", confirmed: true },
+    );
+    expect(forged.status).toBe(409);
+    expect((await state(server)).localProduct.progress.completedSteps).toBe(0);
+
+    for (const [index, action] of PHASE8_FLOW.entries()) {
+      const before = await state(server);
+      expect(before.localProduct.nextAction).toBe(action);
+      if (action === "create_campaign") {
+        const subset = await postJson(
+          server,
+          "/api/local-product/action",
+          before.csrfToken,
+          {
+            ...phase8Payload(action),
+            roles: ["Owner", "Member"],
+          },
+        );
+        expect(subset.status).toBe(409);
+        expect((await state(server)).localProduct.progress.completedSteps).toBe(
+          index,
+        );
+      }
+      const response = await postJson(
+        server,
+        "/api/local-product/action",
+        before.csrfToken,
+        phase8Payload(action),
+      );
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        readonly localProduct: {
+          readonly progress: { readonly completedSteps: number };
+        };
+      };
+      expect(body.localProduct.progress.completedSteps).toBe(index + 1);
+    }
+
+    const completed = await state(server);
+    expect(completed.localProduct).toMatchObject({
+      workflowStatus: "completed_local_only",
+      stage: "complete",
+      nextAction: null,
+      onboarding: { status: "complete" },
+      program: { lifecycle: "active" },
+      policy: { status: "accepted_local" },
+      campaign: { status: "completed_local_only" },
+      journey: {
+        browserStarted: false,
+        networkRequests: 0,
+        status: "completed_local_simulation",
+      },
+      inventory: { status: "inspected_local" },
+      evidence: { status: "open_local_bundle" },
+      report: {
+        reviewStatus: "approved_local_only",
+        externalSubmissionPerformed: false,
+      },
+    });
+    expect(completed.localProduct.identities.map(({ role }) => role)).toEqual([
+      "Owner",
+      "Member",
+      "External",
+    ]);
+    expect(completed.localProduct.candidates).toEqual([
+      expect.objectContaining({
+        status: "verified_local_fixture",
+        activeTestPerformed: false,
+        privacyStatus: "redacted_metadata_only",
+      }),
+    ]);
+    expect(completed.localProduct.report?.artifacts.markdown).toContain(
+      "External action: none.",
+    );
+    expect(completed.counts).toEqual(initialCounts);
+    expect(store.listPrograms()).toHaveLength(0);
+    expect(store.listCampaigns()).toHaveLength(0);
+    expect(store.listReportDrafts()).toHaveLength(0);
+    expect(store.isKillSwitchActive()).toBe(true);
+  });
+
+  it("fails closed for positive operations when secure runtime readiness is absent", async () => {
     const { database, store, server } = await startHarness({
       withOperatorSigner: false,
     });
@@ -446,7 +892,7 @@ lifecycle: active
     const initial = await state(server);
     const baseline = persistedDashboardState(initial);
     expect(initial).toMatchObject({
-      simulationStatus: "ready",
+      simulationStatus: "setup_required",
       operatorAuthentication: {
         signerConfigured: false,
         operatorId: null,
@@ -468,7 +914,7 @@ lifecycle: active
     );
     expect(simulation.status).toBe(409);
     expect(await simulation.json()).toEqual({
-      error: "OPERATOR_SIGNER_REQUIRED",
+      error: "DASHBOARD_SECURE_CORE_NOT_READY",
     });
     expect(persistedDashboardState(await state(server))).toEqual(baseline);
 
@@ -479,7 +925,9 @@ lifecycle: active
       { actor: TEST_OPERATOR_ID, confirmed: true },
     );
     expect(clear.status).toBe(409);
-    expect(await clear.json()).toEqual({ error: "OPERATOR_SIGNER_REQUIRED" });
+    expect(await clear.json()).toEqual({
+      error: "DASHBOARD_SECURE_CORE_NOT_READY",
+    });
     expect(persistedDashboardState(await state(server))).toEqual(baseline);
 
     const decision = await postJson(
@@ -497,7 +945,7 @@ lifecycle: active
     );
     expect(decision.status).toBe(409);
     expect(await decision.json()).toEqual({
-      error: "OPERATOR_SIGNER_REQUIRED",
+      error: "DASHBOARD_SECURE_CORE_NOT_READY",
     });
     expect(persistedDashboardState(await state(server))).toEqual(baseline);
     expect(store.isKillSwitchActive()).toBe(true);
@@ -561,6 +1009,180 @@ lifecycle: active
 });
 
 describe("local dashboard browser UI", () => {
+  it("disables positive core controls but keeps fail-safe kill engagement usable during setup", async () => {
+    const { server, store } = await startHarness({
+      withOperatorSigner: false,
+      withSimulation: false,
+    });
+    const browser = await chromium.launch({ headless: true });
+    const context = await createGuardedContext(
+      browser,
+      dashboardPolicy(server),
+    );
+    try {
+      const page = await context.newPage();
+      let stateRefreshes = 0;
+      page.on("request", (requestEvent) => {
+        if (new URL(requestEvent.url()).pathname === "/api/state")
+          stateRefreshes += 1;
+      });
+      await page.goto(server.origin);
+      await page.locator("#phase8-runtime-state").waitFor();
+      const refreshesAfterLoad = stateRefreshes;
+      await expect
+        .poll(() => stateRefreshes, { timeout: 4_000 })
+        .toBeGreaterThan(refreshesAfterLoad);
+      expect(await page.locator("#run-simulation").isDisabled()).toBe(true);
+      expect(await page.locator("#clear-kill").isDisabled()).toBe(true);
+      expect(await page.locator("#engage-kill").isEnabled()).toBe(true);
+      expect(await page.locator("#simulation-actor").inputValue()).toBe(
+        "local-operator",
+      );
+      await page.locator("#engage-kill").click();
+      await page
+        .locator("#kill-operation-status")
+        .filter({ hasText: "Kill Switch ist aktiv." })
+        .waitFor();
+      expect(store.isKillSwitchActive()).toBe(true);
+      expect(await page.locator("#phase8-primary-action").isEnabled()).toBe(
+        true,
+      );
+    } finally {
+      await context.close();
+      await browser.close();
+    }
+  });
+
+  it("completes the 21-step usable-product journey entirely through fixed UI controls", async () => {
+    const { server, store } = await startHarness();
+    const browser = await chromium.launch({ headless: true });
+    const context = await createGuardedContext(
+      browser,
+      dashboardPolicy(server),
+    );
+    try {
+      const requestedOrigins = new Set<string>();
+      const page = await context.newPage();
+      page.on("request", (requestEvent) => {
+        requestedOrigins.add(new URL(requestEvent.url()).origin);
+      });
+      await page.goto(server.origin);
+      await page
+        .getByRole("heading", { name: "Geführter vollständiger Demoablauf" })
+        .waitFor();
+      expect(await page.locator('input[type="password"]').count()).toBe(0);
+      expect(
+        await page
+          .locator("#phase8-primary-action")
+          .getAttribute("data-action"),
+      ).toBe(PHASE8_FLOW[0]);
+
+      for (const [index, action] of PHASE8_FLOW.entries()) {
+        const button = page.locator("#phase8-primary-action");
+        expect(await button.getAttribute("data-action")).toBe(action);
+        if (action === "onboarding_configure_testmail")
+          await page
+            .locator("#phase8-testmail-schema")
+            .selectOption("subaddress_fixture");
+        if (action === "create_program")
+          await page.locator("#phase8-exclude-admin").uncheck();
+        if (action === "import_policy") {
+          expect(await page.locator("#phase8-edit-program").isEnabled()).toBe(
+            true,
+          );
+          await page.locator("#phase8-edit-program").click();
+          await page
+            .locator("#phase8-program")
+            .filter({ hasText: "Local Demo Program Reviewed" })
+            .waitFor();
+          expect(await button.getAttribute("data-action")).toBe(action);
+          await page
+            .locator("#phase8-policy-representation")
+            .selectOption("structured_fixture");
+        }
+        if (action === "create_campaign") {
+          await page.locator("#phase8-max-requests").selectOption("4");
+          await page.locator("#phase8-requests-per-minute").selectOption("1");
+        }
+        if (action === "start_journey") {
+          expect(await page.locator("#phase8-start-sessions").isEnabled()).toBe(
+            true,
+          );
+          await page.locator("#phase8-start-sessions").click();
+          await page
+            .locator("#phase8-identities")
+            .filter({ hasText: "active_local" })
+            .waitFor();
+          expect(await button.getAttribute("data-action")).toBe(action);
+        }
+        await button.click();
+        await page
+          .locator("#phase8-stage")
+          .filter({ hasText: `${String(index + 1)}/21` })
+          .waitFor();
+      }
+
+      expect(await page.locator("#phase8-primary-action").isDisabled()).toBe(
+        true,
+      );
+      expect(await page.locator("#phase8-stage").textContent()).toContain(
+        "complete · 21/21",
+      );
+      expect(
+        await page.locator("#phase8-journey-details").textContent(),
+      ).toContain("Produkt-Browser gestartet: nein");
+      expect(
+        await page.locator("#phase8-journey-details").textContent(),
+      ).toContain("Netzwerkrequests: 0");
+      expect(
+        await page.locator("#phase8-candidate-details").textContent(),
+      ).toContain("Risikostufe: tier_0_offline");
+      expect(
+        await page.locator("#phase8-candidate-details").textContent(),
+      ).toContain("Aktiver Test: nein");
+      expect(await page.locator("#phase8-program").textContent()).toContain(
+        "Importdarstellung: structured_fixture",
+      );
+      expect(await page.locator("#phase8-program").textContent()).toContain(
+        "Baseline-Hash:",
+      );
+      expect(await page.locator("#phase8-program").textContent()).toContain(
+        "Request-Limit: 1 → 8",
+      );
+      expect(await page.locator("#phase8-program").textContent()).toContain(
+        "Ausgeschlossen: —",
+      );
+      expect(await page.locator("#phase8-campaign").textContent()).toContain(
+        "Request-Budget: 4",
+      );
+      expect(await page.locator("#phase8-campaign").textContent()).toContain(
+        "Pro Minute: 1",
+      );
+      expect(
+        await page.locator("#phase8-evidence-details").textContent(),
+      ).toContain("Extern eingereicht: nein");
+      await page.locator("#phase8-open-journey-result").click();
+      expect(
+        await page.locator("#phase8-journey-result-preview").textContent(),
+      ).toContain("Projizierte Schritte: 20");
+      await page.locator("#phase8-report-markdown").click();
+      expect(
+        await page.locator("#phase8-report-preview").textContent(),
+      ).toContain("External action: none.");
+      expect(await page.evaluate(() => localStorage.length)).toBe(0);
+      expect(await page.evaluate(() => sessionStorage.length)).toBe(0);
+      expect(await context.cookies()).toEqual([]);
+      expect([...requestedOrigins]).toEqual([server.origin]);
+      expect(store.listPrograms()).toHaveLength(0);
+      expect(store.listCampaigns()).toHaveLength(0);
+      expect(store.listReportDrafts()).toHaveLength(0);
+      expect(store.isKillSwitchActive()).toBe(true);
+    } finally {
+      await context.close();
+      await browser.close();
+    }
+  });
+
   it("renders every section and completes the explicit local workflow", async () => {
     const { server } = await startHarness();
     const browser = await chromium.launch({ headless: true });
@@ -689,6 +1311,10 @@ describe("local dashboard browser UI", () => {
       expect(await page.locator("#kill-status").textContent()).toBe(
         "AKTIV / BLOCKIERT",
       );
+      await page
+        .locator("#phase8-runtime-details")
+        .filter({ hasText: "Kill Switch: aktiv" })
+        .waitFor();
       await page.locator("#clear-kill").click();
       await page
         .locator("#kill-status")
@@ -697,6 +1323,10 @@ describe("local dashboard browser UI", () => {
       expect(await page.locator("#kill-status").textContent()).toBe(
         "FREIGEGEBEN",
       );
+      await page
+        .locator("#phase8-runtime-details")
+        .filter({ hasText: "Kill Switch: freigegeben" })
+        .waitFor();
       await page
         .getByRole("button", { name: "Ausdrücklich akzeptieren" })
         .click();
@@ -731,6 +1361,47 @@ function importRecord(id: string, label: string): Record<string, unknown> {
     notes: "Never fetched",
     lifecycle: "active",
   };
+}
+
+function phase8Payload(
+  action: (typeof PHASE8_FLOW)[number],
+): Record<string, unknown> {
+  switch (action) {
+    case "onboarding_configure_testmail":
+      return { action, schema: "plus_addressing_fixture" };
+    case "onboarding_disable_ai":
+      return { action, provider: "disabled" };
+    case "create_program":
+      return {
+        action,
+        displayName: "Local Demo Program",
+        allowedAssetRefs: ["asset-local-primary"],
+        excludedAssetRefs: ["asset-local-administration"],
+      };
+    case "import_policy":
+      return { action, representation: "human_readable_text" };
+    case "create_campaign":
+      return {
+        action,
+        policyVersion: 1,
+        roles: ["Owner", "Member", "External"],
+        riskTiers: ["tier_0_offline"],
+        maxRequests: 8,
+        requestsPerMinute: 2,
+        maxConcurrency: 1,
+      };
+    case "start_journey":
+      return {
+        action,
+        confirmed: true,
+        journeyId: "phase7-local-demo-role-boundary",
+        roles: ["Owner", "Member", "External"],
+      };
+    default:
+      return PHASE8_CONFIRMATIONS.has(action)
+        ? { action, confirmed: true }
+        : { action };
+  }
 }
 
 function confirmations(): Record<string, true> {
