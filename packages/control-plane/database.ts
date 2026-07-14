@@ -9,6 +9,8 @@ interface Migration {
   readonly sql: string;
 }
 
+const trustedControlPlaneDatabases = new WeakSet();
+
 const MIGRATIONS: readonly Migration[] = Object.freeze([
   Object.freeze({
     version: 1,
@@ -304,12 +306,355 @@ WHEN NEW.key='global_kill_switch' BEGIN
 END;
 `,
   }),
+  Object.freeze({
+    version: 4,
+    sql: `
+CREATE TABLE approvals_v4 (
+  id TEXT PRIMARY KEY CHECK (length(id) BETWEEN 1 AND 128),
+  kind TEXT NOT NULL CHECK (kind IN ('program_policy_acceptance','campaign_contract','account_manual_action','external_action','tier_3_action','privacy_alert','report_bundle','triage_response')),
+  summary TEXT NOT NULL,
+  technical_details TEXT NOT NULL,
+  impact TEXT NOT NULL,
+  policy_version INTEGER,
+  policy_hash TEXT CHECK (policy_hash IS NULL OR (length(policy_hash)=64 AND policy_hash NOT GLOB '*[^0-9a-f]*')),
+  created_at TEXT NOT NULL CHECK (length(created_at) BETWEEN 20 AND 35),
+  status TEXT NOT NULL CHECK (status IN ('open','accepted','rejected')),
+  decided_at TEXT,
+  decided_by TEXT,
+  user_action TEXT,
+  audit_reference TEXT NOT NULL UNIQUE,
+  payload_hash TEXT NOT NULL CHECK (length(payload_hash)=64 AND payload_hash NOT GLOB '*[^0-9a-f]*'),
+  revision INTEGER NOT NULL CHECK (revision >= 0),
+  CHECK (
+    (status='open' AND revision=0 AND decided_at IS NULL AND decided_by IS NULL AND user_action IS NULL)
+    OR
+    (status IN ('accepted','rejected') AND revision=1 AND decided_at IS NOT NULL AND decided_by IS NOT NULL AND user_action IS NOT NULL)
+  )
+) STRICT;
+INSERT INTO approvals_v4(
+  id,kind,summary,technical_details,impact,policy_version,policy_hash,
+  created_at,status,decided_at,decided_by,user_action,audit_reference,
+  payload_hash,revision
+)
+SELECT id,kind,summary,technical_details,impact,policy_version,policy_hash,
+       created_at,status,decided_at,decided_by,user_action,audit_reference,
+       payload_hash,revision
+FROM approvals;
+CREATE TABLE migration_v4_approval_guard (
+  valid INTEGER NOT NULL CHECK (valid=1)
+) STRICT;
+INSERT INTO migration_v4_approval_guard(valid)
+SELECT CASE
+  WHEN (SELECT count(*) FROM approvals_v4) =
+       (SELECT count(*) FROM approvals)
+  THEN 1 ELSE 0 END;
+DROP TABLE migration_v4_approval_guard;
+DROP TABLE approvals;
+ALTER TABLE approvals_v4 RENAME TO approvals;
+
+CREATE UNIQUE INDEX owned_objects_external_action_binding
+ON owned_objects(object_ref,program_id,campaign_id,account_id);
+
+CREATE TRIGGER control_plane_audit_update_guard
+BEFORE UPDATE ON control_plane_audit BEGIN
+  SELECT RAISE(ABORT,'CONTROL_PLANE_AUDIT_IMMUTABLE');
+END;
+CREATE TRIGGER control_plane_audit_delete_guard
+BEFORE DELETE ON control_plane_audit BEGIN
+  SELECT RAISE(ABORT,'CONTROL_PLANE_AUDIT_IMMUTABLE');
+END;
+
+CREATE TABLE external_action_approval_bindings (
+  approval_id TEXT PRIMARY KEY REFERENCES approvals(id) ON DELETE RESTRICT,
+  proposal_id TEXT NOT NULL UNIQUE
+    CHECK (length(proposal_id) BETWEEN 1 AND 128 AND proposal_id NOT GLOB '*[^A-Za-z0-9_-]*'),
+  proposal_digest TEXT NOT NULL UNIQUE
+    CHECK (length(proposal_digest)=64 AND proposal_digest NOT GLOB '*[^0-9a-f]*'),
+  action_id TEXT NOT NULL CHECK (action_id IN (
+    'platform_api_read','test_account_register','email_verification_open',
+    'browser_journey_start','target_request','report_submit','triage_response_send'
+  )),
+  program_id TEXT NOT NULL REFERENCES programs(id) ON DELETE RESTRICT,
+  campaign_id TEXT NOT NULL,
+  campaign_revision INTEGER NOT NULL CHECK (campaign_revision >= 0),
+  campaign_digest TEXT NOT NULL
+    CHECK (length(campaign_digest)=64 AND campaign_digest NOT GLOB '*[^0-9a-f]*'),
+  policy_version INTEGER NOT NULL CHECK (policy_version > 0),
+  policy_hash TEXT NOT NULL
+    CHECK (length(policy_hash)=64 AND policy_hash NOT GLOB '*[^0-9a-f]*'),
+  scope_ref TEXT NOT NULL
+    CHECK (length(scope_ref) BETWEEN 1 AND 128 AND scope_ref NOT GLOB '*[^A-Za-z0-9_-]*'),
+  account_id TEXT,
+  account_role TEXT CHECK (account_role IS NULL OR account_role IN ('Owner','Member','External')),
+  identity_digest TEXT
+    CHECK (identity_digest IS NULL OR (length(identity_digest)=64 AND identity_digest NOT GLOB '*[^0-9a-f]*')),
+  object_ref TEXT,
+  ownership_digest TEXT
+    CHECK (ownership_digest IS NULL OR (length(ownership_digest)=64 AND ownership_digest NOT GLOB '*[^0-9a-f]*')),
+  payload_ref TEXT CHECK (payload_ref IS NULL OR length(payload_ref) BETWEEN 1 AND 128),
+  operator_id TEXT NOT NULL
+    CHECK (length(operator_id) BETWEEN 1 AND 128 AND operator_id NOT GLOB '*[^A-Za-z0-9._@-]*'),
+  created_at TEXT NOT NULL CHECK (length(created_at) BETWEEN 20 AND 35),
+  expires_at TEXT NOT NULL CHECK (length(expires_at) BETWEEN 20 AND 35),
+  binding_digest TEXT NOT NULL UNIQUE
+    CHECK (length(binding_digest)=64 AND binding_digest NOT GLOB '*[^0-9a-f]*'),
+  decision_audit_id TEXT UNIQUE
+    REFERENCES control_plane_audit(id) ON DELETE RESTRICT,
+  UNIQUE (approval_id,proposal_id,proposal_digest),
+  FOREIGN KEY (campaign_id,program_id)
+    REFERENCES campaigns(id,program_id) ON DELETE RESTRICT,
+  FOREIGN KEY (program_id,policy_version,policy_hash)
+    REFERENCES policy_versions(program_id,version,policy_hash) ON DELETE RESTRICT,
+  FOREIGN KEY (account_id,program_id)
+    REFERENCES test_identities(id,program_id) ON DELETE RESTRICT,
+  FOREIGN KEY (object_ref,program_id,campaign_id,account_id)
+    REFERENCES owned_objects(object_ref,program_id,campaign_id,account_id) ON DELETE RESTRICT,
+  CHECK (
+    (account_id IS NULL AND account_role IS NULL AND identity_digest IS NULL)
+    OR
+    (account_id IS NOT NULL AND account_role IS NOT NULL AND identity_digest IS NOT NULL)
+  ),
+  CHECK (
+    (object_ref IS NULL AND ownership_digest IS NULL)
+    OR
+    (object_ref IS NOT NULL AND ownership_digest IS NOT NULL AND account_id IS NOT NULL)
+  ),
+  CHECK (expires_at > created_at)
+) STRICT;
+
+CREATE TRIGGER external_action_approval_binding_insert_guard
+BEFORE INSERT ON external_action_approval_bindings BEGIN
+  SELECT RAISE(ABORT,'EXTERNAL_ACTION_APPROVAL_EVIDENCE_INVALID')
+  WHERE NOT EXISTS (
+    SELECT 1 FROM approvals q
+    WHERE q.id=NEW.approval_id
+      AND q.kind='external_action'
+      AND q.status='open'
+      AND q.revision=0
+      AND q.policy_version=NEW.policy_version
+      AND q.policy_hash=NEW.policy_hash
+      AND q.created_at=NEW.created_at
+      AND NEW.decision_audit_id IS NULL
+  );
+END;
+CREATE TRIGGER external_action_approval_binding_update_guard
+BEFORE UPDATE OF approval_id,proposal_id,proposal_digest,action_id,program_id,
+  campaign_id,campaign_revision,campaign_digest,policy_version,policy_hash,
+  scope_ref,account_id,account_role,identity_digest,object_ref,
+  ownership_digest,payload_ref,operator_id,created_at,expires_at,binding_digest
+ON external_action_approval_bindings BEGIN
+  SELECT RAISE(ABORT,'EXTERNAL_ACTION_APPROVAL_BINDING_IMMUTABLE');
+END;
+CREATE TRIGGER external_action_approval_binding_decision_guard
+BEFORE UPDATE OF decision_audit_id ON external_action_approval_bindings BEGIN
+  SELECT RAISE(ABORT,'EXTERNAL_ACTION_APPROVAL_EVIDENCE_INVALID')
+  WHERE OLD.decision_audit_id IS NOT NULL
+     OR NEW.decision_audit_id IS NULL
+     OR NOT EXISTS (
+       SELECT 1
+       FROM approvals q
+       JOIN control_plane_audit a ON a.id=NEW.decision_audit_id
+       WHERE q.id=NEW.approval_id
+         AND q.kind='external_action'
+         AND q.status='accepted'
+         AND q.revision=1
+         AND q.policy_version=NEW.policy_version
+         AND q.policy_hash=NEW.policy_hash
+         AND q.decided_by=NEW.operator_id
+         AND q.decided_at=a.occurred_at
+         AND a.action='approval_decision'
+         AND a.decision='accepted'
+         AND a.reason_code='HUMAN_APPROVAL_DECISION'
+         AND a.object_reference=q.id
+         AND a.payload_hash=q.payload_hash
+     );
+END;
+CREATE TRIGGER external_action_approval_binding_delete_guard
+BEFORE DELETE ON external_action_approval_bindings BEGIN
+  SELECT RAISE(ABORT,'EXTERNAL_ACTION_APPROVAL_BINDING_IMMUTABLE');
+END;
+
+CREATE TABLE external_action_attempts (
+  authorization_id TEXT PRIMARY KEY
+    CHECK (length(authorization_id) BETWEEN 1 AND 128 AND authorization_id NOT GLOB '*[^A-Za-z0-9_-]*'),
+  approval_id TEXT NOT NULL UNIQUE,
+  proposal_id TEXT NOT NULL UNIQUE
+    CHECK (length(proposal_id) BETWEEN 1 AND 128 AND proposal_id NOT GLOB '*[^A-Za-z0-9_-]*'),
+  proposal_digest TEXT NOT NULL UNIQUE
+    CHECK (length(proposal_digest)=64 AND proposal_digest NOT GLOB '*[^0-9a-f]*'),
+  action_id TEXT NOT NULL CHECK (action_id IN (
+    'platform_api_read','test_account_register','email_verification_open',
+    'browser_journey_start','target_request','report_submit','triage_response_send'
+  )),
+  program_id TEXT NOT NULL REFERENCES programs(id) ON DELETE RESTRICT,
+  campaign_id TEXT NOT NULL,
+  campaign_revision INTEGER NOT NULL CHECK (campaign_revision >= 0),
+  campaign_digest TEXT NOT NULL
+    CHECK (length(campaign_digest)=64 AND campaign_digest NOT GLOB '*[^0-9a-f]*'),
+  policy_version INTEGER NOT NULL CHECK (policy_version > 0),
+  policy_hash TEXT NOT NULL
+    CHECK (length(policy_hash)=64 AND policy_hash NOT GLOB '*[^0-9a-f]*'),
+  scope_ref TEXT NOT NULL
+    CHECK (length(scope_ref) BETWEEN 1 AND 128 AND scope_ref NOT GLOB '*[^A-Za-z0-9_-]*'),
+  account_id TEXT,
+  account_role TEXT CHECK (account_role IS NULL OR account_role IN ('Owner','Member','External')),
+  identity_digest TEXT
+    CHECK (identity_digest IS NULL OR (length(identity_digest)=64 AND identity_digest NOT GLOB '*[^0-9a-f]*')),
+  object_ref TEXT,
+  ownership_digest TEXT
+    CHECK (ownership_digest IS NULL OR (length(ownership_digest)=64 AND ownership_digest NOT GLOB '*[^0-9a-f]*')),
+  payload_ref TEXT CHECK (payload_ref IS NULL OR length(payload_ref) BETWEEN 1 AND 128),
+  operator_id TEXT NOT NULL
+    CHECK (length(operator_id) BETWEEN 1 AND 128 AND operator_id NOT GLOB '*[^A-Za-z0-9._@-]*'),
+  evidence_digest TEXT NOT NULL UNIQUE
+    CHECK (length(evidence_digest)=64 AND evidence_digest NOT GLOB '*[^0-9a-f]*'),
+  units INTEGER NOT NULL CHECK (units=1),
+  status TEXT NOT NULL CHECK (status IN ('reserved','running','succeeded','failed','aborted')),
+  reserved_at TEXT NOT NULL CHECK (length(reserved_at) BETWEEN 20 AND 35),
+  started_at TEXT CHECK (started_at IS NULL OR length(started_at) BETWEEN 20 AND 35),
+  finished_at TEXT CHECK (finished_at IS NULL OR length(finished_at) BETWEEN 20 AND 35),
+  revision INTEGER NOT NULL CHECK (revision >= 0),
+  reservation_audit_id TEXT NOT NULL UNIQUE
+    REFERENCES control_plane_audit(id) ON DELETE RESTRICT,
+  FOREIGN KEY (approval_id,proposal_id,proposal_digest)
+    REFERENCES external_action_approval_bindings(approval_id,proposal_id,proposal_digest)
+    ON DELETE RESTRICT,
+  FOREIGN KEY (campaign_id,program_id)
+    REFERENCES campaigns(id,program_id) ON DELETE RESTRICT,
+  FOREIGN KEY (program_id,policy_version,policy_hash)
+    REFERENCES policy_versions(program_id,version,policy_hash) ON DELETE RESTRICT,
+  FOREIGN KEY (account_id,program_id)
+    REFERENCES test_identities(id,program_id) ON DELETE RESTRICT,
+  FOREIGN KEY (object_ref,program_id,campaign_id,account_id)
+    REFERENCES owned_objects(object_ref,program_id,campaign_id,account_id) ON DELETE RESTRICT,
+  CHECK (
+    (account_id IS NULL AND account_role IS NULL AND identity_digest IS NULL)
+    OR
+    (account_id IS NOT NULL AND account_role IS NOT NULL AND identity_digest IS NOT NULL)
+  ),
+  CHECK (
+    (object_ref IS NULL AND ownership_digest IS NULL)
+    OR
+    (object_ref IS NOT NULL AND ownership_digest IS NOT NULL AND account_id IS NOT NULL)
+  ),
+  CHECK (
+    (status='reserved' AND revision=0 AND started_at IS NULL AND finished_at IS NULL)
+    OR
+    (status='running' AND revision=1 AND started_at IS NOT NULL
+      AND started_at>=reserved_at AND finished_at IS NULL)
+    OR
+    (status='aborted' AND revision=1 AND started_at IS NULL
+      AND finished_at IS NOT NULL AND finished_at>=reserved_at)
+    OR
+    (status IN ('succeeded','failed','aborted') AND revision=2
+      AND started_at IS NOT NULL AND started_at>=reserved_at
+      AND finished_at IS NOT NULL AND finished_at>=started_at)
+  )
+) STRICT;
+
+CREATE TRIGGER external_action_attempt_insert_guard
+BEFORE INSERT ON external_action_attempts BEGIN
+  SELECT RAISE(ABORT,'EXTERNAL_ACTION_ATTEMPT_INITIAL_STATE_INVALID')
+  WHERE NEW.status<>'reserved' OR NEW.revision<>0
+     OR NEW.started_at IS NOT NULL OR NEW.finished_at IS NOT NULL;
+  SELECT RAISE(ABORT,'EXTERNAL_ACTION_ATTEMPT_BINDING_INVALID')
+  WHERE NOT EXISTS (
+    SELECT 1
+    FROM external_action_approval_bindings b
+    JOIN approvals q ON q.id=b.approval_id
+    WHERE b.approval_id=NEW.approval_id
+      AND b.proposal_id=NEW.proposal_id
+      AND b.proposal_digest=NEW.proposal_digest
+      AND b.action_id=NEW.action_id
+      AND b.program_id=NEW.program_id
+      AND b.campaign_id=NEW.campaign_id
+      AND b.campaign_revision=NEW.campaign_revision
+      AND b.campaign_digest=NEW.campaign_digest
+      AND b.policy_version=NEW.policy_version
+      AND b.policy_hash=NEW.policy_hash
+      AND b.scope_ref=NEW.scope_ref
+      AND b.account_id IS NEW.account_id
+      AND b.account_role IS NEW.account_role
+      AND b.identity_digest IS NEW.identity_digest
+      AND b.object_ref IS NEW.object_ref
+      AND b.ownership_digest IS NEW.ownership_digest
+      AND b.payload_ref IS NEW.payload_ref
+      AND b.operator_id=NEW.operator_id
+      AND b.decision_audit_id IS NOT NULL
+      AND q.kind='external_action'
+      AND q.status='accepted'
+      AND q.revision=1
+      AND q.decided_by=b.operator_id
+      AND NEW.reserved_at>=b.created_at
+      AND NEW.reserved_at<b.expires_at
+  );
+  SELECT RAISE(ABORT,'EXTERNAL_ACTION_RESERVATION_AUDIT_INVALID')
+  WHERE NOT EXISTS (
+    SELECT 1 FROM control_plane_audit a
+    WHERE a.id=NEW.reservation_audit_id
+      AND a.occurred_at=NEW.reserved_at
+      AND a.action='external_action_authorization'
+      AND a.decision='reserved'
+      AND a.reason_code='EXTERNAL_ACTION_RESERVED'
+      AND a.object_reference=NEW.authorization_id
+      AND a.payload_hash=NEW.evidence_digest
+  );
+END;
+CREATE TRIGGER external_action_attempt_immutable_fields_guard
+BEFORE UPDATE OF authorization_id,approval_id,proposal_id,proposal_digest,
+  action_id,program_id,campaign_id,campaign_revision,campaign_digest,
+  policy_version,policy_hash,scope_ref,account_id,account_role,identity_digest,
+  object_ref,ownership_digest,payload_ref,operator_id,evidence_digest,units,
+  reserved_at,reservation_audit_id
+ON external_action_attempts BEGIN
+  SELECT RAISE(ABORT,'EXTERNAL_ACTION_ATTEMPT_BINDING_IMMUTABLE');
+END;
+CREATE TRIGGER external_action_attempt_transition_guard
+BEFORE UPDATE OF status,started_at,finished_at,revision
+ON external_action_attempts BEGIN
+  SELECT RAISE(ABORT,'EXTERNAL_ACTION_ATTEMPT_TRANSITION_INVALID')
+  WHERE NOT (
+    (OLD.status='reserved' AND OLD.revision=0
+      AND NEW.status='running' AND NEW.revision=1
+      AND NEW.started_at IS NOT NULL AND NEW.started_at>=OLD.reserved_at
+      AND NEW.finished_at IS NULL)
+    OR
+    (OLD.status='reserved' AND OLD.revision=0
+      AND NEW.status='aborted' AND NEW.revision=1
+      AND NEW.started_at IS NULL AND NEW.finished_at IS NOT NULL
+      AND NEW.finished_at>=OLD.reserved_at)
+    OR
+    (OLD.status='running' AND OLD.revision=1
+      AND NEW.status IN ('succeeded','failed','aborted') AND NEW.revision=2
+      AND NEW.started_at=OLD.started_at AND NEW.finished_at IS NOT NULL
+      AND NEW.finished_at>=OLD.started_at)
+  );
+END;
+CREATE TRIGGER external_action_attempt_delete_guard
+BEFORE DELETE ON external_action_attempts BEGIN
+  SELECT RAISE(ABORT,'EXTERNAL_ACTION_ATTEMPT_IMMUTABLE');
+END;
+
+UPDATE system_state
+SET value='engaged',revision=revision+1,
+    updated_at='2026-07-13T00:00:00.000Z',audit_reference=NULL
+WHERE key='global_kill_switch';
+UPDATE campaigns
+SET state='paused',revision=revision+1,human_approved_by=NULL,
+    human_approved_at=NULL,kill_switch_status='engaged',
+    last_policy_check_at='2026-07-13T00:00:00.000Z'
+WHERE state IN ('approved','running_simulation');
+`,
+  }),
 ]);
 
 export const CONTROL_PLANE_SCHEMA_VERSION = MIGRATIONS.length;
 
 export class ControlPlaneDatabase {
-  private constructor(private readonly database: DatabaseSync) {}
+  private constructor(private readonly database: DatabaseSync) {
+    trustedControlPlaneDatabases.add(this);
+    Object.freeze(this);
+  }
 
   public static memory(): ControlPlaneDatabase {
     return ControlPlaneDatabase.initialize(
@@ -388,6 +733,8 @@ export class ControlPlaneDatabase {
     this.database.exec("BEGIN IMMEDIATE");
     try {
       const result = operation();
+      if (isThenable(result))
+        throw new SecurityError("CONTROL_PLANE_TRANSACTION_ASYNC");
       this.database.exec("COMMIT");
       return result;
     } catch (error) {
@@ -444,6 +791,23 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
   }
 }
 
+Object.freeze(ControlPlaneDatabase.prototype);
+Object.freeze(ControlPlaneDatabase);
+
+export function isTrustedControlPlaneDatabase(
+  value: unknown,
+): value is ControlPlaneDatabase {
+  if (typeof value !== "object" || value === null) return false;
+  try {
+    return (
+      trustedControlPlaneDatabases.has(value) &&
+      Reflect.getPrototypeOf(value) === ControlPlaneDatabase.prototype
+    );
+  } catch {
+    return false;
+  }
+}
+
 type SqlParameter = null | number | string | Uint8Array;
 type SqlValue = null | number | bigint | string | Uint8Array;
 
@@ -463,4 +827,17 @@ function migrationChecksum(migration: Migration): string {
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error;
+}
+
+function isThenable(value: unknown): boolean {
+  if (
+    value === null ||
+    (typeof value !== "object" && typeof value !== "function")
+  )
+    return false;
+  try {
+    return typeof Reflect.get(value, "then") === "function";
+  } catch {
+    return true;
+  }
 }

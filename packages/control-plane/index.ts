@@ -1,6 +1,7 @@
 export * from "./approval-queue.js";
 export * from "./campaign-machine.js";
 export * from "./database.js";
+export * from "./external-action-evidence.js";
 export * from "./identity-machine.js";
 export * from "./policy-import.js";
 export * from "./policy.js";

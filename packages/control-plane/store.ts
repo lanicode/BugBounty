@@ -6,7 +6,23 @@ import {
   validateCampaignContract,
 } from "./campaign-machine.js";
 import { normalizePolicy, type NormalizedPolicy } from "./policy.js";
-import type { ControlPlaneDatabase } from "./database.js";
+import {
+  isTrustedControlPlaneDatabase,
+  type ControlPlaneDatabase,
+} from "./database.js";
+import {
+  ExternalActionEvidenceStore,
+  type AuthorizeExternalActionInput,
+  type CreateExternalActionApprovalInput,
+  type DescribeExternalActionContextInput,
+  type ExternalActionAttemptRecord,
+} from "./external-action-store.js";
+import type {
+  ExternalActionProposalContext,
+  StoreBoundExternalActionAuthorization,
+} from "./external-action-evidence.js";
+import type { ExternalActionProposal } from "../external-actions/proposal.js";
+import type { ExternalActionEvidenceDefinition } from "./external-action-evidence.js";
 import type {
   ApprovalRecord,
   CampaignRecord,
@@ -39,8 +55,73 @@ export interface ControlPlaneAuditRecord {
   readonly payloadHash: string;
 }
 
+const trustedControlPlaneStores = new WeakSet();
+
 export class ControlPlaneStore {
-  public constructor(private readonly database: ControlPlaneDatabase) {}
+  private readonly externalActions: ExternalActionEvidenceStore;
+
+  public constructor(private readonly database: ControlPlaneDatabase) {
+    if (!isTrustedControlPlaneDatabase(database))
+      throw new SecurityError("CONTROL_PLANE_DATABASE_UNTRUSTED");
+    this.externalActions = new ExternalActionEvidenceStore(database, this);
+    trustedControlPlaneStores.add(this);
+    Object.freeze(this);
+  }
+
+  public describeExternalActionContext(
+    input: DescribeExternalActionContextInput,
+  ): ExternalActionProposalContext {
+    return this.externalActions.describe(input);
+  }
+
+  public createExternalActionApproval(
+    input: CreateExternalActionApprovalInput,
+  ): ApprovalRecord {
+    return this.externalActions.createApproval(input);
+  }
+
+  public authorizeExternalAction(
+    input: AuthorizeExternalActionInput,
+  ): StoreBoundExternalActionAuthorization {
+    return this.externalActions.authorizeAndReserve(input);
+  }
+
+  public startExternalAction(
+    proposal: ExternalActionProposal,
+    definition: ExternalActionEvidenceDefinition,
+    authorization: StoreBoundExternalActionAuthorization,
+    at: string,
+  ): void {
+    this.externalActions.start(proposal, definition, authorization, at);
+  }
+
+  public abortExternalActionReservation(
+    proposal: ExternalActionProposal,
+    authorization: StoreBoundExternalActionAuthorization,
+    at: string,
+  ): void {
+    this.externalActions.abortReservation(proposal, authorization, at);
+  }
+
+  public settleExternalAction(
+    proposal: ExternalActionProposal,
+    definition: ExternalActionEvidenceDefinition,
+    authorization: StoreBoundExternalActionAuthorization,
+    outcome: "aborted" | "failed" | "succeeded",
+    at: string,
+  ): void {
+    this.externalActions.settle(
+      proposal,
+      definition,
+      authorization,
+      outcome,
+      at,
+    );
+  }
+
+  public listExternalActionAttempts(): readonly ExternalActionAttemptRecord[] {
+    return this.externalActions.listAttempts();
+  }
 
   public createProgram(
     input: Omit<
@@ -568,6 +649,22 @@ export class ControlPlaneStore {
         input.id,
         decided.payloadHash,
       );
+      const binding = this.database.get(
+        "SELECT approval_id FROM external_action_approval_bindings WHERE approval_id=?",
+        input.id,
+      );
+      if (binding !== undefined && input.decision === "accepted") {
+        const decisionAuditId = `approval-${sha256(`${input.id}\u0000${input.at}\u0000${input.decision}`).slice(0, 32)}`;
+        const linked = this.database.run(
+          `UPDATE external_action_approval_bindings
+           SET decision_audit_id=?
+           WHERE approval_id=? AND decision_audit_id IS NULL`,
+          decisionAuditId,
+          input.id,
+        );
+        if (linked.changes !== 1)
+          throw new SecurityError("ACTION_APPROVAL_AUDIT_BINDING_FAILED");
+      }
       return decided;
     });
   }
@@ -851,6 +948,23 @@ export class ControlPlaneStore {
   }
 }
 
+Object.freeze(ControlPlaneStore.prototype);
+Object.freeze(ControlPlaneStore);
+
+export function isTrustedControlPlaneStore(
+  value: unknown,
+): value is ControlPlaneStore {
+  if (typeof value !== "object" || value === null) return false;
+  try {
+    return (
+      trustedControlPlaneStores.has(value) &&
+      Reflect.getPrototypeOf(value) === ControlPlaneStore.prototype
+    );
+  } catch {
+    return false;
+  }
+}
+
 function nextKillSwitchRevision(database: ControlPlaneDatabase): number {
   const row = database.get(
     "SELECT revision FROM system_state WHERE key='global_kill_switch'",
@@ -1106,6 +1220,7 @@ function approvalFromRow(row: Row): ApprovalRecord {
       "program_policy_acceptance",
       "campaign_contract",
       "account_manual_action",
+      "external_action",
       "tier_3_action",
       "privacy_alert",
       "report_bundle",

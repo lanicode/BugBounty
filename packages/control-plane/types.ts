@@ -102,6 +102,7 @@ export interface TestIdentityRecord {
 export type ApprovalKind =
   | "account_manual_action"
   | "campaign_contract"
+  | "external_action"
   | "privacy_alert"
   | "program_policy_acceptance"
   | "report_bundle"
@@ -126,6 +127,73 @@ export interface ApprovalRecord {
   readonly auditReference: string;
   readonly payloadHash: string;
   readonly revision: number;
+}
+
+export type PersistedExternalActionId =
+  | "browser_journey_start"
+  | "email_verification_open"
+  | "platform_api_read"
+  | "report_submit"
+  | "target_request"
+  | "test_account_register"
+  | "triage_response_send";
+
+export interface ExternalActionApprovalBindingRecord {
+  readonly approvalId: string;
+  readonly proposalId: string;
+  readonly proposalDigest: string;
+  readonly actionId: PersistedExternalActionId;
+  readonly programId: string;
+  readonly campaignId: string;
+  readonly campaignRevision: number;
+  readonly campaignDigest: string;
+  readonly policyVersion: number;
+  readonly policyHash: string;
+  readonly scopeRef: string;
+  readonly accountId: string | null;
+  readonly accountRole: TestIdentityRole | null;
+  readonly identityDigest: string | null;
+  readonly objectRef: string | null;
+  readonly ownershipDigest: string | null;
+  readonly payloadRef: string | null;
+  readonly operatorId: string;
+  readonly createdAt: string;
+  readonly expiresAt: string;
+  readonly bindingDigest: string;
+  readonly decisionAuditId: string | null;
+}
+
+export type ExternalActionAttemptStatus =
+  "aborted" | "failed" | "reserved" | "running" | "succeeded";
+
+export interface ExternalActionAttemptRecord {
+  readonly authorizationId: string;
+  readonly approvalId: string;
+  readonly proposalId: string;
+  readonly proposalDigest: string;
+  readonly actionId: PersistedExternalActionId;
+  readonly programId: string;
+  readonly campaignId: string;
+  readonly campaignRevision: number;
+  readonly campaignDigest: string;
+  readonly policyVersion: number;
+  readonly policyHash: string;
+  readonly scopeRef: string;
+  readonly accountId: string | null;
+  readonly accountRole: TestIdentityRole | null;
+  readonly identityDigest: string | null;
+  readonly objectRef: string | null;
+  readonly ownershipDigest: string | null;
+  readonly payloadRef: string | null;
+  readonly operatorId: string;
+  readonly evidenceDigest: string;
+  readonly units: 1;
+  readonly status: ExternalActionAttemptStatus;
+  readonly reservedAt: string;
+  readonly startedAt: string | null;
+  readonly finishedAt: string | null;
+  readonly revision: number;
+  readonly reservationAuditId: string;
 }
 
 export interface OwnedObjectRecord {
