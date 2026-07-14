@@ -2,7 +2,7 @@
 
 ## Geltungsbereich
 
-Der produktive Code in `apps/` und `packages/` enthält den unveränderten Phase-1-Sicherheitskern sowie die lokale Phase-2-Control-Plane. `legacy/mvp/` ist ausschließlich eine unsichere, nicht produktive Audit-Referenz.
+Der produktive Code in `apps/` und `packages/` enthält den unveränderten Phase-1-Sicherheitskern sowie die lokale Phase-2-Control-Plane und den store-gebundenen Phase-3-External-Action-Evaluator. `legacy/mvp/` ist ausschließlich eine unsichere, nicht produktive Audit-Referenz.
 
 ## Nicht verhandelbare Regeln
 
@@ -17,7 +17,10 @@ Der produktive Code in `apps/` und `packages/` enthält den unveränderten Phase
 - Regelannahmen, Kampagnenfreigaben, Account-Schritte, rechtliche Erklärungen und Reportfreigaben dürfen niemals automatisch bestätigt werden.
 - Checkpoint-freie Demoidentitäten sind ausschließlich vorautorisierte In-Process-Fixtures. Sobald ein Mock-Account-Plan CAPTCHA, E-Mail, TOTP, Regeln, Bedingungen oder Rechtserklärungen enthält, muss der Workflow pausieren; kein Checkpoint darf automatisch erfüllt werden.
 - Externe Aktionen müssen über Registry, Schema, Policy, Scope, Ownership, Budget, menschlichen Kontrollpunkt und deterministischen Runner laufen.
-- Der Phase-2-Simulations-Evaluator ist noch keine produktive Evidence-Quelle. Vor jedem realen Adapter müssen Policy-, Scope-, Ownership- und Human-Gates aus aktuellen, persistierten und operatorgebundenen Control-Plane-Nachweisen abgeleitet werden.
+- Positive External-Action-Entscheidungen dürfen ausschließlich aus einem atomaren, aktuellen `ControlPlaneStore`-Snapshot entstehen. Caller-Booleans, Callback-Gates und Freitextsuche sind keine Autorisierung.
+- Proposal, Policy, Kampagnenrevision/-digest, Scope, Accountrolle, Ownership, Payload, Approval, Operator, Budget und Audit müssen exakt gebunden und vor Start sowie Settlement erneut geprüft werden.
+- Proposal-IDs, Attempts und Budgets sind persistent. Abbruch und Fehler erstatten kein Budget; Crash-Reservationen bleiben fail-closed blockierend.
+- Das Operatorlabel ist noch nicht authentifiziert oder signiert. Deshalb bleiben reale Runner unabhängig von vorhandener Evidence deaktiviert.
 - `external_integrations_enabled` bleibt standardmäßig sowie bei fehlender oder fehlerhafter Konfiguration effektiv `false`.
 - Der globale Kill Switch ist fail-closed; Lesefehler, fehlende Audit-Referenzen, Revisionsfehler und inkonsistente Clear-Zustände gelten als aktiv. Engagement pausiert aktive Kampagnen vor der Audit-Fortsetzung.
 - Sicherheitsgrenzen benötigen direkte Unit-, Property- und Integrationstests. Tests dürfen nicht zur Fehlerbehebung gelockert werden.

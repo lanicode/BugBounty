@@ -1,0 +1,98 @@
+PHASE 3 TEST RESULTS
+====================
+
+Date: 2026-07-14
+Branch: codex/phase-3-store-bound-evaluator
+Phase-2 baseline: 307344353ec3a0bcfc04a3f409c6dc4815df349b
+Node.js: v24.14.0
+pnpm: 11.7.0
+
+FINAL QUALITY GATES
+-------------------
+
+PASS  pnpm typecheck
+      tsc --noEmit
+
+PASS  pnpm lint
+      eslint . --max-warnings 0
+      0 warnings, 0 errors
+
+PASS  pnpm format:check
+      prettier --check .
+
+PASS  pnpm build
+      tsc -p tsconfig.build.json
+
+PASS  pnpm test
+      49/49 test files passed
+      247/247 tests passed
+
+PASS  pnpm test:coverage
+      49/49 test files passed
+      247/247 tests passed
+
+      Statements: 87.73% (3127/3564)
+      Branches:   82.76% (2161/2611)
+      Functions:  94.90% (670/706)
+      Lines:      88.88% (3016/3393)
+
+PASS  pnpm exec vitest run tests/unit/control-plane/database.test.ts
+      tests/unit/external-action-proposal.test.ts
+      tests/unit/external-actions-import-boundary.test.ts
+      tests/unit/external-actions.test.ts
+      tests/unit/store-bound-external-actions.test.ts
+      tests/property/store-bound-evaluator.property.test.ts
+      tests/integration/external-action-kill-switch.test.ts
+      tests/integration/store-bound-external-action.test.ts
+      8/8 test files passed
+      65/65 tests passed
+
+PASS  pnpm exec vitest run tests/property
+      7/7 test files passed
+      12/12 tests passed
+
+PASS  pnpm exec vitest run tests/integration
+      9/9 test files passed
+      36/36 tests passed
+      All listening sockets used 127.0.0.1 only.
+
+PASS  pnpm test:egress
+      4/4 test files passed
+      11/11 tests passed
+
+PASS  pnpm test:platform-source
+      4/4 test files passed
+      12/12 tests passed
+
+PASS  pnpm audit --audit-level high
+      No known vulnerabilities found
+      Network use was limited to the official npm package source.
+
+PASS  git diff --check
+
+PASS  git diff --name-only
+      0f0f508765ebec663c2d09dc22fa408c1de46a4f..HEAD --
+      packages/config packages/egress-guard packages/redaction
+      packages/secret-store packages/event-store packages/policy
+      packages/audit-log packages/recorder packages/shared apps/cli
+      No protected Phase-1 path changed.
+
+DIAGNOSTIC SANDBOX RUN
+----------------------
+
+The first unprivileged `pnpm test` run passed 234 tests and reported 10
+failures. Every failure was an operating-system `listen EPERM` denial while a
+test attempted to bind a local 127.0.0.1 mock server. The same suite was then
+run with explicit loopback permission and passed completely. This was an
+execution-sandbox restriction, not a product or assertion failure. No test was
+disabled, skipped, weakened, or rewritten to obtain the passing result.
+
+NOTES
+-----
+
+* Node.js emitted its documented ExperimentalWarning for node:sqlite.
+* No real platform, HackerOne, Bugcrowd, example, or bug-bounty target host was
+  contacted.
+* Product network and browser tests used only in-process mocks or 127.0.0.1.
+* Real integrations, active security tests, account automation, report
+  submission, triage delivery, and LLM-driven requests remained disabled.

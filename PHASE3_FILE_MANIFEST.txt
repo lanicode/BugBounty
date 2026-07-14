@@ -1,0 +1,40 @@
+PHASE 3 FILE MANIFEST
+=====================
+
+Baseline: 307344353ec3a0bcfc04a3f409c6dc4815df349b
+Branch: codex/phase-3-store-bound-evaluator
+
+M  AGENTS.md
+A  PHASE3_COMPLETION_REPORT.md
+A  PHASE3_EXTERNAL_ACTIONS.md
+A  PHASE3_FILE_MANIFEST.txt
+A  PHASE3_KNOWN_RISKS.md
+A  PHASE3_SECURITY_CORE_CHANGES.md
+A  PHASE3_TEST_RESULTS.txt
+M  README.md
+A  docs/PHASE2_BASELINE.md
+A  docs/PHASE3_ACCEPTANCE_CRITERIA.md
+A  docs/PHASE3_STORE_BOUND_EVALUATOR.md
+M  docs/ROADMAP.md
+M  docs/TESTING.md
+M  packages/control-plane/database.ts
+A  packages/control-plane/external-action-evidence.ts
+A  packages/control-plane/external-action-store.ts
+M  packages/control-plane/index.ts
+M  packages/control-plane/store.ts
+M  packages/control-plane/types.ts
+M  packages/external-actions/index.ts
+M  packages/external-actions/pipeline.ts
+M  packages/external-actions/proposal.schema.json
+A  packages/external-actions/proposal.ts
+A  tests/fixtures/store-bound-action.factory.ts
+M  tests/integration/external-action-kill-switch.test.ts
+A  tests/integration/store-bound-external-action.test.ts
+A  tests/property/store-bound-evaluator.property.test.ts
+M  tests/unit/control-plane/database.test.ts
+A  tests/unit/external-action-proposal.test.ts
+M  tests/unit/external-actions-import-boundary.test.ts
+M  tests/unit/external-actions.test.ts
+A  tests/unit/store-bound-external-actions.test.ts
+
+This manifest is the exact Phase-3 path set relative to the Phase-2 baseline.

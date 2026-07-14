@@ -27,9 +27,9 @@
 
 Reale Plattformadapter, Account-Erstellung, Browser-Sessions, aktive Tests und Report-Einreichung bleiben deaktiviert.
 
-## Phase 3 – lokale Vertrauens- und Wiederanlaufhärtung
+## Phase 3 – lokale Vertrauens- und Wiederanlaufhärtung (Teil 1 abgeschlossen)
 
-1. Den External-Action-Evaluator an aktuelle, persistierte Policy-, Campaign-, Scope-, Ownership- und Approval-Evidence binden.
+1. **Abgeschlossen:** Den External-Action-Evaluator an aktuelle, persistierte Policy-, Campaign-, Scope-, Ownership- und Approval-Evidence binden.
 2. Lokal authentifizierte Operator-Identität und signierte Freigaben ergänzen.
 3. Rotation und Wiederanlauf für den bereits Keychain-referenzierten Event-Schlüssel definieren.
 4. Crash-/Restart- und Mehrprozess-Tests für Approval Queue, Kill Switch und Event Store ergänzen.
