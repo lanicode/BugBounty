@@ -1,0 +1,36 @@
+PHASE 7 FILE MANIFEST
+=====================
+
+Baseline: baaa8a8d4b7b332cc2d6ddf84a259fa0366f9e28
+Branch: codex/phase-7-local-browser-journeys
+
+M  AGENTS.md
+A  PHASE7_COMPLETION_REPORT.md
+A  PHASE7_EXTERNAL_ACTIONS.md
+A  PHASE7_FILE_MANIFEST.txt
+A  PHASE7_KNOWN_RISKS.md
+A  PHASE7_SECURITY_CORE_CHANGES.md
+A  PHASE7_TEST_RESULTS.txt
+M  README.md
+M  SECURITY.md
+M  docs/DEPENDENCIES.md
+M  docs/LOCAL_DASHBOARD_GUIDE.md
+A  docs/PHASE6_BASELINE.md
+A  docs/PHASE7_ACCEPTANCE_CRITERIA.md
+A  docs/PHASE7_LOCAL_BROWSER_JOURNEYS.md
+M  docs/ROADMAP.md
+M  docs/TESTING.md
+M  package.json
+A  playwright.config.ts
+A  tests/browser/demo-saas-journey.spec.ts
+A  tests/browser/fixtures/local-demo.ts
+A  tests/browser/support/demo-response.ts
+A  tests/browser/support/journey-model.ts
+A  tests/browser/support/local-demo-harness.ts
+A  tests/browser/support/redacted-screenshot.ts
+A  tests/property/local-browser-journey-model.property.test.ts
+A  tests/unit/local-browser-demo-response.test.ts
+A  tests/unit/local-browser-import-boundary.test.ts
+A  tests/unit/local-browser-journey-model.test.ts
+A  tests/unit/local-browser-redacted-screenshot.test.ts
+M  tsconfig.json

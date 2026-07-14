@@ -1,4 +1,4 @@
-# Bug Bounty Copilot – lokale Phase-6-Control-Plane
+# Bug Bounty Copilot – lokale Phase-7-Browserqualifizierung
 
 Bug Bounty Copilot ist ein eigenes, lokal betriebenes Produkt für die sichere Vorbereitung künftiger Bug-Bounty-Workflows. Phase 3 bindet die External-Action-Pipeline an atomare, aktuelle und persistierte Policy-, Kampagnen-, Scope-, Ownership-, Budget- und Approval-Evidence.
 
@@ -24,6 +24,15 @@ Kampagnenpause und Audit-Fortsetzung besitzen geordnete Commitgrenzen. Das
 Audit-Log rehydriert seinen Hashketten-Head unter einer privaten
 prozessübergreifenden Lease; verwaiste Leases werden ausschließlich durch
 einen expliziten lokalen Offline-Recovery-Schritt entfernt.
+
+Phase 7 ergänzt einen ausschließlich testseitigen Playwright-Testharness gegen
+frische Demo-SaaS-Instanzen auf `127.0.0.1`. Owner-, Member- und
+External-Profile durchlaufen feste, read-only GET-Graphen zweimal in
+umgekehrter Reihenfolge. Jede Navigation passiert vor der ersten Seite den
+Phase-1-Egress-Guard und einen zusätzlichen exakten Schritt-Guard. Responses
+werden streng projiziert; Screenshot-Evidence verlässt den Prozess nur als
+Digest eines vollständig opaken, rollen- und zustandsgebundenen
+In-Memory-PNGs. Es existiert weiterhin kein produktiver Browser-Runner.
 
 Die Anwendung ist weiterhin **kein Live-Scanner**. Sie führt keine aktiven Sicherheitstests aus, erstellt keine realen Konten, besitzt keine funktionsfähige Plattformintegration und reicht keine Reports ein. Sämtliche Demonstrationen laufen deterministisch gegen In-Process-Mocks oder Loopback-Server. Externe Integrationen sind standardmäßig, bei fehlender oder fehlerhafter Konfiguration und bei Laufzeitfehlern deaktiviert.
 
@@ -82,6 +91,18 @@ pnpm phase2:simulate --confirm-local-simulation
 
 Die CLI benötigt ein interaktives TTY, zeigt zuerst das vollständige digest-gebundene Review-Paket an und akzeptiert an jedem Kontrollpunkt ausschließlich die exakte Eingabe `yes`. Ein Sammel- oder Non-TTY-Fallback existiert nicht.
 
+Die geschlossene Phase-7-Browserqualifizierung läuft separat und benötigt
+weder Keychain-Einträge noch Konten oder Browserprofile:
+
+```sh
+pnpm test:browser
+```
+
+Der Befehl startet nur kurzlebige Server auf `127.0.0.1`, läuft seriell ohne
+Retries und deaktiviert automatische Screenshots, Traces, Videos und
+Page-Snapshots. Die Details stehen in
+`docs/PHASE7_LOCAL_BROWSER_JOURNEYS.md`.
+
 Die rein lokale Event-Key-Administration besitzt einen getrennten CLI-Pfad.
 Status, explizite Legacy-v1-Adoption, monotone Rotation und die manuell
 bestätigte Recovery einer nach Prozessabbruch verbliebenen Mutation-Lease sind
@@ -128,6 +149,9 @@ Externe Runner sind nicht implementiert; `external_integrations_enabled` ist imm
 - `packages/account-simulation` und `packages/ownership-ledger`: rein lokale Account-Lifecycle-Simulation und kryptografisch gebundene Eigentumsnachweise.
 - `packages/demo-saas` und `packages/simulation`: lokale Demo-Domäne und reproduzierbarer 18-Schritte-Ablauf.
 - `packages/dashboard`: loopback-only HTTP-Control-Plane und Browseroberfläche.
+- `tests/browser`: ausschließlich testseitiger Playwright-Testharness mit
+  geschlossenem Rollen-/Routengraph, exakter Loopback-Policy und minimierter
+  Digest-Evidence; kein Produkt- oder External-Action-Runner.
 - `packages/event-store`: zwingend geänderter Phase-1-Sicherheitskern mit
   versionierten AES-256-GCM-Hüllen, expliziten Leseversionen,
   Hüllengrößenprüfung vor Dateianlage sowie Datei- und Verzeichnis-`fsync`.
@@ -138,4 +162,10 @@ Externe Runner sind nicht implementiert; `external_integrations_enabled` ist imm
   `packages/secret-store` und `packages/policy`: in Phase 6 unveränderte
   Phase-1-Komponenten.
 
-Bedienung und Grenzen stehen in `docs/LOCAL_DASHBOARD_GUIDE.md` und `docs/SIMULATION_GUIDE.md`. Die signierte Operatorgrenze ist in `docs/PHASE4_SIGNED_OPERATOR_APPROVALS.md`, der Event-Key-Lifecycle in `docs/PHASE5_EVENT_KEY_LIFECYCLE.md` und die lokale Recovery-Semantik in `docs/PHASE6_CONTROL_PLANE_RECOVERY.md` beschrieben. Der vollständige Phase-6-Nachweis steht in `PHASE6_COMPLETION_REPORT.md`.
+Bedienung und Grenzen stehen in `docs/LOCAL_DASHBOARD_GUIDE.md` und
+`docs/SIMULATION_GUIDE.md`. Die signierte Operatorgrenze ist in
+`docs/PHASE4_SIGNED_OPERATOR_APPROVALS.md`, der Event-Key-Lifecycle in
+`docs/PHASE5_EVENT_KEY_LIFECYCLE.md`, die lokale Recovery-Semantik in
+`docs/PHASE6_CONTROL_PLANE_RECOVERY.md` und der geschlossene Browserharness in
+`docs/PHASE7_LOCAL_BROWSER_JOURNEYS.md` beschrieben. Der vollständige
+Phase-7-Nachweis steht in `PHASE7_COMPLETION_REPORT.md`.

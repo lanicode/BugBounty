@@ -1,0 +1,157 @@
+PHASE 7 TEST RESULTS
+====================
+
+Date: 2026-07-14
+Branch: codex/phase-7-local-browser-journeys
+Phase-6 baseline: baaa8a8d4b7b332cc2d6ddf84a259fa0366f9e28
+Tested implementation: 97a6902 plus this documentation-only commit
+Node.js: v24.14.0
+pnpm: 11.7.0
+
+FINAL QUALITY GATES
+-------------------
+
+PASS  pnpm typecheck
+      tsc --noEmit
+
+PASS  pnpm lint
+      eslint . --max-warnings 0
+      0 warnings, 0 errors
+
+PASS  pnpm format:check
+      prettier --check .
+
+PASS  pnpm build
+      tsc -p tsconfig.build.json
+
+PASS  pnpm test
+      78/78 test files passed
+      414/414 tests passed
+
+PASS  pnpm test:coverage
+      vitest run --coverage --maxWorkers=1
+      78/78 test files passed
+      414/414 tests passed
+
+      Statements: 88.00% (4657/5292)
+      Branches:   82.65% (3064/3707)
+      Functions:  96.23% (921/957)
+      Lines:      89.18% (4495/5040)
+
+PASS  focused Phase-7 Vitest suite
+      5/5 test files passed
+      31/31 tests passed
+
+PASS  pnpm exec vitest run tests/property
+      13/13 test files passed
+      30/30 tests passed
+
+PASS  pnpm exec vitest run tests/integration
+      18/18 test files passed
+      69/69 tests passed
+      All listening product sockets used local 127.0.0.1 mocks only.
+
+PASS  pnpm test:egress
+      4/4 test files passed
+      11/11 tests passed
+
+PASS  pnpm test:platform-source
+      4/4 test files passed
+      12/12 tests passed
+
+PASS  pnpm test:browser
+      1/1 browser test file passed
+      2/2 browser tests passed
+      6 isolated role A/B journeys passed internally
+      0 requests reached the unapproved second loopback port
+      Chromium headless, workers=1, retries=0
+
+PASS  pnpm audit --audit-level high
+      No known vulnerabilities found
+      Network use was limited to the official npm package source.
+
+PASS  Playwright configuration guard
+      Missing PLAYWRIGHT_NO_COPY_PROMPT is set to 1 by the config.
+      Conflicting PLAYWRIGHT_NO_COPY_PROMPT=0 exits before browser start with
+      LOCAL_BROWSER_PAGE_SNAPSHOT_SETTING_INVALID.
+
+PASS  browser artifact scan
+      Only .local/phase7-playwright/results/.last-run.json remained.
+      No PNG, HAR, trace, WebM, error context or storage-state artifact.
+      The diagnostic secret marker was absent from .local and coverage.
+
+PASS  git diff --check
+
+PASS  protected Phase-1 path audit against Phase 6
+      No protected Phase-1 file changed.
+
+PHASE-7 SECURITY TESTS
+----------------------
+
+PASS  Journey model tests prove:
+      * exact canonical http://127.0.0.1:<ephemeral-port> origin only
+      * exact GET method and current fixed route only
+      * immutable, finite, acyclic Owner/Member/External route plans
+      * no caller-controlled URL, step, locator, script or browser object
+      * closed schemas, data descriptors and hard collection bounds
+      * canonical evidence and stable role replay digests
+
+PASS  Response projection tests prove:
+      * status, content type, length and security headers are exact
+      * UTF-8 and canonical JSON are required
+      * route-specific schemas reject extra or changed fields
+      * size and record-count bounds fail closed
+      * raw labels, identity references and canaries never enter evidence
+
+PASS  Screenshot boundary tests prove:
+      * role and state belong to the closed replay matrix
+      * mask geometry is exactly the 1280x720 viewport
+      * safe opaque mask colors are bound to role and state
+      * PNG signature, dimensions, chunk order, chunk allowlist and CRC pass
+      * metadata, unknown chunks, oversized and malformed PNGs block
+      * only digest and byte length are returned
+      * screenshot bytes are overwritten on success and error
+      * changing underlying DOM content does not change a same-state digest
+
+PASS  Browser integration proves:
+      * context guard is installed before the first page
+      * every server uses a fresh 127.0.0.1:0 binding
+      * forward and reverse role order yield identical isolated evidence
+      * each role runs twice in fresh server/context pairs
+      * start/end remain simulation with external integrations disabled
+      * Demo-SaaS revision and in-process snapshot remain unchanged
+      * cookies, local storage and session storage remain empty
+      * unexpected requests, pages, frames, dialogs, downloads and errors block
+      * a second local port receives exactly zero requests
+
+PASS  Existing regressions prove:
+      * Phase-1 egress, encryption, redaction, policy and storage remain active
+      * external integrations remain false and fail closed
+      * no product package or app gained browser startup capability
+      * no real adapter, transport, account path or report path was added
+
+DIAGNOSTIC RUNS
+---------------
+
+The first full-suite run in the restricted sandbox could not bind twelve
+loopback test servers and reported listen EPERM 127.0.0.1. The other 402 tests
+passed. The exact unchanged suite was rerun with local socket permission and
+passed 78/78 files and 414/414 tests. No assertion or test was disabled.
+
+Early Chromium diagnostics failed closed first on the Demo CSP and then on a
+76-pixel instead of viewport-height mask. The final implementation constructs
+and verifies a CSP-compatible full-viewport mask and retains the original CSP.
+No raw screenshot survived these diagnostics. One initial format check found
+demo-response.ts unformatted; Prettier corrected it and the final check passed.
+
+NETWORK SAFETY
+--------------
+
+No real platform, HackerOne, Bugcrowd, example or bug-bounty target host was
+contacted during development or testing. Product HTTP and browser traffic was
+limited to 127.0.0.1. The only non-product network access was package tooling
+against the official npm source (audit plus an automatic update-metadata query)
+and the requested GitHub git push. The metadata query failed closed in the
+sandbox and did not affect any quality gate.
+
+No tests were skipped, disabled, weakened or made green through retries.
