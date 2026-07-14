@@ -1,30 +1,28 @@
-import Ajv2020 from "ajv/dist/2020.js";
-import proposalSchema from "./proposal.schema.json" with { type: "json" };
+import { types } from "node:util";
 import type { Phase2RuntimeState } from "../phase2-config/runtime.js";
 import { SecurityError } from "../shared/errors.js";
-import { canonicalJson, type JsonValue } from "../shared/canonical.js";
+import type { JsonValue } from "../shared/canonical.js";
+import {
+  isTrustedControlPlaneStore,
+  type ControlPlaneStore,
+} from "../control-plane/store.js";
+import type {
+  ExternalActionEvidenceDefinition,
+  StoreBoundExternalActionAuthorization,
+} from "../control-plane/external-action-evidence.js";
+import type { ApprovalRecord } from "../control-plane/types.js";
 import {
   getExternalActionDefinition,
   type ExternalActionDefinition,
   type ExternalActionId,
 } from "./registry.js";
+import {
+  validateAndFreezeExternalActionProposal,
+  type ExternalActionProposal,
+} from "./proposal.js";
 
 export type ExternalActionKind = ExternalActionId;
-
-export interface ExternalActionProposal {
-  readonly version: 1;
-  readonly proposal_id: string;
-  readonly action_id: string;
-  readonly mode: "external" | "simulation";
-  readonly parameters: {
-    readonly campaign_ref: string | null;
-    readonly policy_hash_sha256: string | null;
-    readonly scope_ref: string | null;
-    readonly account_ref: string | null;
-    readonly object_ref: string | null;
-    readonly payload_ref: string | null;
-  };
-}
+export type { ExternalActionProposal } from "./proposal.js";
 
 export type ExternalActionTrace = readonly [
   "schema",
@@ -69,84 +67,126 @@ export interface DeterministicMockActionRunnerOptions {
   readonly deferredProposalIds?: readonly string[];
 }
 
-export interface ExternalActionGateEvaluator {
-  decidePolicy(execution: TrustedExternalActionExecution): boolean;
-  decideScope(execution: TrustedExternalActionExecution): boolean;
-  decideOwnership(execution: TrustedExternalActionExecution): boolean;
-  decideHumanCheckpoint(execution: TrustedExternalActionExecution): boolean;
+export interface StoreBoundActionProposalInput {
+  readonly proposalId: string;
+  readonly actionId: ExternalActionId;
+  readonly campaignRef: string;
+  readonly accountRef: string | null;
+  readonly objectRef: string | null;
+  readonly payloadRef: null;
+  readonly approvalRef: string;
+  readonly operatorRef: string;
 }
 
-export interface DeterministicSimulationGateDecisions {
-  readonly policy: boolean;
-  readonly scope: boolean;
-  readonly ownership: boolean;
-  readonly humanCheckpoint: boolean;
+export interface ExternalActionAuthorizationEvaluator {
+  authorizeAndReserve(
+    execution: TrustedExternalActionExecution,
+    runtimeMaxActions: number,
+    runtimeMaxConcurrency: number,
+  ): StoreBoundExternalActionAuthorization;
+  start(
+    execution: TrustedExternalActionExecution,
+    authorization: StoreBoundExternalActionAuthorization,
+  ): void;
+  abortReservation(
+    execution: TrustedExternalActionExecution,
+    authorization: StoreBoundExternalActionAuthorization,
+  ): void;
+  settle(
+    execution: TrustedExternalActionExecution,
+    authorization: StoreBoundExternalActionAuthorization,
+    outcome: "aborted" | "failed" | "succeeded",
+  ): void;
 }
 
-const trustedGateEvaluators = new WeakSet();
+const trustedAuthorizationEvaluators =
+  new WeakSet<ExternalActionAuthorizationEvaluator>();
+const trustedKillSwitches = new WeakSet<Phase2KillSwitch>();
 
-export class DeterministicSimulationGateEvaluator implements ExternalActionGateEvaluator {
-  readonly #decisions: DeterministicSimulationGateDecisions;
-  readonly #proposalBinding: string;
-
-  public constructor(
-    proposal: ExternalActionProposal,
-    decisions: DeterministicSimulationGateDecisions,
-  ) {
-    const suppliedDecisions: unknown = decisions;
-    if (!isExactGateDecisions(suppliedDecisions))
-      throw new SecurityError("ACTION_GATES_INVALID");
-    this.#proposalBinding = proposalBinding(proposal);
-    this.#decisions = Object.freeze({ ...suppliedDecisions });
-    trustedGateEvaluators.add(this);
+class DenyAllExternalActionEvaluator implements ExternalActionAuthorizationEvaluator {
+  public constructor() {
+    trustedAuthorizationEvaluators.add(this);
     Object.freeze(this);
   }
 
-  public decidePolicy(execution: TrustedExternalActionExecution): boolean {
-    return this.matches(execution) && this.#decisions.policy;
+  public authorizeAndReserve(): StoreBoundExternalActionAuthorization {
+    throw new SecurityError("ACTION_STORE_EVIDENCE_REQUIRED");
   }
 
-  public decideScope(execution: TrustedExternalActionExecution): boolean {
-    return this.matches(execution) && this.#decisions.scope;
+  public start(): void {
+    throw new SecurityError("ACTION_STORE_EVIDENCE_REQUIRED");
   }
 
-  public decideOwnership(execution: TrustedExternalActionExecution): boolean {
-    return this.matches(execution) && this.#decisions.ownership;
+  public abortReservation(): void {
+    throw new SecurityError("ACTION_STORE_EVIDENCE_REQUIRED");
   }
 
-  public decideHumanCheckpoint(
-    execution: TrustedExternalActionExecution,
-  ): boolean {
-    return this.matches(execution) && this.#decisions.humanCheckpoint;
-  }
-
-  private matches(execution: TrustedExternalActionExecution): boolean {
-    return this.#proposalBinding === proposalBinding(execution.proposal);
+  public settle(): void {
+    throw new SecurityError("ACTION_STORE_EVIDENCE_REQUIRED");
   }
 }
 
-const DENY_ALL_GATES = new DeterministicSimulationGateEvaluator(
-  {
-    version: 1,
-    proposal_id: "deny-all",
-    action_id: "platform_api_read",
-    mode: "simulation",
-    parameters: {
-      campaign_ref: "deny-all",
-      policy_hash_sha256: "0".repeat(64),
-      scope_ref: "deny-all",
-      account_ref: null,
-      object_ref: null,
-      payload_ref: null,
-    },
-  },
-  {
-    policy: false,
-    scope: false,
-    ownership: false,
-    humanCheckpoint: false,
-  },
-);
+export class StoreBoundExternalActionEvaluator implements ExternalActionAuthorizationEvaluator {
+  public constructor(private readonly store: ControlPlaneStore) {
+    if (!isTrustedControlPlaneStore(store))
+      throw new SecurityError("ACTION_STORE_UNTRUSTED");
+    trustedAuthorizationEvaluators.add(this);
+    Object.freeze(this);
+  }
+
+  public authorizeAndReserve(
+    execution: TrustedExternalActionExecution,
+    runtimeMaxActions: number,
+    runtimeMaxConcurrency: number,
+  ): StoreBoundExternalActionAuthorization {
+    return this.store.authorizeExternalAction({
+      proposal: execution.proposal,
+      definition: evidenceDefinition(execution.definition),
+      now: systemTimestamp(),
+      runtimeMaxActions,
+      runtimeMaxConcurrency,
+    });
+  }
+
+  public start(
+    execution: TrustedExternalActionExecution,
+    authorization: StoreBoundExternalActionAuthorization,
+  ): void {
+    this.store.startExternalAction(
+      execution.proposal,
+      evidenceDefinition(execution.definition),
+      authorization,
+      systemTimestamp(),
+    );
+  }
+
+  public abortReservation(
+    execution: TrustedExternalActionExecution,
+    authorization: StoreBoundExternalActionAuthorization,
+  ): void {
+    this.store.abortExternalActionReservation(
+      execution.proposal,
+      authorization,
+      monotonicSystemTimestamp(authorization.reservedAt),
+    );
+  }
+
+  public settle(
+    execution: TrustedExternalActionExecution,
+    authorization: StoreBoundExternalActionAuthorization,
+    outcome: "aborted" | "failed" | "succeeded",
+  ): void {
+    this.store.settleExternalAction(
+      execution.proposal,
+      evidenceDefinition(execution.definition),
+      authorization,
+      outcome,
+      systemTimestamp(),
+    );
+  }
+}
+
+const DENY_ALL_AUTHORIZATIONS = new DenyAllExternalActionEvaluator();
 
 const SUCCESS_TRACE: ExternalActionTrace = Object.freeze([
   "schema",
@@ -158,35 +198,18 @@ const SUCCESS_TRACE: ExternalActionTrace = Object.freeze([
   "runner",
 ]);
 
-const ajv = new Ajv2020({ allErrors: true, strict: true });
-const validate = ajv.compile<ExternalActionProposal>(proposalSchema);
-
 const trustedMockRunners = new WeakSet();
 const trustedDisabledRunners = new WeakSet();
 
-function proposalBinding(proposal: ExternalActionProposal): string {
-  return canonicalJson({
-    version: proposal.version,
-    proposalId: proposal.proposal_id,
-    actionId: proposal.action_id,
-    mode: proposal.mode,
-    parameters: {
-      campaignRef: proposal.parameters.campaign_ref,
-      policyHash: proposal.parameters.policy_hash_sha256,
-      scopeRef: proposal.parameters.scope_ref,
-      accountRef: proposal.parameters.account_ref,
-      objectRef: proposal.parameters.object_ref,
-      payloadRef: proposal.parameters.payload_ref,
-    },
-  });
-}
-
 export class Phase2KillSwitch {
   readonly #controller = new AbortController();
+  private readonly readState: (() => boolean) | undefined;
 
-  public constructor(
-    private readonly stateReader: Phase2KillSwitchStateReader | undefined,
-  ) {}
+  public constructor(stateReader: Phase2KillSwitchStateReader | undefined) {
+    this.readState = captureKillSwitchReader(stateReader);
+    trustedKillSwitches.add(this);
+    Object.freeze(this);
+  }
 
   public get signal(): AbortSignal {
     return this.#controller.signal;
@@ -199,13 +222,13 @@ export class Phase2KillSwitch {
 
   public assertInactive(): void {
     assertNotAborted(this.signal, "ACTION_KILL_SWITCH");
-    if (this.stateReader === undefined) {
+    if (this.readState === undefined) {
       this.kill();
       throw new SecurityError("ACTION_KILL_SWITCH");
     }
     let active: unknown;
     try {
-      active = this.stateReader.readActive();
+      active = this.readState();
     } catch {
       this.kill();
       throw new SecurityError("ACTION_KILL_SWITCH");
@@ -263,33 +286,36 @@ export class Phase2KillSwitch {
 }
 
 export class ExternalActionPipeline {
-  #active = 0;
-  #count = 0;
-
   private readonly runtime: Phase2RuntimeState;
   private readonly runner: DeterministicActionRunner;
   private readonly killSwitch: Phase2KillSwitch;
-  private readonly gates: ExternalActionGateEvaluator;
+  private readonly authorizer: ExternalActionAuthorizationEvaluator;
 
   public constructor(
     runtime: Phase2RuntimeState,
     runner: DeterministicActionRunner,
     killSwitch: Phase2KillSwitch,
-    gates: ExternalActionGateEvaluator = DENY_ALL_GATES,
+    authorizer: ExternalActionAuthorizationEvaluator = DENY_ALL_AUTHORIZATIONS,
   ) {
     assertTrustedRunner(runner);
-    assertTrustedGates(gates);
+    assertTrustedAuthorizer(authorizer);
+    assertTrustedKillSwitch(killSwitch);
     assertRuntimeBudget(runtime);
     this.runtime = runtime;
     this.runner = runner;
     this.killSwitch = killSwitch;
-    this.gates = gates;
+    this.authorizer = authorizer;
+    Object.freeze(this);
   }
 
   public async execute(value: unknown): Promise<ExternalActionResult> {
     this.killSwitch.assertInactive();
-    if (!validate(value)) throw new SecurityError("ACTION_SCHEMA_INVALID");
-    const proposal = freezeProposal(value);
+    let proposal: ExternalActionProposal;
+    try {
+      proposal = validateAndFreezeExternalActionProposal(value);
+    } catch {
+      throw new SecurityError("ACTION_SCHEMA_INVALID");
+    }
     const definition = getExternalActionDefinition(proposal.action_id);
     if (definition === undefined) throw new SecurityError("ACTION_UNKNOWN");
     if (proposal.mode === "external")
@@ -298,66 +324,112 @@ export class ExternalActionPipeline {
       throw new SecurityError("ACTION_SIMULATION_NOT_SUPPORTED");
     if (this.runner.kind !== "simulation_mock")
       throw new SecurityError("ACTION_RUNNER_MODE_INVALID");
-    if (proposal.parameters.campaign_ref === null)
-      throw new SecurityError("ACTION_CAMPAIGN_REFERENCE_REQUIRED");
-    if (proposal.parameters.policy_hash_sha256 === null)
-      throw new SecurityError("ACTION_POLICY_REFERENCE_REQUIRED");
+    if (proposal.parameters.payload_ref !== null)
+      throw new SecurityError("ACTION_PAYLOAD_REFERENCE_BLOCKED");
 
     const execution = resolveTrustedExecution(proposal, definition);
-    this.killSwitch.assertInactive();
-    assertGate(
-      () => this.gates.decidePolicy(execution),
-      "ACTION_POLICY_BLOCKED",
-    );
-    this.killSwitch.assertInactive();
-    if (execution.proposal.parameters.scope_ref === null)
-      throw new SecurityError("ACTION_SCOPE_REFERENCE_REQUIRED");
-    assertGate(() => this.gates.decideScope(execution), "ACTION_SCOPE_BLOCKED");
-    this.killSwitch.assertInactive();
     assertOwnershipReferences(execution);
-    assertGate(
-      () => this.gates.decideOwnership(execution),
-      "ACTION_OWNERSHIP_BLOCKED",
-    );
     this.killSwitch.assertInactive();
-    const release = this.enterBudget(definition.budget.units);
+    let authorization: StoreBoundExternalActionAuthorization | undefined;
+    let started = false;
+    let settlementAttempted = false;
     try {
-      this.killSwitch.assertInactive();
-      assertGate(
-        () => this.gates.decideHumanCheckpoint(execution),
-        "ACTION_HUMAN_CHECKPOINT_REQUIRED",
+      authorization = this.authorizer.authorizeAndReserve(
+        execution,
+        this.runtime.config.budgets.max_actions_total,
+        this.runtime.config.budgets.max_concurrency,
       );
+      this.killSwitch.assertInactive();
+      this.authorizer.start(execution, authorization);
+      started = true;
       this.killSwitch.assertInactive();
       const result = await this.killSwitch.monitor(() =>
         this.runner.run(execution, this.killSwitch.signal),
       );
       this.killSwitch.assertInactive();
+      settlementAttempted = true;
+      this.authorizer.settle(execution, authorization, "succeeded");
       return {
         proposalId: proposal.proposal_id,
         actionId: definition.actionId,
         result,
         trace: SUCCESS_TRACE,
       };
-    } finally {
-      release();
+    } catch (error) {
+      if (authorization !== undefined && !started && !settlementAttempted) {
+        try {
+          this.authorizer.abortReservation(execution, authorization);
+        } catch (settlementError) {
+          throw asError(settlementError);
+        }
+      }
+      if (authorization !== undefined && started && !settlementAttempted) {
+        const outcome = isKillError(error) ? "aborted" : "failed";
+        try {
+          this.authorizer.settle(execution, authorization, outcome);
+        } catch (settlementError) {
+          throw asError(settlementError);
+        }
+      }
+      throw asError(error);
     }
   }
+}
 
-  private enterBudget(units: number): () => void {
-    if (this.#active >= this.runtime.config.budgets.max_concurrency)
-      throw new SecurityError("ACTION_CONCURRENCY_EXCEEDED");
-    if (this.#count + units > this.runtime.config.budgets.max_actions_total)
-      throw new SecurityError("ACTION_BUDGET_EXCEEDED");
-    this.#active += 1;
-    this.#count += units;
-    let released = false;
-    return () => {
-      if (!released) {
-        released = true;
-        this.#active -= 1;
-      }
-    };
-  }
+export function prepareStoreBoundExternalActionProposal(
+  store: ControlPlaneStore,
+  input: StoreBoundActionProposalInput,
+): ExternalActionProposal {
+  assertTrustedStore(store);
+  const definition = requiredSimulationDefinition(input.actionId);
+  const context = store.describeExternalActionContext({
+    definition: evidenceDefinition(definition),
+    campaignId: input.campaignRef,
+    accountId: input.accountRef,
+    objectRef: input.objectRef,
+    payloadRef: input.payloadRef,
+    now: systemTimestamp(),
+  });
+  return validateAndFreezeExternalActionProposal({
+    version: 2,
+    proposal_id: input.proposalId,
+    action_id: input.actionId,
+    mode: "simulation",
+    parameters: {
+      program_ref: context.programId,
+      campaign_ref: context.campaignId,
+      campaign_revision: context.campaignRevision,
+      campaign_digest: context.campaignDigest,
+      policy_version: context.policyVersion,
+      policy_hash_sha256: context.policyHash,
+      scope_ref: context.scopeRef,
+      account_ref: context.accountId,
+      account_role: context.accountRole,
+      object_ref: context.objectRef,
+      payload_ref: context.payloadRef,
+      approval_ref: input.approvalRef,
+      operator_ref: input.operatorRef,
+    },
+  });
+}
+
+export function enqueueStoreBoundExternalActionApproval(
+  store: ControlPlaneStore,
+  value: unknown,
+): ApprovalRecord {
+  assertTrustedStore(store);
+  const proposal = validateAndFreezeExternalActionProposal(value);
+  const definition = requiredSimulationDefinition(proposal.action_id);
+  if (proposal.mode !== "simulation")
+    throw new SecurityError("EXTERNAL_INTEGRATIONS_DISABLED");
+  const createdAt = systemTimestamp();
+  const expiresAt = new Date(Date.parse(createdAt) + 5 * 60_000).toISOString();
+  return store.createExternalActionApproval({
+    proposal,
+    definition: evidenceDefinition(definition),
+    createdAt,
+    expiresAt,
+  });
 }
 
 function assertRuntimeBudget(runtime: Phase2RuntimeState): void {
@@ -380,50 +452,30 @@ function assertRuntimeBudget(runtime: Phase2RuntimeState): void {
     throw new SecurityError("ACTION_RUNTIME_INVALID");
 }
 
-function isExactGateDecisions(
-  value: unknown,
-): value is DeterministicSimulationGateDecisions {
-  if (typeof value !== "object" || value === null) return false;
-  try {
-    return (
-      Reflect.getPrototypeOf(value) === Object.prototype &&
-      Reflect.ownKeys(value).sort().join(",") ===
-        "humanCheckpoint,ownership,policy,scope" &&
-      isBooleanDataProperty(value, "policy") &&
-      isBooleanDataProperty(value, "scope") &&
-      isBooleanDataProperty(value, "ownership") &&
-      isBooleanDataProperty(value, "humanCheckpoint")
-    );
-  } catch {
-    return false;
-  }
-}
-
-function isBooleanDataProperty(value: object, key: string): boolean {
-  const descriptor = Object.getOwnPropertyDescriptor(value, key);
-  return (
-    descriptor !== undefined &&
-    "value" in descriptor &&
-    typeof descriptor.value === "boolean"
-  );
-}
-
 function asError(value: unknown): Error {
   return value instanceof Error ? value : new Error("ACTION_RUNNER_FAILED");
 }
 
-function assertTrustedGates(gates: ExternalActionGateEvaluator): void {
+function isKillError(value: unknown): boolean {
+  return value instanceof SecurityError && value.code === "ACTION_KILL_SWITCH";
+}
+
+function assertTrustedAuthorizer(
+  authorizer: ExternalActionAuthorizationEvaluator,
+): void {
   let prototype: object | null;
   try {
-    prototype = Reflect.getPrototypeOf(gates);
+    prototype = Reflect.getPrototypeOf(authorizer);
   } catch {
-    throw new SecurityError("ACTION_GATES_UNTRUSTED");
+    throw new SecurityError("ACTION_AUTHORIZER_UNTRUSTED");
   }
+  const storeBound = prototype === StoreBoundExternalActionEvaluator.prototype;
+  const denyAll = prototype === DenyAllExternalActionEvaluator.prototype;
   if (
-    !trustedGateEvaluators.has(gates) ||
-    prototype !== DeterministicSimulationGateEvaluator.prototype
+    !trustedAuthorizationEvaluators.has(authorizer) ||
+    (!storeBound && !denyAll)
   )
-    throw new SecurityError("ACTION_GATES_UNTRUSTED");
+    throw new SecurityError("ACTION_AUTHORIZER_UNTRUSTED");
 }
 
 function assertTrustedRunner(runner: DeterministicActionRunner): void {
@@ -443,13 +495,57 @@ function assertTrustedRunner(runner: DeterministicActionRunner): void {
     throw new SecurityError("ACTION_RUNNER_UNTRUSTED");
 }
 
-function freezeProposal(
-  proposal: ExternalActionProposal,
-): ExternalActionProposal {
-  return Object.freeze({
-    ...proposal,
-    parameters: Object.freeze({ ...proposal.parameters }),
-  });
+function assertTrustedKillSwitch(killSwitch: Phase2KillSwitch): void {
+  let prototype: object | null;
+  try {
+    prototype = Reflect.getPrototypeOf(killSwitch);
+  } catch {
+    throw new SecurityError("ACTION_KILL_SWITCH_UNTRUSTED");
+  }
+  if (
+    !trustedKillSwitches.has(killSwitch) ||
+    prototype !== Phase2KillSwitch.prototype
+  )
+    throw new SecurityError("ACTION_KILL_SWITCH_UNTRUSTED");
+}
+
+function captureKillSwitchReader(
+  value: Phase2KillSwitchStateReader | undefined,
+): (() => boolean) | undefined {
+  if (value === undefined) return undefined;
+  try {
+    if (
+      types.isProxy(value) ||
+      Reflect.getPrototypeOf(value) !== Object.prototype ||
+      Reflect.ownKeys(value).length !== 1
+    )
+      throw new SecurityError("ACTION_KILL_SWITCH_READER_INVALID");
+    const descriptor = Object.getOwnPropertyDescriptor(value, "readActive");
+    const candidate: unknown = descriptor?.value;
+    if (
+      descriptor === undefined ||
+      !("value" in descriptor) ||
+      !isUnknownCallback(candidate)
+    )
+      throw new SecurityError("ACTION_KILL_SWITCH_READER_INVALID");
+    return () => {
+      const state = candidate();
+      if (typeof state !== "boolean")
+        throw new SecurityError("ACTION_KILL_SWITCH");
+      return state;
+    };
+  } catch (error) {
+    if (
+      error instanceof SecurityError &&
+      error.code === "ACTION_KILL_SWITCH_READER_INVALID"
+    )
+      throw error;
+    throw new SecurityError("ACTION_KILL_SWITCH_READER_INVALID");
+  }
+}
+
+function isUnknownCallback(value: unknown): value is () => unknown {
+  return typeof value === "function" && !types.isProxy(value);
 }
 
 function resolveTrustedExecution(
@@ -474,27 +570,68 @@ function assertOwnershipReferences(
   execution: TrustedExternalActionExecution,
 ): void {
   const requirement = execution.definition.ownershipCheck;
+  const parameters = execution.proposal.parameters;
+  if ((parameters.account_ref === null) !== (parameters.account_role === null))
+    throw new SecurityError("ACTION_OWNERSHIP_REFERENCE_REQUIRED");
+  if (
+    requirement === "not_applicable" &&
+    (parameters.account_ref !== null || parameters.object_ref !== null)
+  )
+    throw new SecurityError("ACTION_OWNERSHIP_REFERENCE_REQUIRED");
   if (
     requirement === "account" &&
-    execution.proposal.parameters.account_ref === null
+    (parameters.account_ref === null || parameters.object_ref !== null)
   )
     throw new SecurityError("ACTION_OWNERSHIP_REFERENCE_REQUIRED");
   if (
     requirement === "object" &&
-    (execution.proposal.parameters.account_ref === null ||
-      execution.proposal.parameters.object_ref === null)
+    (parameters.account_ref === null || parameters.object_ref === null)
   )
     throw new SecurityError("ACTION_OWNERSHIP_REFERENCE_REQUIRED");
 }
 
-function assertGate(decide: () => boolean, reason: string): void {
-  let decision: unknown;
+function requiredSimulationDefinition(
+  actionId: string,
+): ExternalActionDefinition {
+  const definition = getExternalActionDefinition(actionId);
+  if (definition === undefined) throw new SecurityError("ACTION_UNKNOWN");
+  if (
+    !definition.simulationSupported ||
+    definition.fixedTargetPolicy.kind !== "registry_loopback_mock"
+  )
+    throw new SecurityError("ACTION_SIMULATION_NOT_SUPPORTED");
+  return definition;
+}
+
+function evidenceDefinition(
+  definition: ExternalActionDefinition,
+): ExternalActionEvidenceDefinition {
+  return Object.freeze({
+    actionId: definition.actionId,
+    targetClass: definition.targetClass,
+    ownershipCheck: definition.ownershipCheck,
+    ownedObjectAction:
+      definition.actionId === "target_request" ? "offline_inspect" : null,
+    budgetUnits: definition.budget.units,
+  });
+}
+
+function assertTrustedStore(store: ControlPlaneStore): void {
+  if (!isTrustedControlPlaneStore(store))
+    throw new SecurityError("ACTION_STORE_UNTRUSTED");
+}
+
+function systemTimestamp(): string {
   try {
-    decision = decide();
+    return new Date(Date.now()).toISOString();
   } catch {
-    throw new SecurityError(reason);
+    throw new SecurityError("ACTION_CLOCK_INVALID");
   }
-  if (decision !== true) throw new SecurityError(reason);
+}
+
+function monotonicSystemTimestamp(earliest: string): string {
+  const current = systemTimestamp();
+  return Date.parse(current) < Date.parse(earliest) ? earliest : current;
 }
 
 function assertNotAborted(signal: AbortSignal, code: string): void {
@@ -679,5 +816,11 @@ Object.freeze(DeterministicMockActionRunner.prototype);
 Object.freeze(DeterministicMockActionRunner);
 Object.freeze(DisabledExternalActionRunner.prototype);
 Object.freeze(DisabledExternalActionRunner);
-Object.freeze(DeterministicSimulationGateEvaluator.prototype);
-Object.freeze(DeterministicSimulationGateEvaluator);
+Object.freeze(StoreBoundExternalActionEvaluator.prototype);
+Object.freeze(StoreBoundExternalActionEvaluator);
+Object.freeze(DenyAllExternalActionEvaluator.prototype);
+Object.freeze(DenyAllExternalActionEvaluator);
+Object.freeze(Phase2KillSwitch.prototype);
+Object.freeze(Phase2KillSwitch);
+Object.freeze(ExternalActionPipeline.prototype);
+Object.freeze(ExternalActionPipeline);
