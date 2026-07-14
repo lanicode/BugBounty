@@ -24,6 +24,7 @@
     "policy:hash": "tsx apps/cli/index.ts policy:hash",
     "policy:verify": "tsx apps/cli/index.ts policy:verify",
     "audit:verify": "tsx apps/cli/index.ts audit:verify",
+    "event-key:admin": "tsx apps/event-key-cli/index.ts",
     "phase2:simulate": "tsx apps/phase2-cli/index.ts simulate"
   },
   "dependencies": {
