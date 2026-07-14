@@ -1,4 +1,4 @@
-# Lokales Phase-2-Dashboard
+# Lokale Phase-8-Anwendung
 
 ## Voraussetzungen
 
@@ -7,34 +7,45 @@
 - pnpm 11
 - lokal installierte, im Lockfile exakt aufgelöste Abhängigkeiten
 
-## Event-Schlüssel lokal einrichten
-
-Dashboard und Phase-2-CLI verwenden ausschließlich `MacOSKeychainSecretStore`. Es gibt keinen Klartext- oder In-Memory-Fallback im Produktpfad. Vor dem ersten Simulationslauf einmal lokal ausführen:
+Für den normalen geführten Demoablauf werden keine Tokens, Konten,
+Keychain-Einträge oder Terminalparameter benötigt:
 
 ```sh
-security add-generic-password -U -s bugbounty-copilot -a event-store-v1 -w "$(openssl rand -base64 24)"
-export BUGBOUNTY_EVENT_KEY_MIN_VERSION=1
+pnpm install --frozen-lockfile
+pnpm app
 ```
 
-Die 24 zufälligen Binärbytes werden durch Base64 zu exakt 32 ASCII-Bytes und unter der Referenz `keychain://bugbounty-copilot/event-store-v1` gespeichert. Den Wert weder anzeigen noch in Shell-Historien, Skripte, Logs oder das Repository kopieren. Fehlt der Eintrag, ist er unlesbar oder nicht exakt 32 Byte lang, endet der Lauf mit `SIMULATION_EVENT_SECRET_UNAVAILABLE`, bevor der Kill Switch freigegeben oder Control-Plane-Zustand verändert wird. Auf anderen Betriebssystemen bleibt dieser Produktpfad fail-closed deaktiviert.
+Dashboard, Control Plane und Demo-SaaS starten dabei gemeinsam. Fehlende
+Kryptografie-Voraussetzungen werden im Dashboard als Setupzustand angezeigt;
+der globale Kill Switch bleibt aktiv. Die folgenden Keychain-Schritte sind nur
+für den separaten signierten 18-Schritte-Control-Plane-Lauf erforderlich.
 
-`BUGBOUNTY_EVENT_KEY_MIN_VERSION` ist für jeden Start verpflichtend und
-besitzt keinen Default. Der Wert ist ein positiver, store-spezifischer
-Rollback-Anker. Fehlende oder ungültige Konfiguration blockiert mit
-`EVENT_KEY_MIN_VERSION_CONFIG_INVALID`; ein persistierter Head unter dem Wert
-blockiert ebenfalls. Ein wirklich frischer Store beginnt ausschließlich mit
-Version 1.
+## Event-Schlüssel lokal einrichten
+
+Der normale Phase-8-Guided-Flow benötigt keinen Event-Schlüssel. Ohne
+vollständige Kryptografie-Konfiguration startet `pnpm app` als
+`local_setup_shell`: Der Event Store wird nicht konstruiert, positive
+persistierende Core-Routen bleiben gesperrt und der Kill Switch bleibt aktiv.
+
+Nur der getrennte signierte 18-Schritte-Control-Plane-Pfad und die
+Event-Key-Administration verwenden `MacOSKeychainSecretStore`. Dafür muss ein
+exakt 32 Byte langer Schlüssel separat, offline und nach einer geprüften
+Keychain-Betriebsanweisung bereitgestellt werden. Dieses Dokument enthält
+keinen Secret-tragenden Shell-Einzeiler. Schlüsselmaterial darf nicht als
+Prozessargument, Shell-Historie, Skript, Log, Datei, Umgebungsvariable oder
+Repositoryinhalt erscheinen. Danach wird ausschließlich der nicht geheime,
+positive Rollback-Anker gesetzt, zum Beispiel
+`BUGBOUNTY_EVENT_KEY_MIN_VERSION=1`. Fehlende, ungültige oder unter dem
+authentifizierten Head liegende Konfiguration blockiert den sicheren Core
+fail-closed.
 
 ## Lokale Operator-Credential einrichten
 
-Phase 4 verlangt für Simulation, Approval-Entscheidungen und Kill-Clear einen
-Ed25519-PKCS#8-Schlüssel aus demselben macOS-Schlüsselbund. Die Bereitstellung
-ist bewusst ein manueller lokaler Administrationsschritt und erfolgt nicht
-durch die Anwendung:
-
-```sh
-security add-generic-password -U -s bugbounty-copilot -a operator-ed25519-v1 -T /usr/bin/security -X "$(openssl genpkey -algorithm ED25519 -outform DER 2>/dev/null | xxd -p -c 256)"
-```
+Phase 4 verlangt für den signierten Simulator, positive Approval-
+Entscheidungen und Kill-Clear eine Ed25519-PKCS#8-Credential aus demselben
+macOS-Schlüsselbund. Die Bereitstellung ist ein separater, geprüfter lokaler
+Offline-Administrationsschritt und erfolgt niemals durch die Anwendung oder
+über Secret-tragende Kommandozeilenargumente.
 
 Danach ausschließlich die nicht geheimen Metadaten setzen:
 
@@ -45,10 +56,11 @@ export BUGBOUNTY_OPERATOR_KEY_REVISION=1
 ```
 
 Der private Schlüssel darf niemals als Datei, Umgebungsvariablenwert, Log oder
-Repositoryinhalt abgelegt werden. Fehlende Metadaten deaktivieren die lokale
-Signierfähigkeit. Partielle/ungültige Metadaten, Keychain-Lesefehler oder ein
-ungültiger Schlüssel lassen den Start fail-closed abbrechen. Eine bereits
-eingeschriebene andere Credential wird nicht automatisch ersetzt.
+Repositoryinhalt abgelegt werden. Fehlende, partielle oder ungültige
+Metadaten, Keychain-Lesefehler und ungültige Schlüssel halten den sicheren
+Core gesperrt; die Loopback-Setup-Shell bleibt verfügbar und zeigt den
+blockierten Zustand. Eine bereits eingeschriebene andere Credential wird
+nicht automatisch ersetzt.
 
 ## Start
 
@@ -56,20 +68,24 @@ Im Repository ausführen:
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm dashboard
+pnpm app
 ```
 
-Der Start benötigt weiterhin die im selben Terminal gesetzte Mindestversion.
-Nach einer Rotation beispielsweise auf v2 lautet sie
+Der UI-Start benötigt keine Mindestversion. Nur signierte und verschlüsselte
+Control-Plane-Aktionen werden ohne passenden Anker deaktiviert. Nach einer
+Rotation beispielsweise auf v2 lautet dieser für solche Aktionen
 `BUGBOUNTY_EVENT_KEY_MIN_VERSION=2`.
 
-Die Control Plane bindet ausschließlich an:
+Die Control Plane bindet bevorzugt an:
 
 ```text
 http://127.0.0.1:4173
 ```
 
-Die separate Demo-SaaS erhält einen zufälligen freien Loopback-Port. Beide Adressen werden beim Start ausgegeben. Eine Bindung an `0.0.0.0`, `::` oder einen externen Host ist nicht vorgesehen.
+Ist Port `4173` bereits lokal belegt, wird ein ephemerer Loopback-Port
+verwendet und ausdrücklich ausgegeben. Die separate Demo-SaaS erhält immer
+einen zufälligen freien Loopback-Port. Eine Bindung an `0.0.0.0`, `::` oder
+einen externen Host ist nicht vorgesehen.
 
 ## Sicherheitsstatus
 
@@ -77,12 +93,34 @@ Jede Seite zeigt sichtbar:
 
 - `SIMULATIONSMODUS`
 - `EXTERNE INTEGRATIONEN DEAKTIVIERT`
+- `KEINE REALE REPORT-EINREICHUNG`
 
 Eine neue lokale Datenbank und jeder Dashboard-Start aktiviert den globalen Kill Switch. Clear-Zustände sind an Control-Plane-ID, Credential, Schlüsselrevision, Session, Nonce, Revision, Zeitfenster, Signatur, Audit-ID und Kontextdigest gebunden. Fehlende, unlesbare oder inkonsistente Zustände werden als aktiv behandelt. Engagement pausiert aktive Kampagnen. Die Oberfläche schützt mutierende Requests mit exakter Host-/Origin-Prüfung und einem zufälligen CSRF-Token; Skripte und Styles werden nur als eigene statische Ressourcen unter einer restriktiven Content Security Policy ausgeliefert.
 
-## Simulation ausführen
+## Geführten Phase-8-Demoablauf ausführen
 
-1. Dashboard unter `http://127.0.0.1:4173` öffnen.
+Die beim Start ausgegebene Dashboard-URL öffnen und den 21 festen Schritten
+folgen. Testmail-Schema, zwei lokale Programmnamen, optionale
+Admin-Asset-Exclusion, lesbare oder strukturierte Policy-Fixture sowie die
+Budgets `0|4|8` und `0|1|2` sind über sichere UI-Controls wählbar. Für den
+festen Baseline/Test/Kontrolltest-Rollengrenzfall sind Owner, Member und
+External gemeinsam erforderlich. Die Policy wird aus einer lokalen Fixture
+importiert und zeigt Quelle, Inhalt, Hash und vollständigen Diff; jeder
+rechtlich oder wirkungsbezogen relevante Kontrollpunkt benötigt einen
+ausdrücklichen Klick.
+
+Die Journey verwendet Katalog-ID `phase7-local-demo-role-boundary` und den
+gepinnten Digest
+`f93fda8ba5203f1de6c7c4e2983c78c62d0767597a837d530324e6dc740673e5`.
+Das Produkt projiziert 20 Katalogschritte, startet keinen Browser und erzeugt
+keinen Request. Ein eigener Button öffnet das lokale Ergebnis. Identitäten,
+Objekt, Canary-Digest und Demo-Policy stammen aus der validierten
+Demo-SaaS-Projektion; Drift blockiert weitere Aktionen und markiert Evidence
+und Report als ungültig.
+
+## Signierte 18-Schritte-Control-Plane-Simulation ausführen
+
+1. Die beim Start ausgegebene Dashboard-URL öffnen.
 2. Im Bereich „Vollständige lokale Simulation“ alle sechs menschlichen Bestätigungen einzeln setzen.
 3. Simulation starten.
 4. Die 18 Schritte, Policy-Diff, Kampagnenstatus, Testidentitäten, Ownership Ledger, Freigaben und Report-Entwurf prüfen.
@@ -106,8 +144,9 @@ Owner, Member und External sind vorautorisierte, checkpoint-freie In-Process-Dem
 
 ## Geschlossene lokale Browserjourney testen
 
-Phase 7 besitzt einen getrennten test-only Browserpfad. Er benötigt keine
-Keychain-Credential und darf nicht aus dem Dashboard gestartet werden:
+Phase 7 besitzt einen getrennten test-only Browserpfad auf demselben
+produktneutralen Journey-Katalog. Er benötigt keine Keychain-Credential und
+darf nicht aus dem Dashboard gestartet werden:
 
 ```sh
 pnpm test:browser
@@ -136,8 +175,9 @@ vollständig beenden. Status lesen:
 pnpm event-key:admin status
 ```
 
-Das Dashboard initialisiert nur einen nachweislich leeren Store automatisch
-als v1. Derselbe Schritt kann bewusst separat ausgeführt werden:
+Der Phase-8-App-Start konstruiert den Event Store nicht. Erst der vollständig
+konfigurierte signierte Simulator öffnet einen nachweislich leeren Store bei
+Bedarf sicher als v1. Derselbe Schritt kann bewusst separat ausgeführt werden:
 
 ```sh
 pnpm event-key:admin initialize --confirm-local-event-key-initialize

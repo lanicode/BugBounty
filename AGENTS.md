@@ -8,10 +8,16 @@ Phase-3-External-Action-Evaluator, die lokale signierte
 Phase-4-Operatorgrenze, den restart-sicheren Phase-5-Event-Key-Lifecycle und
 die lokale Phase-6-Crash-/Mehrprozesshärtung. Phase 7 ergänzt ausschließlich
 testseitige lokale Browserqualifizierung unter `tests/browser`; sie ist kein
-Produkt- oder External-Action-Runner und ändert keinen Phase-1-Pfad. Phase 6
-ändert innerhalb des Phase-1-Kerns zwingend und dokumentiert ausschließlich
-`packages/audit-log`. `legacy/mvp/` ist ausschließlich eine unsichere, nicht
-produktive Audit-Referenz.
+Produkt- oder External-Action-Runner und ändert keinen Phase-1-Pfad. Phase 8
+ergänzt eine loopbackgebundene, fail-closed startbare Produktoberfläche und
+einen rein lokalen, deterministischen Präsentationsworkflow. Dieser Workflow
+ist weder Scan-Engine noch Browserrunner, erzeugt keine Netzwerkaktion und ist
+deutlich als Simulation beziehungsweise Test-Harness-validierte Darstellung
+gekennzeichnet. Innerhalb des Phase-1-Kerns änderte Phase 5 zwingend den Event
+Store und Phase 6 zwingend das Audit-Log; beide Änderungen sind in ihren
+Security-Core-Berichten dokumentiert. Phase 8 verändert den Phase-1-Kern
+nicht. `legacy/mvp/` ist ausschließlich eine unsichere, nicht produktive
+Audit-Referenz.
 
 ## Nicht verhandelbare Regeln
 
@@ -31,9 +37,15 @@ produktive Audit-Referenz.
 - Keine Roh-HARs, Rohbodys, Tokens, Cookies, Zugangsdaten oder Identitätsdaten persistieren oder loggen.
 - Persistierung erfolgt erst nach Redaktion und Größenprüfung. Eventdaten werden ausschließlich authentifiziert verschlüsselt gespeichert.
 - Produktionsschlüssel stammen ausschließlich aus dem OS-Keychain-Adapter. Es gibt keinen Klartext-Fallback.
-- `BUGBOUNTY_EVENT_KEY_MIN_VERSION` ist für jeden Produkt- und Adminstart
-  verpflichtend. Es gibt keinen Default; fehlende, ungültige oder unter dem
-  authentifizierten Head liegende Konfiguration blockiert fail-closed.
+- `BUGBOUNTY_EVENT_KEY_MIN_VERSION` ist für jeden Start des verschlüsselten
+  Event-Runtimes und für jeden Event-Key-Adminstart verpflichtend. Es gibt
+  keinen Default. `pnpm app` darf ohne diese Konfiguration ausschließlich die
+  loopbackgebundene `local_setup_shell` öffnen: Der Event Store wird nicht
+  konstruiert und alle positiven persistierenden Core-Routen bleiben
+  serverseitig gesperrt; nur Kill-Switch-Engagement und der flüchtige, klar
+  simulierte Guided Flow bleiben verfügbar. Ungültige oder unter dem
+  authentifizierten Head liegende Konfiguration blockiert weiterhin
+  fail-closed.
 - Event-Key-Versionen werden monoton um exakt eins aktiviert: neue Events
   verwenden nur den neuen Head, alte Hüllen bleiben nur über ausdrücklich
   aktivierte historische Versionen lesbar. Automatisches Re-Keying und
@@ -92,6 +104,16 @@ produktive Audit-Referenz.
 - `packages/external-actions`: einzige Registry und Gate-Pipeline für künftige externe Wirkungen.
 - `packages/operator-auth`: einzige lokale Ed25519-Signaturgrenze für Enrollment, Approval-Entscheidungen und Kill-Switch-Clear.
 - `packages/dashboard` und `packages/demo-saas`: ausschließlich `127.0.0.1`, feste Routen und lokale Mocks.
+- `packages/local-runtime`: reine, redigierte Readiness-Ableitung ohne I/O oder
+  positive Capability-Erzeugung.
+- `packages/local-product`: in-memory Präsentationszustand mit exakt
+  validierten lokalen UI-Auswahlen für den geführten Phase-8-Ablauf; an den
+  tatsächlichen Demo-SaaS-Snapshot und den gemeinsamen Phase-7-Journey-Katalog
+  gebunden, aber keine Autorisierungsgrenze und kein Egress.
+- `packages/local-journey-catalog`: einzige produktionsneutrale Quelle des
+  geschlossenen lokalen Journey-Profils; Produktcode projiziert nur den
+  Katalog, während ausschließlich der Phase-7-Test-Harness Browser-Evidence
+  erzeugt.
 - `tests/browser`: geschlossene lokale Playwright-Testinfrastruktur; niemals
   aus `apps/`, `packages/external-actions`, Control Plane oder LLM-Pfaden
   importieren.

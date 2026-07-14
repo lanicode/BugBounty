@@ -2,16 +2,21 @@
 
 Die Simulation ist ein reproduzierbarer, rein lokaler Produktdurchstich. Sie benutzt In-Process-Mocks und optionale Loopback-Server, aber weder reale Plattformen noch externe Ziele.
 
-## Einmalige Keychain-Voraussetzung
+## Keychain-Voraussetzung nur für den signierten Core-Pfad
 
-Produktive Dashboard- und CLI-Läufe benötigen den exakt 32 Byte langen Schlüssel unter `keychain://bugbounty-copilot/event-store-v1`:
+Der normale Phase-8-Guided-Flow benötigt keine Credential. `pnpm app` startet
+ohne vollständige Kryptografie-Konfiguration als Loopback-
+`local_setup_shell`; der Event Store wird nicht konstruiert und positive
+persistierende Core-Routen bleiben gesperrt.
 
-```sh
-security add-generic-password -U -s bugbounty-copilot -a event-store-v1 -w "$(openssl rand -base64 24)"
-export BUGBOUNTY_EVENT_KEY_MIN_VERSION=1
-```
-
-Der Wert wird nicht in der Control Plane gespeichert. Fehlen, Lesefehler oder falsche Länge blockieren vor jeder Simulationsfachdaten-Mutation; vorbereitende Verzeichnis- und Schema-Erstellung kann bereits erfolgt sein. Tests injizieren ausschließlich einen In-Memory-Testschlüssel und beweisen diesen fail-closed Preflight; der Produktpfad besitzt keinen Fallback.
+Nur CLI und signierter 18-Schritte-Dashboardpfad benötigen einen separat und
+offline bereitgestellten, exakt 32 Byte langen Schlüssel unter
+`keychain://bugbounty-copilot/event-store-v1`. Dieses Dokument gibt bewusst
+keinen Secret-tragenden Shell-Einzeiler vor. Schlüsselmaterial darf nicht als
+expandiertes Prozessargument, Shell-Historie, Datei, Log, Skript,
+Umgebungsvariable oder Repositoryinhalt erscheinen. Tests injizieren
+ausschließlich einen In-Memory-Testschlüssel; der Produktpfad besitzt keinen
+Fallback.
 
 `BUGBOUNTY_EVENT_KEY_MIN_VERSION` ist verpflichtend und besitzt keinen
 Default. Die Phase-2-CLI verwendet pro Lauf ein neues, zufälliges lokales
@@ -20,10 +25,12 @@ initialisieren. Das persistente Dashboard verwendet dagegen den zu seinem
 authentifizierten Head passenden, nach erfolgreicher Rotation angehobenen
 Wert. Fehlende oder ungültige Konfiguration blockiert fail-closed.
 
-Zusätzlich ist eine manuell bereitgestellte Ed25519-Operator-Credential nötig:
+Zusätzlich ist eine nach derselben geprüften Offline-Betriebsanweisung
+bereitgestellte Ed25519-Operator-Credential nötig. Nur nicht geheime Metadaten
+werden exportiert:
 
 ```sh
-security add-generic-password -U -s bugbounty-copilot -a operator-ed25519-v1 -T /usr/bin/security -X "$(openssl genpkey -algorithm ED25519 -outform DER 2>/dev/null | xxd -p -c 256)"
+export BUGBOUNTY_EVENT_KEY_MIN_VERSION=1
 export BUGBOUNTY_OPERATOR_KEY_REFERENCE=keychain://bugbounty-copilot/operator-ed25519-v1
 export BUGBOUNTY_OPERATOR_ID=local-reviewer
 export BUGBOUNTY_OPERATOR_KEY_REVISION=1
@@ -47,7 +54,8 @@ Ohne `--confirm-local-simulation` wird der Lauf abgelehnt. Zusätzlich ist ein e
 pnpm dashboard
 ```
 
-Danach `http://127.0.0.1:4173` öffnen, die sechs Kontrollpunkte einzeln bestätigen und „Simulation starten“ wählen.
+Danach die beim Start ausgegebene Dashboard-URL öffnen, die sechs
+Kontrollpunkte einzeln bestätigen und „Simulation starten“ wählen.
 
 ## Event-Key-Verhalten
 
