@@ -1,5 +1,14 @@
-import { chmod, lstat, mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { constants, type Stats } from "node:fs";
+import { lstat, mkdir, open, realpath } from "node:fs/promises";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  parse,
+  resolve,
+  sep,
+} from "node:path";
 import { DatabaseSync, type StatementResultingChanges } from "node:sqlite";
 import { sha256 } from "../shared/canonical.js";
 import { SecurityError } from "../shared/errors.js";
@@ -919,7 +928,19 @@ WHERE state IN ('approved','running_simulation');
 
 export const CONTROL_PLANE_SCHEMA_VERSION = MIGRATIONS.length;
 
+const CONTROL_PLANE_BUSY_TIMEOUT_MS = 1_000;
+const DATABASE_FILE_MODE = 0o600;
+const DATABASE_DIRECTORY_MODE = 0o700;
+const SQLITE_BUSY = 5;
+const SQLITE_LOCKED = 6;
+const SQLITE_PRIMARY_RESULT_MASK = 0xff;
+const SIDECAR_SUFFIXES = Object.freeze(["-journal", "-wal", "-shm"] as const);
+
 export class ControlPlaneDatabase {
+  #transactionDepth = 0;
+  #savepointSequence = 0;
+  #poisoned = false;
+
   private constructor(private readonly database: DatabaseSync) {
     trustedControlPlaneDatabases.add(this);
     Object.freeze(this);
@@ -928,37 +949,62 @@ export class ControlPlaneDatabase {
   public static memory(): ControlPlaneDatabase {
     return ControlPlaneDatabase.initialize(
       new DatabaseSync(":memory:", options()),
+      "memory",
+      false,
     );
   }
 
   public static async file(path: string): Promise<ControlPlaneDatabase> {
-    if (path.length === 0)
-      throw new SecurityError("CONTROL_PLANE_PATH_INVALID");
-    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-    await chmod(dirname(path), 0o700);
+    assertDatabasePath(path);
+    const requestedDirectory = dirname(path);
+    await mkdir(requestedDirectory, {
+      recursive: true,
+      mode: DATABASE_DIRECTORY_MODE,
+    });
+    await assertPrivateDirectory(requestedDirectory);
+    const canonicalDirectory = await realpath(requestedDirectory);
+    await assertCanonicalDirectory(requestedDirectory, canonicalDirectory);
+    const canonicalPath = join(canonicalDirectory, basename(path));
+    const existed = !(await createDatabaseFileIfMissing(
+      canonicalPath,
+      canonicalDirectory,
+    ));
+    await assertDatabaseFile(canonicalPath);
+    await assertSafeSidecars(canonicalPath);
+
+    let database: DatabaseSync | undefined;
     try {
-      if ((await lstat(path)).isSymbolicLink())
-        throw new SecurityError("CONTROL_PLANE_PATH_SYMLINK");
+      database = withBusyMapping(
+        () => new DatabaseSync(canonicalPath, options()),
+      );
+      if (database.location("main") !== canonicalPath)
+        throw new SecurityError("CONTROL_PLANE_PATH_MISMATCH");
+      const instance = ControlPlaneDatabase.initialize(
+        database,
+        "delete",
+        existed,
+      );
+      database = undefined;
+      await assertDatabaseFile(canonicalPath);
+      await assertSafeSidecars(canonicalPath);
+      return instance;
     } catch (error) {
-      if (
-        error instanceof SecurityError ||
-        !isNodeError(error) ||
-        error.code !== "ENOENT"
-      )
-        throw error;
+      if (database?.isOpen === true) database.close();
+      throw normalizeOpenFailure(error, existed);
     }
-    const instance = ControlPlaneDatabase.initialize(
-      new DatabaseSync(path, options()),
-    );
-    await chmod(path, 0o600);
-    return instance;
   }
 
-  private static initialize(database: DatabaseSync): ControlPlaneDatabase {
+  private static initialize(
+    database: DatabaseSync,
+    journalMode: "delete" | "memory",
+    verifyExisting: boolean,
+  ): ControlPlaneDatabase {
     const instance = new ControlPlaneDatabase(database);
     try {
-      instance.configure();
+      instance.configure(journalMode);
+      if (verifyExisting) instance.verifyIntegrity();
       instance.migrate();
+      instance.verifyIntegrity();
       return instance;
     } catch (error) {
       database.close();
@@ -981,80 +1027,186 @@ export class ControlPlaneDatabase {
     sql: string,
     ...parameters: readonly SqlParameter[]
   ): StatementResultingChanges {
-    return this.database.prepare(sql).run(...parameters);
+    this.assertUsable();
+    return withBusyMapping(() => this.database.prepare(sql).run(...parameters));
   }
 
   public get(
     sql: string,
     ...parameters: readonly SqlParameter[]
   ): Readonly<Record<string, SqlValue>> | undefined {
-    return this.database.prepare(sql).get(...parameters);
+    this.assertUsable();
+    return withBusyMapping(() => this.database.prepare(sql).get(...parameters));
   }
 
   public all(
     sql: string,
     ...parameters: readonly SqlParameter[]
   ): readonly Readonly<Record<string, SqlValue>>[] {
-    return this.database.prepare(sql).all(...parameters);
+    this.assertUsable();
+    return withBusyMapping(() => this.database.prepare(sql).all(...parameters));
   }
 
   public transaction<T>(operation: () => T): T {
-    this.database.exec("BEGIN IMMEDIATE");
+    this.assertUsable();
+    if (typeof operation !== "function")
+      throw new SecurityError("CONTROL_PLANE_TRANSACTION_INVALID");
+    return this.#transactionDepth === 0
+      ? this.outerTransaction(operation)
+      : this.nestedTransaction(operation);
+  }
+
+  private outerTransaction<T>(operation: () => T): T {
+    if (this.database.isTransaction)
+      throw new SecurityError("CONTROL_PLANE_TRANSACTION_STATE_INVALID");
+    this.exec("BEGIN IMMEDIATE");
+    this.#transactionDepth = 1;
     try {
       const result = operation();
       if (isThenable(result))
         throw new SecurityError("CONTROL_PLANE_TRANSACTION_ASYNC");
-      this.database.exec("COMMIT");
+      this.exec("COMMIT");
       return result;
     } catch (error) {
-      try {
-        this.database.exec("ROLLBACK");
-      } catch {
-        // The original failure is more useful; fail closed at the caller.
-      }
+      if (!this.rollbackOuterTransaction()) this.#poisoned = true;
       throw error;
+    } finally {
+      this.#transactionDepth = 0;
     }
   }
 
-  private configure(): void {
-    this.database.exec("PRAGMA foreign_keys=ON");
-    this.database.exec("PRAGMA trusted_schema=OFF");
-    this.database.exec("PRAGMA synchronous=FULL");
+  private nestedTransaction<T>(operation: () => T): T {
+    this.#savepointSequence += 1;
+    const savepoint = `control_plane_nested_${String(this.#savepointSequence)}`;
+    this.exec(`SAVEPOINT ${savepoint}`);
+    this.#transactionDepth += 1;
+    try {
+      const result = operation();
+      if (isThenable(result))
+        throw new SecurityError("CONTROL_PLANE_TRANSACTION_ASYNC");
+      this.exec(`RELEASE SAVEPOINT ${savepoint}`);
+      return result;
+    } catch (error) {
+      if (!this.rollbackSavepoint(savepoint)) this.#poisoned = true;
+      throw error;
+    } finally {
+      this.#transactionDepth -= 1;
+    }
+  }
+
+  private rollbackOuterTransaction(): boolean {
+    try {
+      if (!this.database.isTransaction) return false;
+      this.exec("ROLLBACK");
+      return !this.database.isTransaction;
+    } catch {
+      return false;
+    }
+  }
+
+  private rollbackSavepoint(savepoint: string): boolean {
+    let rolledBack = true;
+    try {
+      this.exec(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+    } catch {
+      rolledBack = false;
+    }
+    try {
+      this.exec(`RELEASE SAVEPOINT ${savepoint}`);
+    } catch {
+      rolledBack = false;
+    }
+    return rolledBack;
+  }
+
+  private exec(sql: string): void {
+    this.assertUsable();
+    withBusyMapping(() => {
+      this.database.exec(sql);
+    });
+  }
+
+  private assertUsable(): void {
+    if (this.#poisoned)
+      throw new SecurityError("CONTROL_PLANE_DATABASE_POISONED");
+  }
+
+  private configure(journalMode: "delete" | "memory"): void {
+    this.exec("PRAGMA foreign_keys=ON");
+    this.exec("PRAGMA trusted_schema=OFF");
+    this.exec(`PRAGMA journal_mode=${journalMode.toUpperCase()}`);
+    this.exec("PRAGMA synchronous=FULL");
+    this.exec("PRAGMA fullfsync=ON");
+    this.exec("PRAGMA locking_mode=NORMAL");
+    this.exec(`PRAGMA busy_timeout=${String(CONTROL_PLANE_BUSY_TIMEOUT_MS)}`);
+    this.exec("PRAGMA temp_store=MEMORY");
+    this.assertPragma("PRAGMA foreign_keys", 1);
+    this.assertPragma("PRAGMA trusted_schema", 0);
+    this.assertPragma("PRAGMA journal_mode", journalMode);
+    this.assertPragma("PRAGMA synchronous", 2);
+    this.assertPragma("PRAGMA fullfsync", 1);
+    this.assertPragma("PRAGMA locking_mode", "normal");
+    this.assertPragma("PRAGMA busy_timeout", CONTROL_PLANE_BUSY_TIMEOUT_MS);
+    this.assertPragma("PRAGMA temp_store", 2);
+  }
+
+  private assertPragma(sql: string, expected: number | string): void {
+    const row = this.get(sql);
+    const values = row === undefined ? [] : Object.values(row);
+    if (values.length !== 1 || values[0] !== expected)
+      throw new SecurityError("CONTROL_PLANE_DURABILITY_CONFIG_INVALID");
+  }
+
+  private verifyIntegrity(): void {
+    try {
+      const integrity = this.all("PRAGMA integrity_check(1)");
+      if (
+        integrity.length !== 1 ||
+        Object.values(integrity[0] ?? {}).length !== 1 ||
+        Object.values(integrity[0] ?? {})[0] !== "ok"
+      )
+        throw new SecurityError("CONTROL_PLANE_INTEGRITY_INVALID");
+      if (this.all("PRAGMA foreign_key_check").length !== 0)
+        throw new SecurityError("CONTROL_PLANE_FOREIGN_KEY_INTEGRITY_INVALID");
+    } catch (error) {
+      if (error instanceof SecurityError) throw error;
+      throw new SecurityError("CONTROL_PLANE_INTEGRITY_INVALID");
+    }
   }
 
   private migrate(): void {
-    this.database.exec(`
+    this.transaction(() => {
+      this.exec(`
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY,
   checksum TEXT NOT NULL,
   applied_at TEXT NOT NULL
 ) STRICT;
 `);
-    const applied = this.all(
-      "SELECT version,checksum FROM schema_migrations ORDER BY version",
-    );
-    for (let index = 0; index < applied.length; index += 1) {
-      const row = applied[index];
-      const expected = MIGRATIONS[index];
-      if (
-        row === undefined ||
-        expected === undefined ||
-        row["version"] !== expected.version ||
-        row["checksum"] !== migrationChecksum(expected)
-      )
-        throw new SecurityError("CONTROL_PLANE_MIGRATION_INTEGRITY");
-    }
-    for (const migration of MIGRATIONS.slice(applied.length)) {
-      this.transaction(() => {
-        this.database.exec(migration.sql);
+      const applied = this.all(
+        "SELECT version,checksum FROM schema_migrations ORDER BY version",
+      );
+      for (let index = 0; index < applied.length; index += 1) {
+        const row = applied[index];
+        const expected = MIGRATIONS[index];
+        if (
+          row === undefined ||
+          expected === undefined ||
+          row["version"] !== expected.version ||
+          row["checksum"] !== migrationChecksum(expected)
+        )
+          throw new SecurityError("CONTROL_PLANE_MIGRATION_INTEGRITY");
+      }
+      for (const migration of MIGRATIONS.slice(applied.length)) {
+        this.exec(migration.sql);
         this.run(
           "INSERT INTO schema_migrations(version,checksum,applied_at) VALUES(?,?,?)",
           migration.version,
           migrationChecksum(migration),
           "2026-07-13T00:00:00.000Z",
         );
-      });
-    }
+      }
+    });
     if (this.migrationVersion() !== CONTROL_PLANE_SCHEMA_VERSION)
       throw new SecurityError("CONTROL_PLANE_MIGRATION_INCOMPLETE");
   }
@@ -1085,9 +1237,224 @@ function options(): ConstructorParameters<typeof DatabaseSync>[1] {
     enableForeignKeyConstraints: true,
     enableDoubleQuotedStringLiterals: false,
     allowExtension: false,
-    timeout: 1_000,
+    timeout: CONTROL_PLANE_BUSY_TIMEOUT_MS,
     defensive: true,
   };
+}
+
+function assertDatabasePath(path: unknown): asserts path is string {
+  if (
+    typeof path !== "string" ||
+    path.length === 0 ||
+    path.length > 4_096 ||
+    path.includes("\0") ||
+    !isAbsolute(path) ||
+    resolve(path) !== path ||
+    dirname(path) === path ||
+    /-(?:journal|shm|wal)$/u.test(basename(path))
+  )
+    throw new SecurityError("CONTROL_PLANE_PATH_INVALID");
+}
+
+async function assertPrivateDirectory(path: string): Promise<void> {
+  const metadata = await lstat(path);
+  if (metadata.isSymbolicLink())
+    throw new SecurityError("CONTROL_PLANE_DIRECTORY_SYMLINK");
+  if (!metadata.isDirectory())
+    throw new SecurityError("CONTROL_PLANE_DIRECTORY_TYPE_INVALID");
+  assertOwnedByCurrentUser(metadata, "CONTROL_PLANE_DIRECTORY_OWNER_INVALID");
+  if ((metadata.mode & 0o7777) !== DATABASE_DIRECTORY_MODE)
+    throw new SecurityError("CONTROL_PLANE_DIRECTORY_PERMISSIONS_INVALID");
+}
+
+async function assertCanonicalDirectory(
+  requested: string,
+  canonical: string,
+): Promise<void> {
+  if (requested === canonical) return;
+  const root = parse(requested).root;
+  let current = root;
+  let trustedSystemAliasSeen = false;
+  for (const component of requested.slice(root.length).split(sep)) {
+    if (component.length === 0) continue;
+    current = join(current, component);
+    const metadata = await lstat(current);
+    if (!metadata.isSymbolicLink()) continue;
+    // macOS exposes its root-owned /var and /tmp compatibility aliases as part
+    // of the local OS TCB. User-created ancestors are never canonicalized away.
+    const trustedMacOsAlias =
+      process.platform === "darwin" &&
+      metadata.uid === 0 &&
+      (current === "/var" || current === "/tmp");
+    if (!trustedMacOsAlias)
+      throw new SecurityError("CONTROL_PLANE_ANCESTOR_SYMLINK");
+    trustedSystemAliasSeen = true;
+  }
+  if (!trustedSystemAliasSeen)
+    throw new SecurityError("CONTROL_PLANE_PATH_NON_CANONICAL");
+}
+
+async function createDatabaseFileIfMissing(
+  path: string,
+  directory: string,
+): Promise<boolean> {
+  try {
+    await assertDatabaseFile(path);
+    return false;
+  } catch (error) {
+    if (!isNodeError(error) || error.code !== "ENOENT") throw error;
+  }
+
+  let handle;
+  try {
+    handle = await open(
+      path,
+      constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | noFollowFlag(),
+      DATABASE_FILE_MODE,
+    );
+  } catch (error) {
+    if (!isNodeError(error) || error.code !== "EEXIST") throw error;
+    await assertDatabaseFile(path);
+    return false;
+  }
+  try {
+    assertPrivateRegularFile(
+      await handle.stat(),
+      "CONTROL_PLANE_FILE_TYPE_INVALID",
+      "CONTROL_PLANE_FILE_OWNER_INVALID",
+      "CONTROL_PLANE_FILE_PERMISSIONS_INVALID",
+      "CONTROL_PLANE_FILE_HARDLINK_INVALID",
+    );
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await fsyncDirectory(directory);
+  return true;
+}
+
+async function assertDatabaseFile(path: string): Promise<void> {
+  const linkMetadata = await lstat(path);
+  if (linkMetadata.isSymbolicLink())
+    throw new SecurityError("CONTROL_PLANE_PATH_SYMLINK");
+  assertPrivateRegularFile(
+    linkMetadata,
+    "CONTROL_PLANE_FILE_TYPE_INVALID",
+    "CONTROL_PLANE_FILE_OWNER_INVALID",
+    "CONTROL_PLANE_FILE_PERMISSIONS_INVALID",
+    "CONTROL_PLANE_FILE_HARDLINK_INVALID",
+  );
+
+  const handle = await open(path, constants.O_RDONLY | noFollowFlag());
+  try {
+    const openMetadata = await handle.stat();
+    assertPrivateRegularFile(
+      openMetadata,
+      "CONTROL_PLANE_FILE_TYPE_INVALID",
+      "CONTROL_PLANE_FILE_OWNER_INVALID",
+      "CONTROL_PLANE_FILE_PERMISSIONS_INVALID",
+      "CONTROL_PLANE_FILE_HARDLINK_INVALID",
+    );
+    if (
+      openMetadata.dev !== linkMetadata.dev ||
+      openMetadata.ino !== linkMetadata.ino
+    )
+      throw new SecurityError("CONTROL_PLANE_PATH_RACE");
+  } finally {
+    await handle.close();
+  }
+}
+
+async function assertSafeSidecars(path: string): Promise<void> {
+  for (const suffix of SIDECAR_SUFFIXES) {
+    const sidecar = `${path}${suffix}`;
+    let metadata: Stats;
+    try {
+      metadata = await lstat(sidecar);
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") continue;
+      throw error;
+    }
+    if (metadata.isSymbolicLink())
+      throw new SecurityError("CONTROL_PLANE_SIDECAR_SYMLINK");
+    assertPrivateRegularFile(
+      metadata,
+      "CONTROL_PLANE_SIDECAR_TYPE_INVALID",
+      "CONTROL_PLANE_SIDECAR_OWNER_INVALID",
+      "CONTROL_PLANE_SIDECAR_PERMISSIONS_INVALID",
+      "CONTROL_PLANE_SIDECAR_HARDLINK_INVALID",
+    );
+    if (suffix !== "-journal")
+      throw new SecurityError("CONTROL_PLANE_SIDECAR_UNEXPECTED");
+  }
+}
+
+function assertPrivateRegularFile(
+  metadata: Stats,
+  typeCode: string,
+  ownerCode: string,
+  permissionsCode: string,
+  hardlinkCode: string,
+): void {
+  if (!metadata.isFile()) throw new SecurityError(typeCode);
+  assertOwnedByCurrentUser(metadata, ownerCode);
+  if ((metadata.mode & 0o7777) !== DATABASE_FILE_MODE)
+    throw new SecurityError(permissionsCode);
+  if (metadata.nlink !== 1) throw new SecurityError(hardlinkCode);
+}
+
+function assertOwnedByCurrentUser(metadata: Stats, code: string): void {
+  if (typeof process.getuid !== "function")
+    throw new SecurityError("CONTROL_PLANE_OWNER_CHECK_UNAVAILABLE");
+  if (metadata.uid !== process.getuid()) throw new SecurityError(code);
+}
+
+function noFollowFlag(): number {
+  if (typeof constants.O_NOFOLLOW !== "number")
+    throw new SecurityError("CONTROL_PLANE_NOFOLLOW_UNAVAILABLE");
+  return constants.O_NOFOLLOW;
+}
+
+async function fsyncDirectory(path: string): Promise<void> {
+  const handle = await open(path, constants.O_RDONLY | noFollowFlag());
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+function withBusyMapping<T>(operation: () => T): T {
+  try {
+    return operation();
+  } catch (error) {
+    if (isSqliteBusyOrLocked(error))
+      throw new SecurityError("CONTROL_PLANE_BUSY");
+    throw error;
+  }
+}
+
+function normalizeOpenFailure(error: unknown, existed: boolean): unknown {
+  if (error instanceof SecurityError) return error;
+  if (isSqliteBusyOrLocked(error))
+    return new SecurityError("CONTROL_PLANE_BUSY");
+  if (existed && isSqliteError(error))
+    return new SecurityError("CONTROL_PLANE_INTEGRITY_INVALID");
+  return error;
+}
+
+function isSqliteBusyOrLocked(error: unknown): boolean {
+  if (!isSqliteError(error)) return false;
+  const primary = error.errcode & SQLITE_PRIMARY_RESULT_MASK;
+  return primary === SQLITE_BUSY || primary === SQLITE_LOCKED;
+}
+
+function isSqliteError(
+  error: unknown,
+): error is Error & { readonly errcode: number } {
+  if (!(error instanceof Error)) return false;
+  const errcode: unknown = Reflect.get(error, "errcode");
+  return typeof errcode === "number" && Number.isInteger(errcode);
 }
 
 function migrationChecksum(migration: Migration): string {
