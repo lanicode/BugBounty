@@ -107,6 +107,7 @@ async function startHarness(
     eventSecrets,
     () => "secret://dashboard/event-key",
     now,
+    1,
     operatorSigner,
   );
   try {

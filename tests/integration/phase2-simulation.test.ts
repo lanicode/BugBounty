@@ -7,6 +7,7 @@ import {
   ControlPlaneStore,
 } from "../../packages/control-plane/index.js";
 import { DemoSaas } from "../../packages/demo-saas/index.js";
+import { EventKeyLifecycle } from "../../packages/event-key-lifecycle/index.js";
 import {
   SimulationOrchestrator,
   type HumanSimulationEvidence,
@@ -72,6 +73,7 @@ async function setup() {
     eventSecrets(),
     () => EVENT_KEY_REFERENCE,
     () => new Date(NOW),
+    1,
     TEST_OPERATOR_SIGNER,
   );
   return { store, directory, orchestrator };
@@ -164,13 +166,69 @@ describe("Phase 2 complete local simulation", () => {
         .filter(({ action }) => action === "approval_decision"),
     ).toHaveLength(4);
 
-    const eventFiles = (await readdir(directory)).sort();
+    const eventEntries = (await readdir(directory)).sort();
+    expect(eventEntries).toContain(".event-key-state");
+    const eventFiles = eventEntries.filter((file) =>
+      file.endsWith(".events.enc"),
+    );
     expect(eventFiles).toHaveLength(3);
     for (const file of eventFiles) {
       const envelope = await readFile(join(directory, file), "utf8");
       expect(envelope).toContain('"ciphertext"');
       expect(envelope).not.toContain("PROGRAM_IMPORTED");
       expect(envelope).not.toContain("owned-object-001");
+    }
+    const keyState = await readFile(
+      join(directory, ".event-key-state", "state-0000000001.json"),
+      "utf8",
+    );
+    expect(keyState).toContain('"activeKeyVersion":1');
+    expect(keyState).not.toContain("secret://");
+    expect(keyState).not.toContain("PROGRAM_IMPORTED");
+    expect(keyState).not.toContain("owned-object-001");
+  });
+
+  it("writes only with the persisted rotated event-key head after restart", async () => {
+    const database = ControlPlaneDatabase.memory();
+    databases.push(database);
+    const store = new ControlPlaneStore(database, () => new Date(NOW));
+    const directory = await mkdtemp(join(tmpdir(), "bbc-simulation-v2-"));
+    const secrets = new InMemorySecretStore();
+    const reference = (version: number): string =>
+      `keychain://simulation/event-store-v${String(version)}`;
+    secrets.set(reference(1), new Uint8Array(32).fill(1));
+    secrets.set(reference(2), new Uint8Array(32).fill(2));
+    const lifecycle = await EventKeyLifecycle.initializeFresh({
+      directory,
+      secrets,
+      keyReference: reference,
+      minimumActiveKeyVersion: 1,
+    });
+    await lifecycle.rotate({
+      expectedActiveKeyVersion: 1,
+      nextKeyVersion: 2,
+    });
+
+    const orchestrator = new SimulationOrchestrator(
+      store,
+      new DemoSaas(() => new Date(NOW)),
+      directory,
+      secrets,
+      reference,
+      () => new Date(NOW),
+      2,
+      TEST_OPERATOR_SIGNER,
+    );
+    await orchestrator.run(evidence(orchestrator));
+    const eventFiles = (await readdir(directory)).filter((file) =>
+      file.endsWith(".events.enc"),
+    );
+    expect(eventFiles).toHaveLength(3);
+    for (const file of eventFiles) {
+      const envelope = JSON.parse(
+        await readFile(join(directory, file), "utf8"),
+      ) as { keyVersion: number };
+      expect(envelope.keyVersion).toBe(2);
     }
   });
 
@@ -267,6 +325,7 @@ describe("Phase 2 complete local simulation", () => {
       eventSecrets(),
       () => EVENT_KEY_REFERENCE,
       () => new Date(NOW),
+      1,
     );
     const before = {
       killSwitchActive: store.isKillSwitchActive(),
@@ -327,6 +386,7 @@ describe("Phase 2 complete local simulation", () => {
         secrets,
         () => EVENT_KEY_REFERENCE,
         () => new Date(NOW),
+        1,
         TEST_OPERATOR_SIGNER,
       );
       await expect(orchestrator.run(evidence(orchestrator))).rejects.toThrow(
@@ -350,6 +410,7 @@ describe("Phase 2 complete local simulation", () => {
       eventSecrets(),
       () => EVENT_KEY_REFERENCE,
       () => new Date(NOW),
+      1,
       TEST_OPERATOR_SIGNER,
     );
     const confirmed = evidence(orchestrator);
@@ -401,6 +462,7 @@ describe("Phase 2 complete local simulation", () => {
       eventSecrets(),
       () => EVENT_KEY_REFERENCE,
       () => new Date(NOW),
+      1,
       TEST_OPERATOR_SIGNER,
     );
 
@@ -455,6 +517,7 @@ describe("Phase 2 complete local simulation", () => {
       eventSecrets(),
       () => EVENT_KEY_REFERENCE,
       clock,
+      1,
       TEST_OPERATOR_SIGNER,
     );
     const confirmed = evidence(orchestrator);

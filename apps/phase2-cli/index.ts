@@ -8,6 +8,7 @@ import {
   ControlPlaneStore,
 } from "../../packages/control-plane/index.js";
 import { DemoSaas } from "../../packages/demo-saas/index.js";
+import { parseEventKeyMinimumVersion } from "../../packages/event-key-lifecycle/index.js";
 import {
   collectInteractiveSimulationEvidence,
   SimulationOrchestrator,
@@ -47,6 +48,7 @@ async function main(): Promise<void> {
       (version) =>
         `keychain://bugbounty-copilot/event-store-v${String(version)}`,
       clock,
+      configuredEventKeyMinimumVersion(),
       operatorSigner,
     );
     const review = orchestrator.preview();
@@ -88,6 +90,12 @@ async function requiredOperatorSigner(secretStore: MacOSKeychainSecretStore) {
     operatorId,
     keyRevision,
   });
+}
+
+function configuredEventKeyMinimumVersion(): number {
+  return parseEventKeyMinimumVersion(
+    process.env["BUGBOUNTY_EVENT_KEY_MIN_VERSION"],
+  );
 }
 
 main().catch((error: unknown) => {

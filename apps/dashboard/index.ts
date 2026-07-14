@@ -13,6 +13,7 @@ import {
   startDemoSaasServer,
   type RunningDemoSaasServer,
 } from "../../packages/demo-saas/index.js";
+import { parseEventKeyMinimumVersion } from "../../packages/event-key-lifecycle/index.js";
 import { SimulationOrchestrator } from "../../packages/simulation/index.js";
 import {
   createKeychainOperatorSigner,
@@ -64,6 +65,7 @@ async function main(): Promise<void> {
       (version) =>
         `keychain://bugbounty-copilot/event-store-v${String(version)}`,
       clock,
+      configuredEventKeyMinimumVersion(),
       operatorSigner,
     );
     dashboardServer = await startDashboardServer(
@@ -128,6 +130,12 @@ async function configuredOperatorSigner(
     operatorId,
     keyRevision,
   });
+}
+
+function configuredEventKeyMinimumVersion(): number {
+  return parseEventKeyMinimumVersion(
+    process.env["BUGBOUNTY_EVENT_KEY_MIN_VERSION"],
+  );
 }
 
 main().catch((error: unknown) => {

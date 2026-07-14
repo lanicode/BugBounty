@@ -1,5 +1,4 @@
 import { randomBytes } from "node:crypto";
-import { mkdir } from "node:fs/promises";
 import {
   AccountSimulationCoordinator,
   MockAccountProvider,
@@ -22,7 +21,7 @@ import type {
   TestIdentityRole,
 } from "../control-plane/types.js";
 import type { DemoSaas } from "../demo-saas/domain.js";
-import { EncryptedEventStore } from "../event-store/store.js";
+import { EventKeyLifecycle } from "../event-key-lifecycle/index.js";
 import {
   InMemoryOwnershipJournal,
   OwnershipLedger,
@@ -166,6 +165,7 @@ export const SIMULATION_CONFIRMATION_ORDER = Object.freeze([
 
 export class SimulationOrchestrator {
   #review: SimulationReviewPackage | undefined;
+  #eventKeys: EventKeyLifecycle | undefined;
   readonly #operatorSessionId = randomBytes(32).toString("base64url");
 
   public constructor(
@@ -175,6 +175,7 @@ export class SimulationOrchestrator {
     private readonly eventSecrets: SecretStore,
     private readonly eventKeyReference: (version: number) => string,
     private readonly now: () => Date,
+    private readonly eventMinimumActiveKeyVersion: number,
     private readonly operatorSigner?: OperatorSigner,
   ) {
     if (
@@ -732,15 +733,15 @@ export class SimulationOrchestrator {
   }
 
   private async assertEventKeyReady(): Promise<void> {
-    let key: Uint8Array | undefined;
     try {
-      key = await this.eventSecrets.get(this.eventKeyReference(1));
-      if (key.byteLength !== 32)
-        throw new SecurityError("SIMULATION_EVENT_SECRET_UNAVAILABLE");
+      this.#eventKeys = await EventKeyLifecycle.openOrInitializeFresh({
+        directory: this.eventDirectory,
+        secrets: this.eventSecrets,
+        keyReference: this.eventKeyReference,
+        minimumActiveKeyVersion: this.eventMinimumActiveKeyVersion,
+      });
     } catch {
       throw new SecurityError("SIMULATION_EVENT_SECRET_UNAVAILABLE");
-    } finally {
-      key?.fill(0);
     }
   }
 
@@ -808,12 +809,9 @@ export class SimulationOrchestrator {
     policyHash: string,
     at: string,
   ): Promise<void> {
-    await mkdir(this.eventDirectory, { recursive: true, mode: 0o700 });
-    const events = new EncryptedEventStore(
-      this.eventDirectory,
-      this.eventSecrets,
-      this.eventKeyReference,
-    );
+    const events = this.#eventKeys;
+    if (events === undefined)
+      throw new SecurityError("SIMULATION_EVENT_SECRET_UNAVAILABLE");
     await events.write("program-imported", {
       version: 1,
       type: "PROGRAM_IMPORTED",
