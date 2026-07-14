@@ -89,20 +89,32 @@ Rollen-/Routengraphen, zwei isolierten A/B-Replays, exakter zweistufiger
 Egress-Prüfung, strikter Responseprojektion und vollständig opaken,
 rollen-/zustandsgebundenen In-Memory-Screenshot-Digests. Die Profile beweisen
 keine serverseitige Authentisierung oder Autorisierung. Ein produktiver
-`browser_journey_start`-Runner wurde nicht registriert.
+`browser_journey_start`-Runner wurde nicht registriert. ID, Rollenpläne und
+Replayprofile stammen aus dem produktneutralen, I/O-freien
+`packages/local-journey-catalog`; nur die Tests führen diesen Katalog aus.
 
-## Nächste Phase – lokale UI-Qualifizierung
+## Phase 8 – lokal nutzbare Produktoberfläche (abgeschlossen)
 
-1. Eine statische, read-only Demo-Oberfläche für die bestehenden lokalen
-   Fixtures definieren, ohne Rollenprofile als Authentisierung oder
-   Autorisierung auszugeben.
-2. Den geschlossenen Phase-7-Referenzablauf gegen diese Oberfläche erweitern,
-   weiterhin ohne freie URLs, Schritte, Scripts oder Produkt-Runner.
-3. Semantische UI-Zustände ausschließlich aus festen, lokal geprüften
-   Selektoren ableiten; Locator-Healing bleibt deaktiviert, bis dafür ein
-   eigener fail-closed Sicherheitsvertrag existiert.
-4. Persistente visuelle Evidence erst nach einer separaten Security-Core-
-   Entscheidung zu Verschlüsselung, Lebensdauer und Löschung erwägen.
+1. Control Plane, Dashboard und Demo-SaaS mit `pnpm app` gemeinsam starten.
+2. Einen strikt sequenziellen, flüchtigen 21-Schritte-Demoablauf ohne YAML-,
+   JSON-, SQLite- oder Quellcodebearbeitung anbieten.
+3. Programme, Policies, Kampagnen, Fixture-Identitäten, Journey, Inventory,
+   Kandidaten, Evidence und lokale Reportprüfung sichtbar verbinden.
+4. Fehlende Keychain-/Event-Voraussetzungen als Setupzustand darstellen und
+   signierte beziehungsweise verschlüsselte Aktionen weiter fail-closed
+   deaktivieren.
+
+Umgesetzt sind `local_setup_shell` ohne Event-Store-Konstruktion und
+`local_simulation` mit sicherem Open-on-demand, begrenzte exakt validierte
+UI-Auswahlen, ausdrückliche Kontrollpunkte und eine semantisch an die
+validierte Demo-SaaS-Seed-Projektion gebundene Evidence-Kette. Demo-Drift
+blockiert Aktionen und entwertet Evidence/Reports.
+
+Die Journey projiziert den gemeinsamen gepinnten Katalog mit 20
+Owner-/Member-/External-Schritten. Sie startet keinen Produktbrowser und führt
+keine aktive Sicherheitsprüfung aus. Allgemeines persistentes CRUD,
+produktive Browserworker, KI-Provider, reale Adapter und Report-Einreichung
+bleiben deaktiviert.
 
 ## Spätere Phase – Analyse und sichere Verifikation
 

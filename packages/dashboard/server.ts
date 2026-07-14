@@ -13,7 +13,13 @@ import type {
   ControlPlaneStore,
   StoredPolicyVersion,
 } from "../control-plane/store.js";
-import type { DemoSaas } from "../demo-saas/domain.js";
+import type { DemoSaas, DemoSaasSnapshot } from "../demo-saas/domain.js";
+import {
+  LocalProductWorkflow,
+  type LocalProductDemoBinding,
+  type LocalProductRuntimeContext,
+} from "../local-product/index.js";
+import type { RuntimeReadiness } from "../local-runtime/index.js";
 import type {
   HumanSimulationEvidence,
   SimulationOrchestrator,
@@ -25,11 +31,13 @@ import {
 } from "../operator-auth/index.js";
 import { SIMULATION_CONFIRMATION_ORDER } from "../simulation/orchestrator.js";
 import { errorCode, SecurityError } from "../shared/errors.js";
+import { canonicalJson, sha256 } from "../shared/canonical.js";
 import {
   DASHBOARD_CSS,
   DASHBOARD_HTML,
   DASHBOARD_JAVASCRIPT,
 } from "./assets.js";
+import { DASHBOARD_PHASE8_JAVASCRIPT } from "./phase8-assets.js";
 
 const LOOPBACK_HOST = "127.0.0.1";
 const MAX_BODY_BYTES = 65_536;
@@ -61,8 +69,10 @@ interface DashboardApprovalDecisionInput {
 export interface DashboardDependencies {
   readonly store: ControlPlaneStore;
   readonly demo: DemoSaas;
-  readonly simulation: SimulationOrchestrator;
+  readonly localProduct?: LocalProductWorkflow;
+  readonly simulation?: SimulationOrchestrator;
   readonly operatorSigner?: OperatorSigner;
+  readonly readiness: RuntimeReadiness;
   readonly now?: () => Date;
 }
 
@@ -80,6 +90,13 @@ export async function startDashboardServer(
   if (!Number.isInteger(port) || port < 0 || port > 65_535)
     throw new Error("DASHBOARD_PORT_INVALID");
   const now = dependencies.now ?? (() => new Date());
+  const localProduct =
+    dependencies.localProduct ??
+    new LocalProductWorkflow(
+      now,
+      localProductRuntimeContext(dependencies),
+      localProductDemoBinding(dependencies.demo.snapshot()),
+    );
   const csrfToken = randomBytes(32).toString("base64url");
   const operatorSessionId = randomBytes(32).toString("base64url");
   if (
@@ -132,6 +149,7 @@ export async function startDashboardServer(
           timestamp(now),
           simulationRunning,
           lastSimulation,
+          localProduct,
         ),
       );
       return;
@@ -146,7 +164,28 @@ export async function startDashboardServer(
     const body = await readJsonBody(request);
 
     switch (pathname) {
+      case "/api/local-product/action": {
+        try {
+          assertLocalProductRuntimePreconditions(
+            body,
+            dependencies,
+            localProduct,
+          );
+          sendJson(response, 200, {
+            localProduct: localProduct.perform(body),
+          });
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            /^LOCAL_PRODUCT_[A-Z0-9_]+$/u.test(error.message)
+          )
+            throw new DashboardHttpError(409, error.message);
+          throw error;
+        }
+        return;
+      }
       case "/api/programs/import": {
+        assertSecureCoreReady(dependencies);
         const imported = parseImportRequest(body);
         const program = dependencies.store.createProgram(
           parseProgramImport(imported.source, imported.format),
@@ -156,6 +195,12 @@ export async function startDashboardServer(
         return;
       }
       case "/api/simulation/run": {
+        assertSecureCoreReady(dependencies);
+        if (dependencies.simulation === undefined)
+          throw new DashboardHttpError(
+            409,
+            "DASHBOARD_SECURE_SIMULATION_UNAVAILABLE",
+          );
         if (simulationRunning)
           throw new DashboardHttpError(409, "SIMULATION_ALREADY_RUNNING");
         const evidence = parseSimulationRequest(body, timestamp(now));
@@ -172,7 +217,9 @@ export async function startDashboardServer(
       case "/api/kill-switch/clear": {
         const input = parseKillSwitchRequest(body);
         const at = timestamp(now);
-        const result = pathname.endsWith("/engage")
+        const engaging = pathname.endsWith("/engage");
+        if (!engaging) assertSecureCoreReady(dependencies);
+        const result = engaging
           ? dependencies.store.setKillSwitch(true, input.actor, at)
           : clearKillSwitchWithSigner(
               dependencies,
@@ -184,6 +231,7 @@ export async function startDashboardServer(
         return;
       }
       case "/api/approvals/decide": {
+        assertSecureCoreReady(dependencies);
         const at = timestamp(now);
         const input = parseApprovalDecisionRequest(body);
         const signer = requireOperatorSigner(dependencies);
@@ -250,6 +298,128 @@ export async function startDashboardServer(
   });
 }
 
+function localProductRuntimeContext(
+  dependencies: DashboardDependencies,
+): LocalProductRuntimeContext {
+  return Object.freeze({
+    systemStatus: dependencies.readiness.platformStatus,
+    secretStoreStatus: dependencies.readiness.secretStoreStatus,
+    demoSaasStatus: dependencies.readiness.demoSaasStatus,
+    databaseStatus: dependencies.readiness.databaseStatus,
+    demoSnapshotDigest: sha256(canonicalJson(dependencies.demo.snapshot())),
+  });
+}
+
+function localProductDemoBinding(
+  snapshot: DemoSaasSnapshot,
+): LocalProductDemoBinding {
+  const identities = snapshot.organization.identities;
+  const project = snapshot.projects[0];
+  const document = snapshot.documents[0];
+  const invitation = snapshot.invitations[0];
+  const testObject = snapshot.testObjects[0];
+  if (
+    snapshot.revision !== 1 ||
+    snapshot.organization.organizationRef !== "org-demo-001" ||
+    identities.length !== 3 ||
+    identities[0]?.role !== "Owner" ||
+    identities[0].identityRef !== "identity-owner-001" ||
+    identities[1]?.role !== "Member" ||
+    identities[1].identityRef !== "identity-member-001" ||
+    identities[2]?.role !== "External" ||
+    identities[2].identityRef !== "identity-external-001" ||
+    snapshot.projects.length !== 1 ||
+    project?.projectRef !== "project-demo-001" ||
+    project.organizationRef !== "org-demo-001" ||
+    project.createdByRef !== "identity-owner-001" ||
+    snapshot.documents.length !== 1 ||
+    document?.documentRef !== "document-demo-001" ||
+    document.projectRef !== "project-demo-001" ||
+    document.createdByRef !== "identity-member-001" ||
+    snapshot.invitations.length !== 1 ||
+    invitation?.invitationRef !== "invitation-demo-001" ||
+    invitation.organizationRef !== "org-demo-001" ||
+    invitation.createdByRef !== "identity-owner-001" ||
+    snapshot.testObjects.length !== 1 ||
+    testObject?.objectRef !== "object-demo-001" ||
+    testObject.projectRef !== "project-demo-001" ||
+    testObject.controlledByRef !== "identity-owner-001" ||
+    snapshot.currentPolicy.version !== 1 ||
+    snapshot.policyVersions.length !== 1 ||
+    snapshot.policyVersions[0]?.contentHash !==
+      snapshot.currentPolicy.contentHash ||
+    snapshot.lastPolicyDrift !== null ||
+    !/^[a-f0-9]{64}$/u.test(snapshot.currentPolicy.contentHash)
+  )
+    throw new SecurityError("DASHBOARD_LOCAL_DEMO_FIXTURE_INVALID");
+
+  return Object.freeze({
+    snapshotDigest: sha256(canonicalJson(snapshot)),
+    organizationRef: "org-demo-001",
+    identities: Object.freeze([
+      Object.freeze({
+        role: "Owner" as const,
+        identityRef: "identity-owner-001" as const,
+      }),
+      Object.freeze({
+        role: "Member" as const,
+        identityRef: "identity-member-001" as const,
+      }),
+      Object.freeze({
+        role: "External" as const,
+        identityRef: "identity-external-001" as const,
+      }),
+    ] as const),
+    controlledObjectRef: "object-demo-001",
+    controlledByRef: "identity-owner-001",
+    canaryDigest: sha256(testObject.canary),
+    demoPolicyHash: snapshot.currentPolicy.contentHash,
+  });
+}
+
+function assertLocalProductRuntimePreconditions(
+  value: unknown,
+  dependencies: DashboardDependencies,
+  localProduct: LocalProductWorkflow,
+): void {
+  const readiness = dependencies.readiness;
+  const expectedDemoDigest =
+    localProduct.snapshot().runtimeContext.demoSnapshotDigest;
+  if (
+    sha256(canonicalJson(dependencies.demo.snapshot())) !== expectedDemoDigest
+  )
+    throw new DashboardHttpError(409, "DASHBOARD_LOCAL_DEMO_DRIFT_BLOCKED");
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    return;
+  const descriptor = Object.getOwnPropertyDescriptor(value, "action");
+  if (descriptor === undefined || !("value" in descriptor)) return;
+  const action: unknown = descriptor.value;
+  if (
+    action === "onboarding_system_check" &&
+    (readiness.databaseStatus !== "ready" ||
+      readiness.demoSaasStatus !== "ready")
+  )
+    throw new DashboardHttpError(409, "DASHBOARD_LOCAL_SYSTEM_CHECK_BLOCKED");
+  if (
+    action === "onboarding_secret_store_check" &&
+    readiness.secretStoreStatus === "blocked"
+  )
+    throw new DashboardHttpError(
+      409,
+      "DASHBOARD_LOCAL_SECRET_STORE_CHECK_BLOCKED",
+    );
+  if (
+    action === "onboarding_initialize_demo" &&
+    readiness.demoSaasStatus !== "ready"
+  )
+    throw new DashboardHttpError(409, "DASHBOARD_LOCAL_DEMO_CHECK_BLOCKED");
+}
+
+function assertSecureCoreReady(dependencies: DashboardDependencies): void {
+  if (!dependencies.readiness.ready)
+    throw new DashboardHttpError(409, "DASHBOARD_SECURE_CORE_NOT_READY");
+}
+
 function serveGet(
   response: ServerResponse,
   pathname: string,
@@ -265,6 +435,14 @@ function serveGet(
         200,
         "text/javascript; charset=utf-8",
         DASHBOARD_JAVASCRIPT,
+      );
+      return;
+    case "/phase8.js":
+      sendText(
+        response,
+        200,
+        "text/javascript; charset=utf-8",
+        DASHBOARD_PHASE8_JAVASCRIPT,
       );
       return;
     case "/styles.css":
@@ -291,6 +469,7 @@ function buildDashboardState(
   generatedAt: string,
   simulationRunning: boolean,
   lastSimulation: SimulationSummary | undefined,
+  localProduct: LocalProductWorkflow,
 ): unknown {
   const programs = dependencies.store.listPrograms();
   const storedPolicies = programs.flatMap((program) =>
@@ -304,7 +483,13 @@ function buildDashboardState(
   const auditEntries = dependencies.store.listAuditEntries();
   const killSwitchActive = dependencies.store.isKillSwitchActive();
   const demo = dependencies.demo.snapshot();
-  const simulationReview = dependencies.simulation.preview();
+  const localProductSnapshot = localProduct.snapshot();
+  const currentDemoDigest = sha256(canonicalJson(demo));
+  const expectedDemoDigest =
+    localProductSnapshot.runtimeContext.demoSnapshotDigest;
+  const demoBindingValid = currentDemoDigest === expectedDemoDigest;
+  const simulationReview =
+    dependencies.simulation?.preview() ?? unavailableSimulationReview();
   const policyDiffs = makePolicyDiffs(
     programs.map(({ id }) => id),
     dependencies.store,
@@ -314,13 +499,52 @@ function buildDashboardState(
   return {
     version: 1,
     mode: "simulation",
+    runtimeMode: dependencies.readiness.ready
+      ? "local_simulation"
+      : "local_setup_shell",
     externalIntegrationsEnabled: false,
+    aiProviderStatus: "disabled_not_implemented",
+    runtimeReadiness: dependencies.readiness,
+    localProduct: localProductSnapshot,
+    localProductIntegrity: {
+      status: demoBindingValid ? "bound" : "blocked_demo_drift",
+      expectedDemoDigest,
+      currentDemoDigest,
+      evidenceStatus:
+        localProductSnapshot.evidence === null
+          ? "not_created"
+          : demoBindingValid
+            ? "valid_bound"
+            : "stale_blocked",
+      reportStatus:
+        localProductSnapshot.report === null
+          ? "not_created"
+          : demoBindingValid
+            ? "valid_bound"
+            : "stale_blocked",
+    },
     phase1SecurityStatus: "enforced",
     simulationStatus: simulationRunning
       ? "running"
       : completed
         ? "completed"
-        : "ready",
+        : dependencies.simulation === undefined || !dependencies.readiness.ready
+          ? "setup_required"
+          : "ready",
+    simulationAvailable:
+      dependencies.simulation !== undefined && dependencies.readiness.ready,
+    eventStoreStatus:
+      dependencies.simulation !== undefined && dependencies.readiness.ready
+        ? "secure_open_on_demand"
+        : "not_started_setup_required",
+    localStorageLocations: {
+      controlPlane: ".local/dashboard/control-plane.sqlite",
+      eventStore:
+        dependencies.simulation !== undefined && dependencies.readiness.ready
+          ? ".local/dashboard/event-store (secure open on demand)"
+          : "not initialized (secure setup required)",
+      browserHarness: ".local/phase7-playwright (tests only)",
+    },
     generatedAt,
     csrfToken,
     operatorAuthentication: {
@@ -460,6 +684,62 @@ function buildDashboardState(
   };
 }
 
+function unavailableSimulationReview(): unknown {
+  const policy = Object.freeze({
+    hash: "unavailable",
+    text: "Secure simulation prerequisites are not configured.",
+    allowedAssets: Object.freeze([]),
+    excludedAssets: Object.freeze([]),
+    allowedTestClasses: Object.freeze([]),
+    forbiddenTestClasses: Object.freeze(["active_security_test"]),
+    rules: Object.freeze(["fail_closed"]),
+    unclearRules: Object.freeze([]),
+    requestLimits: Object.freeze({
+      maxRequestsTotal: 0,
+      maxRequestsPerMinute: 0,
+      maxConcurrency: 1,
+    }),
+  });
+  const campaign = Object.freeze({
+    approvalDigest: "unavailable",
+    policyHash: "unavailable",
+    approvedAssets: Object.freeze([]),
+    approvedRiskTiers: Object.freeze([]),
+    accountRefs: Object.freeze([]),
+    allowedActionClasses: Object.freeze([]),
+    contract: Object.freeze({
+      allowedHosts: Object.freeze([]),
+      excludedHosts: Object.freeze([]),
+      allowedMethods: Object.freeze(["GET", "HEAD"]),
+      maxRequests: 0,
+      requestsPerMinute: 0,
+      maxConcurrency: 1,
+      writeActionsAllowed: false,
+      rollbackRequired: true,
+      humanCheckpoints: Object.freeze(["secure_setup_required"]),
+      validFrom: "unavailable",
+      validUntil: "unavailable",
+    }),
+  });
+  return Object.freeze({
+    version: 1,
+    reviewDigest: "",
+    policyV1: policy,
+    campaignV1: campaign,
+    policyV2: policy,
+    policyDiff: Object.freeze({
+      changedRequestLimits: Object.freeze([]),
+      newlyForbiddenTestClasses: Object.freeze([]),
+      newlyAllowedTestClasses: Object.freeze([]),
+      changedRulesAdded: Object.freeze([]),
+      changedRulesRemoved: Object.freeze([]),
+      unclearRules: Object.freeze([]),
+    }),
+    campaignV2: campaign,
+    reportAction: "queue_local_review_only_no_submission",
+  });
+}
+
 function makePolicyDiffs(
   programIds: readonly string[],
   store: ControlPlaneStore,
@@ -521,6 +801,7 @@ function parseCanonicalPath(rawUrl: string | undefined, host: string): string {
 
 function isPostRoute(pathname: string): boolean {
   return (
+    pathname === "/api/local-product/action" ||
     pathname === "/api/programs/import" ||
     pathname === "/api/simulation/run" ||
     pathname === "/api/approvals/decide" ||

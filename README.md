@@ -1,4 +1,4 @@
-# Bug Bounty Copilot – lokale Phase-7-Browserqualifizierung
+# Bug Bounty Copilot – lokal nutzbares Phase-8-Produkt
 
 Bug Bounty Copilot ist ein eigenes, lokal betriebenes Produkt für die sichere Vorbereitung künftiger Bug-Bounty-Workflows. Phase 3 bindet die External-Action-Pipeline an atomare, aktuelle und persistierte Policy-, Kampagnen-, Scope-, Ownership-, Budget- und Approval-Evidence.
 
@@ -34,37 +34,68 @@ werden streng projiziert; Screenshot-Evidence verlässt den Prozess nur als
 Digest eines vollständig opaken, rollen- und zustandsgebundenen
 In-Memory-PNGs. Es existiert weiterhin kein produktiver Browser-Runner.
 
+Phase 8 verbindet Control Plane, Dashboard und Demo-SaaS zu einer gemeinsam
+startbaren lokalen Anwendung. Ein geschlossener 21-Schritte-Assistent führt
+ohne manuelle YAML-, JSON-, SQLite- oder Quellcodebearbeitung von der
+Einrichtung bis zur ausschließlich lokalen Reportprüfung. Programme, Policies,
+Kampagnen, Identitäten, Journey, Inventory, Kandidat und Evidence werden dabei
+ehrlich als flüchtige, deterministische Demo-Projektionen gekennzeichnet. Der
+produktneutrale Katalog `packages/local-journey-catalog` ist mit ID und Digest
+gepinnt; ausschließlich der getrennte Phase-7-Browserharness führt ihn mit
+Playwright aus. Das Produkt projiziert nur Katalogmetadaten und startet keinen
+Browser. Identitäten, kontrolliertes Objekt, Canary-Digest und Demo-Policy
+werden aus einer exakt validierten, digestgebundenen Demo-SaaS-Projektion
+übernommen. Laufzeitdrift entwertet Evidence und Report fail-closed.
+
 Die Anwendung ist weiterhin **kein Live-Scanner**. Sie führt keine aktiven Sicherheitstests aus, erstellt keine realen Konten, besitzt keine funktionsfähige Plattformintegration und reicht keine Reports ein. Sämtliche Demonstrationen laufen deterministisch gegen In-Process-Mocks oder Loopback-Server. Externe Integrationen sind standardmäßig, bei fehlender oder fehlerhafter Konfiguration und bei Laufzeitfehlern deaktiviert.
 
 ## Lokal starten
 
-Voraussetzungen sind macOS, Node.js 24 oder neuer und pnpm 11. Der produktive Dashboard- und CLI-Pfad besitzt keinen In-Memory- oder Klartext-Fallback. Vor dem ersten 18-Schritte-Lauf muss deshalb ein zufälliger, exakt 32 Byte langer Event-Schlüssel im macOS-Schlüsselbund liegen:
+Für den normalen lokalen Demoablauf sind nur Installation und Start nötig:
 
 ```sh
-security add-generic-password -U -s bugbounty-copilot -a event-store-v1 -w "$(openssl rand -base64 24)"
-export BUGBOUNTY_EVENT_KEY_MIN_VERSION=1
+pnpm install --frozen-lockfile
+pnpm app
 ```
 
-Dieser Befehl gehört zur lokalen Einrichtung und darf nicht in Skripte, Logs oder das Repository übernommen werden. Ein fehlender, nicht lesbarer oder falsch langer Eintrag blockiert die Simulation vor jeder Zustandsänderung.
+Danach ist das Dashboard standardmäßig unter
+[http://127.0.0.1:4173](http://127.0.0.1:4173) erreichbar. Ist dieser lokale
+Port belegt, verwendet die Anwendung einen ausgegebenen ephemeren
+Loopback-Port. Die Demo-SaaS bindet ebenfalls an einen beim Start ausgegebenen
+ephemeren Loopback-Port. Fehlende
+Kryptografie-Konfiguration verhindert den UI-Start nicht: Die Anwendung läuft
+dann als `local_setup_shell`; der Event Store wird nicht konstruiert, der Kill
+Switch bleibt aktiv und alle positiven persistenten Core-Routen sind
+serverseitig gesperrt. Bei vollständig validierter Keychain- und
+Operator-Konfiguration lautet der Modus `local_simulation`; der verschlüsselte
+Event Store wird erst bei Bedarf sicher geöffnet. Es existiert kein In-Memory-
+oder Klartext-Secret-Fallback.
+
+### Optional: signierten 18-Schritte-Control-Plane-Lauf freischalten
+
+Voraussetzungen sind macOS, Node.js 24 oder neuer und pnpm 11. Dieser
+fortgeschrittene Pfad ist nicht für den Phase-8-Guided-Flow erforderlich. Er
+benötigt einen separat und offline bereitgestellten, exakt 32 Byte langen
+Event-Schlüssel im macOS-Schlüsselbund. Dieses Repository dokumentiert
+bewusst keinen Secret-tragenden Shell-Einzeiler: Schlüsselmaterial darf weder
+als expandiertes Prozessargument noch in Shell-Historie, Skript, Log,
+Umgebungsvariable oder Repository erscheinen. Die Provisionierung muss einer
+separat geprüften lokalen Keychain-Betriebsanweisung folgen.
 
 `BUGBOUNTY_EVENT_KEY_MIN_VERSION` ist ein verpflichtender, store-spezifischer
-Rollback-Anker ohne Default. Fehlende oder ungültige Konfiguration blockiert
-Dashboard, Simulations-CLI und Event-Key-Admin fail-closed. Ein frischer Store
-beginnt mit `1`; nach erfolgreicher Rotation muss der Wert vor dem nächsten
-Produktstart auf den ausgegebenen neuen Head angehoben werden.
+Rollback-Anker ohne Default für verschlüsselte Eventaktionen. Fehlende oder
+ungültige Konfiguration blockiert diese Aktionen, Simulations-CLI und
+Event-Key-Admin fail-closed; die read-only Oberfläche und der flüchtige
+Phase-8-Demoablauf bleiben verfügbar. Ein frischer Store beginnt mit `1`.
 
-Zusätzlich wird einmalig ein Ed25519-PKCS#8-Schlüssel direkt im macOS-
-Schlüsselbund angelegt. Der folgende Befehl setzt voraus, dass das lokale
-`openssl` Ed25519 unterstützt; die erzeugten Schlüsselbytes werden weder
-ausgegeben noch in eine Datei geschrieben:
-
-```sh
-security add-generic-password -U -s bugbounty-copilot -a operator-ed25519-v1 -T /usr/bin/security -X "$(openssl genpkey -algorithm ED25519 -outform DER 2>/dev/null | xxd -p -c 256)"
-```
+Zusätzlich wird einmalig eine Ed25519-PKCS#8-Credential direkt im
+macOS-Schlüsselbund bereitgestellt. Auch hierfür gilt die separat geprüfte
+Offline-Provisionierung ohne Secret-tragende Kommandozeilenargumente.
 
 Nur nicht geheime Metadaten werden der Anwendung übergeben:
 
 ```sh
+export BUGBOUNTY_EVENT_KEY_MIN_VERSION=1
 export BUGBOUNTY_OPERATOR_KEY_REFERENCE=keychain://bugbounty-copilot/operator-ed25519-v1
 export BUGBOUNTY_OPERATOR_ID=local-reviewer
 export BUGBOUNTY_OPERATOR_KEY_REVISION=1
@@ -72,16 +103,20 @@ export BUGBOUNTY_OPERATOR_KEY_REVISION=1
 
 Es gibt keine automatische Schlüsselbereitstellung, Schlüsseldatei oder
 Klartext-/Umgebungsvariablen-Fallback für das private Schlüsselmaterial. Ohne
-vollständige Konfiguration kann das Dashboard nur blockierte Zustände anzeigen
-und den Kill Switch aktivieren; Simulation, positive Approval-Entscheidungen
-und Kill-Clear bleiben gesperrt. Die CLI bricht vollständig ab.
+vollständige Konfiguration bleiben signierte Simulation, positive
+Approval-Entscheidungen und Kill-Clear gesperrt. Die CLI bricht vollständig
+ab; das Dashboard zeigt den Setupzustand und den sicheren lokalen Demoablauf.
 
 ```sh
-pnpm install --frozen-lockfile
-pnpm dashboard
+pnpm app
 ```
 
-Danach ist das Dashboard ausschließlich unter [http://127.0.0.1:4173](http://127.0.0.1:4173) erreichbar. Es zeigt dauerhaft **SIMULATIONSMODUS** und **EXTERNE INTEGRATIONEN DEAKTIVIERT** an. Die Simulation verlangt sechs einzeln zeitgestempelte lokale Bestätigungen; der globale Kill Switch ist bei einer neuen Datenbank und bei jedem Dashboard-Start aktiv.
+Danach die im Terminal ausgegebene Dashboard-URL öffnen. Sie zeigt dauerhaft
+**SIMULATIONSMODUS**, **EXTERNE INTEGRATIONEN DEAKTIVIERT** und **KEINE REALE
+REPORT-EINREICHUNG** an. Die
+Simulation verlangt sechs einzeln zeitgestempelte lokale Bestätigungen; der
+globale Kill Switch ist bei einer neuen Datenbank und bei jedem
+Dashboard-Start aktiv.
 
 Der vollständige CLI-Ablauf kann separat ausgeführt werden:
 
@@ -149,6 +184,11 @@ Externe Runner sind nicht implementiert; `external_integrations_enabled` ist imm
 - `packages/account-simulation` und `packages/ownership-ledger`: rein lokale Account-Lifecycle-Simulation und kryptografisch gebundene Eigentumsnachweise.
 - `packages/demo-saas` und `packages/simulation`: lokale Demo-Domäne und reproduzierbarer 18-Schritte-Ablauf.
 - `packages/dashboard`: loopback-only HTTP-Control-Plane und Browseroberfläche.
+- `packages/local-runtime`: redigierte, fail-closed Runtime-Readiness ohne I/O.
+- `packages/local-product`: deterministischer, flüchtiger 21-Schritte-
+  Präsentationsworkflow ohne Netzwerk-, Browser- oder Secretzugriff.
+- `packages/local-journey-catalog`: produktneutrale, I/O-freie Quelle des
+  gepinnten Journey-Profils für Produktprojektion und Phase-7-Testharness.
 - `tests/browser`: ausschließlich testseitiger Playwright-Testharness mit
   geschlossenem Rollen-/Routengraph, exakter Loopback-Policy und minimierter
   Digest-Evidence; kein Produkt- oder External-Action-Runner.
@@ -162,8 +202,9 @@ Externe Runner sind nicht implementiert; `external_integrations_enabled` ist imm
   `packages/secret-store` und `packages/policy`: in Phase 6 unveränderte
   Phase-1-Komponenten.
 
-Bedienung und Grenzen stehen in `docs/LOCAL_DASHBOARD_GUIDE.md` und
-`docs/SIMULATION_GUIDE.md`. Die signierte Operatorgrenze ist in
+Bedienung und Grenzen stehen in `docs/FIRST_RUN_GUIDE.md`,
+`docs/USER_GUIDE.md`, `docs/PILOT_READINESS.md` und
+`docs/LOCAL_DASHBOARD_GUIDE.md`. Die signierte Operatorgrenze ist in
 `docs/PHASE4_SIGNED_OPERATOR_APPROVALS.md`, der Event-Key-Lifecycle in
 `docs/PHASE5_EVENT_KEY_LIFECYCLE.md`, die lokale Recovery-Semantik in
 `docs/PHASE6_CONTROL_PLANE_RECOVERY.md` und der geschlossene Browserharness in

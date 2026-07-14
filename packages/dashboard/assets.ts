@@ -6,6 +6,7 @@ export const DASHBOARD_HTML = `<!doctype html>
   <title>Bug Bounty Copilot — Lokale Control Plane</title>
   <link rel="stylesheet" href="/styles.css">
   <script src="/app.js" defer></script>
+  <script src="/phase8.js" defer></script>
 </head>
 <body>
   <header class="masthead">
@@ -17,14 +18,21 @@ export const DASHBOARD_HTML = `<!doctype html>
       <div class="banner-stack" aria-label="Sicherheitsstatus">
         <strong class="banner simulation">SIMULATIONSMODUS</strong>
         <strong class="banner disabled">EXTERNE INTEGRATIONEN DEAKTIVIERT</strong>
+        <strong class="banner disabled">KEINE REALE REPORT-EINREICHUNG</strong>
       </div>
     </div>
     <nav aria-label="Bereiche">
       <a href="#overview">Übersicht</a>
+      <a href="#phase8-onboarding">Einrichtung</a>
+      <a href="#phase8-workflow">Demo-Ablauf</a>
       <a href="#programs">Programme</a>
       <a href="#policies">Policies</a>
       <a href="#campaigns">Kampagnen</a>
       <a href="#approvals">Freigaben</a>
+      <a href="#phase8-journey">Journeys</a>
+      <a href="#phase8-inventory">Inventory</a>
+      <a href="#phase8-candidates">Kandidaten</a>
+      <a href="#phase8-evidence">Evidence</a>
       <a href="#system">System</a>
       <a href="#expert">Expertenansicht</a>
     </nav>
@@ -51,11 +59,137 @@ export const DASHBOARD_HTML = `<!doctype html>
       </div>
     </section>
 
+    <section id="phase8-onboarding" class="panel phase8-panel">
+      <div class="section-heading">
+        <div><p class="eyebrow">Geführte Einrichtung</p><h2>Lokales Onboarding</h2></div>
+        <span id="phase8-onboarding-status" class="capability-badge">Wird geprüft …</span>
+      </div>
+      <div class="feature-badges" aria-label="Funktionsgrenzen">
+        <span>LOKAL SIMULIERT</span><span>EXTERN DEAKTIVIERT</span><span>KEINE SECRETEINGABE</span>
+      </div>
+      <ol id="phase8-onboarding-steps" class="step-list" aria-live="polite"></ol>
+      <div id="phase8-onboarding-details" class="product-grid" aria-live="polite"></div>
+      <p id="phase8-guidance" class="review-package">Der lokale Zustand wird geladen …</p>
+    </section>
+
+    <section id="phase8-workflow" class="panel phase8-panel">
+      <div class="section-heading">
+        <div><p class="eyebrow">Ohne YAML oder JSON</p><h2>Geführter vollständiger Demoablauf</h2></div>
+        <span id="phase8-stage" class="capability-badge">nicht gestartet</span>
+      </div>
+      <div class="feature-badges" aria-label="Funktionsgrenzen">
+        <span>LOKALER DEMOMODUS</span><span>DETERMINISTISCH</span><span>0 EXTERNE AKTIONEN</span>
+      </div>
+      <div class="guided-config" aria-label="Sichere lokale Demoauswahl">
+        <label for="phase8-testmail-schema">Testmail-Schema
+          <select id="phase8-testmail-schema"><option value="plus_addressing_fixture">Plus-Addressing-Fixture</option><option value="subaddress_fixture">Subaddress-Fixture</option></select>
+        </label>
+        <label for="phase8-ai-provider">AIProvider
+          <select id="phase8-ai-provider"><option value="disabled">Deaktiviert (Phase 8)</option></select>
+        </label>
+        <label for="phase8-program-name">Programmname
+          <select id="phase8-program-name"><option value="Local Demo Program">Local Demo Program</option><option value="Local Demo Program Reviewed">Local Demo Program Reviewed</option></select>
+        </label>
+        <fieldset><legend>Assets</legend>
+          <label><input id="phase8-asset-primary" type="checkbox" checked> asset-local-primary</label>
+          <label><input id="phase8-exclude-admin" type="checkbox" checked> asset-local-administration ausschließen</label>
+        </fieldset>
+        <label for="phase8-policy-representation">Policy-Import
+          <select id="phase8-policy-representation"><option value="human_readable_text">Lesbarer Policy-Text</option><option value="structured_fixture">Strukturierte Policy-Fixture</option></select>
+        </label>
+        <label for="phase8-policy-version">Policy-Version
+          <select id="phase8-policy-version"><option value="1">Version 1</option></select>
+        </label>
+        <fieldset><legend>Kampagnenrollen</legend>
+          <label><input id="phase8-role-owner" type="checkbox" checked> Owner</label>
+          <label><input id="phase8-role-member" type="checkbox" checked> Member</label>
+          <label><input id="phase8-role-external" type="checkbox" checked> External</label>
+          <p class="muted">Für die feste Baseline/Test/Kontrolltest-Evidence sind Owner, Member und External gemeinsam erforderlich.</p>
+        </fieldset>
+        <label for="phase8-risk-tier">Risikostufe
+          <select id="phase8-risk-tier"><option value="tier_0_offline">Tier 0 · offline</option></select>
+        </label>
+        <label for="phase8-max-requests">Request-Budget
+          <select id="phase8-max-requests"><option value="0">0</option><option value="4">4</option><option value="8" selected>8</option></select>
+        </label>
+        <label for="phase8-requests-per-minute">Requests pro Minute
+          <select id="phase8-requests-per-minute"><option value="0">0</option><option value="1">1</option><option value="2" selected>2</option></select>
+        </label>
+        <label for="phase8-max-concurrency">Parallelität
+          <select id="phase8-max-concurrency"><option value="1">1</option></select>
+        </label>
+        <label for="phase8-journey-id">Lokale Journey
+          <select id="phase8-journey-id"><option value="phase7-local-demo-role-boundary">Phase-7 Local Demo Role Boundary</option></select>
+        </label>
+        <fieldset><legend>Journey-Rollen</legend>
+          <label><input id="phase8-journey-role-owner" type="checkbox" checked> Owner</label>
+          <label><input id="phase8-journey-role-member" type="checkbox" checked> Member</label>
+          <label><input id="phase8-journey-role-external" type="checkbox" checked> External</label>
+          <p class="muted">Der feste Rollengrenzfall benötigt alle drei Demo-Rollen; Teilmengen werden fail-closed blockiert.</p>
+        </fieldset>
+      </div>
+      <div id="phase8-flow" class="workflow-grid" aria-live="polite"></div>
+      <div class="button-row">
+        <button id="phase8-primary-action" type="button" disabled>Nächsten sicheren Schritt ausführen</button>
+        <button id="phase8-edit-program" type="button" disabled>Programmmetadaten bearbeiten</button>
+        <button id="phase8-archive-program" class="danger" type="button" disabled>Programm archivieren</button>
+        <button id="phase8-start-sessions" type="button" disabled>Lokale Fixture-Sessions starten</button>
+        <button id="phase8-pause-campaign" type="button" disabled>Kampagne pausieren</button>
+        <button id="phase8-cancel-campaign" class="danger" type="button" disabled>Kampagne abbrechen</button>
+      </div>
+      <p id="phase8-operation-status" class="operation-status" aria-live="polite"></p>
+      <div class="product-grid">
+        <article><h3>Programm & Policy</h3><div id="phase8-program"></div></article>
+        <article><h3>Vertrag &amp; Budget</h3><div id="phase8-campaign"></div></article>
+        <article><h3>Rollen &amp; Sessions</h3><div id="phase8-identities"></div></article>
+      </div>
+    </section>
+
+    <section id="phase8-journey" class="panel phase8-panel">
+      <div class="section-heading"><div><p class="eyebrow">Geschlossenes Profil</p><h2>Lokale Journey</h2></div><span class="capability-badge test-only">PHASE-7-KATALOGGEBUNDEN</span></div>
+      <div class="feature-badges"><span>KEINE FREIEN URLS</span><span>KEINE LOCATORS</span><span>KEIN PRODUKT-BROWSERSTART</span></div>
+      <div id="phase8-journey-details" class="data-list"></div>
+      <div class="button-row">
+        <button id="phase8-open-journey-result" type="button" disabled>Journey-Ergebnis öffnen</button>
+        <button id="phase8-pause-journey" type="button" disabled>Journey pausieren</button>
+        <button id="phase8-cancel-journey" class="danger" type="button" disabled>Journey abbrechen</button>
+      </div>
+      <pre id="phase8-journey-result-preview" class="result" aria-live="polite">Das lokale Journey-Ergebnis ist noch nicht verfügbar.</pre>
+    </section>
+
+    <section id="phase8-inventory" class="panel phase8-panel">
+      <div class="section-heading"><div><p class="eyebrow">Scope & Kontrolle</p><h2>Inventory und Ownership</h2></div><span class="capability-badge simulated">LOKAL SIMULIERT</span></div>
+      <div id="phase8-inventory-details" class="product-grid"></div>
+    </section>
+
+    <section id="phase8-candidates" class="panel phase8-panel">
+      <div class="section-heading"><div><p class="eyebrow">Nur Hypothesen</p><h2>Finding-Kandidaten</h2></div><span class="capability-badge simulated">TIER 0 / OFFLINE</span></div>
+      <p>Keine aktive Sicherheitsprüfung: Kandidaten werden ausschließlich aus festen lokalen Demo-Metadaten abgeleitet.</p>
+      <div id="phase8-candidate-details" class="data-list"></div>
+    </section>
+
+    <section id="phase8-evidence" class="panel phase8-panel">
+      <div class="section-heading"><div><p class="eyebrow">Redigierte Metadaten</p><h2>Evidence und lokale Reports</h2></div><span class="capability-badge">KEINE EINREICHUNG</span></div>
+      <div id="phase8-evidence-details" class="product-grid"></div>
+      <div class="button-row">
+        <button id="phase8-report-markdown" type="button" disabled>Markdown öffnen</button>
+        <button id="phase8-report-html" type="button" disabled>HTML öffnen</button>
+        <button id="phase8-report-json" type="button" disabled>JSON öffnen</button>
+      </div>
+      <pre id="phase8-report-preview" class="result" aria-live="polite">Noch kein lokaler Reportentwurf.</pre>
+    </section>
+
+    <section id="phase8-product-status" class="panel phase8-panel">
+      <div class="section-heading"><div><p class="eyebrow">Zentrale Readiness</p><h2>Produktstatus</h2></div><span id="phase8-runtime-state" class="capability-badge">FAIL-CLOSED</span></div>
+      <div id="phase8-runtime-details" class="product-grid" aria-live="polite"></div>
+    </section>
+
     <section id="programs" class="panel">
       <div class="section-heading"><div><p class="eyebrow">Registry</p><h2>Programme</h2></div></div>
       <div class="two-column">
         <div>
-          <h3>Lokaler Import</h3>
+          <h3>Expertenimport (optional)</h3>
+          <p class="muted">Der geführte Demoablauf oben benötigt keine manuelle JSON- oder YAML-Bearbeitung.</p>
           <label for="import-format">Format</label>
           <select id="import-format"><option value="json">JSON</option><option value="yaml">YAML</option></select>
           <label for="import-source">Lokaler Dateiinhalt</label>
@@ -199,6 +333,28 @@ h3 { margin-bottom: 0.65rem; font-size: 1rem; }
 .banner { padding: 0.35rem 0.65rem; border: 1px solid; border-radius: 999px; font-size: 0.68rem; letter-spacing: 0.08em; }
 .banner.simulation { color: var(--cyan); border-color: rgba(76, 227, 215, 0.6); background: rgba(76, 227, 215, 0.08); }
 .banner.disabled { color: var(--amber); border-color: rgba(255, 200, 98, 0.6); background: rgba(255, 200, 98, 0.08); }
+.phase8-panel { border-color: rgba(121, 169, 255, 0.38); }
+.feature-badges { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.8rem 0; }
+.feature-badges span, .capability-badge { display: inline-flex; width: fit-content; padding: 0.28rem 0.55rem; border: 1px solid rgba(255, 200, 98, 0.55); border-radius: 999px; color: var(--amber); background: rgba(255, 200, 98, 0.07); font-size: 0.68rem; font-weight: 800; letter-spacing: 0.05em; }
+.capability-badge.simulated { color: var(--cyan); border-color: rgba(76, 227, 215, 0.55); background: rgba(76, 227, 215, 0.07); }
+.capability-badge.test-only { color: var(--blue); border-color: rgba(121, 169, 255, 0.55); background: rgba(121, 169, 255, 0.07); }
+.step-list { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.55rem; padding: 0; list-style: none; }
+.step-list li { padding: 0.65rem; border: 1px solid var(--line); border-radius: 0.6rem; color: var(--muted); background: rgba(9, 24, 41, 0.72); font-size: 0.78rem; }
+.step-list li.done { color: var(--cyan); border-color: rgba(76, 227, 215, 0.5); }
+.step-list li.current { color: var(--text); border-color: var(--blue); box-shadow: inset 3px 0 var(--blue); }
+.guided-config { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.65rem; margin: 1rem 0; padding: 0.8rem; border: 1px solid var(--line); border-radius: 0.75rem; background: rgba(9, 24, 41, 0.55); }
+.guided-config label { margin: 0; }
+.guided-config fieldset { min-width: 0; margin: 0; border: 1px solid var(--line); border-radius: 0.6rem; }
+.guided-config legend { color: var(--muted); font-size: 0.76rem; }
+.guided-config fieldset label { display: flex; align-items: center; gap: 0.4rem; margin: 0.35rem 0; }
+.guided-config input[type="checkbox"] { width: auto; accent-color: var(--cyan); }
+.workflow-grid { display: grid; grid-template-columns: repeat(7, minmax(100px, 1fr)); gap: 0.45rem; margin: 1rem 0; overflow-x: auto; }
+.workflow-step { min-width: 100px; padding: 0.65rem; border: 1px solid var(--line); border-radius: 0.6rem; color: var(--muted); background: rgba(9, 24, 41, 0.72); font-size: 0.72rem; }
+.workflow-step.done { color: var(--cyan); border-color: rgba(76, 227, 215, 0.5); }
+.workflow-step.current { color: var(--text); border-color: var(--blue); }
+.product-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; margin-top: 1rem; }
+.product-grid article { min-width: 0; padding: 0.9rem; border: 1px solid var(--line); border-radius: 0.72rem; background: rgba(9, 24, 41, 0.75); }
+.product-grid p { margin: 0.32rem 0; color: var(--muted); font-size: 0.78rem; overflow-wrap: anywhere; }
 nav { display: flex; gap: 0.4rem; margin-top: 1rem; overflow-x: auto; padding-bottom: 0.1rem; }
 nav a { flex: 0 0 auto; color: var(--muted); text-decoration: none; padding: 0.4rem 0.65rem; border-radius: 0.5rem; font-size: 0.82rem; }
 nav a:hover, nav a:focus-visible { color: var(--text); background: var(--panel-2); outline: none; }
@@ -240,11 +396,15 @@ footer { padding: 2rem; border-top: 1px solid var(--line); color: var(--muted); 
 @media (max-width: 950px) {
   .metric-grid { grid-template-columns: repeat(3, 1fr); }
   .two-column, .expert-grid { grid-template-columns: 1fr; }
+  .guided-config { grid-template-columns: 1fr 1fr; }
+  .product-grid { grid-template-columns: 1fr 1fr; }
+  .step-list { grid-template-columns: 1fr 1fr; }
 }
 @media (max-width: 620px) {
   .brand-row, .section-heading, .kill-card, .status-strip { align-items: flex-start; flex-direction: column; }
   .banner-stack { text-align: left; }
   .metric-grid, .confirmation-grid { grid-template-columns: 1fr 1fr; }
+  .product-grid, .step-list, .guided-config { grid-template-columns: 1fr; }
   main { width: min(100% - 1rem, 1240px); margin-top: 0.75rem; }
 }
 `;
@@ -255,6 +415,9 @@ export const DASHBOARD_JAVASCRIPT = `
   var csrfToken = "";
   var reviewDigest = "";
   var confirmationTimes = {};
+  var operatorAvailable = false;
+  var secureCoreReady = false;
+  var secureSimulationAvailable = false;
   var lastConfirmationMillis = 0;
   var serverGeneratedMillis = 0;
   var confirmationNames = [
@@ -329,7 +492,7 @@ export const DASHBOARD_JAVASCRIPT = `
         "Payload-Hash: " + record.payloadHash,
         "Entscheidung: " + (record.decidedAt === null ? "ausstehend" : record.decidedBy + " um " + record.decidedAt + " / " + record.userAction)
       ]);
-      if (record.status === "open") {
+      if (record.status === "open" && operatorAvailable && secureCoreReady) {
         var accept = document.createElement("button");
         accept.type = "button";
         accept.textContent = "Ausdrücklich akzeptieren";
@@ -359,10 +522,15 @@ export const DASHBOARD_JAVASCRIPT = `
 
   function render(state) {
     csrfToken = state.csrfToken;
+    operatorAvailable = state.operatorAuthentication.signerConfigured === true;
+    secureCoreReady = state.runtimeReadiness.ready === true;
+    secureSimulationAvailable = state.simulationAvailable === true;
     reviewDigest = state.simulationReview.reviewDigest;
     serverGeneratedMillis = Date.parse(state.generatedAt);
-    element("simulation-actor").value = state.operatorAuthentication.operatorId || "";
+    element("simulation-actor").value = state.operatorAuthentication.operatorId || "local-operator";
     element("simulation-actor").readOnly = state.operatorAuthentication.signerConfigured;
+    element("clear-kill").disabled = !operatorAvailable || !secureCoreReady;
+    element("import-program").disabled = !secureCoreReady;
     setText("count-programs", state.counts.programs);
     setText("count-active-campaigns", state.counts.activeCampaigns);
     setText("count-paused-campaigns", state.counts.pausedCampaigns);
@@ -535,7 +703,8 @@ export const DASHBOARD_JAVASCRIPT = `
       credentials: "same-origin",
       headers: { "accept": "application/json" }
     });
-    render(await readJson(response));
+    var nextState = await readJson(response);
+    window.dispatchEvent(new CustomEvent("bugbounty:dashboard-state", { detail: nextState }));
   }
 
   async function postJson(path, payload) {
@@ -597,10 +766,10 @@ export const DASHBOARD_JAVASCRIPT = `
     confirmationNames.forEach(function (name, index) {
       var input = element("confirm-" + name);
       input.disabled = index === 0
-        ? reviewDigest.length !== 64
+        ? reviewDigest.length !== 64 || !operatorAvailable || !secureSimulationAvailable
         : !element("confirm-" + confirmationNames[index - 1]).checked;
     });
-    element("run-simulation").disabled = !confirmationsComplete() || reviewDigest.length !== 64;
+    element("run-simulation").disabled = !confirmationsComplete() || reviewDigest.length !== 64 || !operatorAvailable || !secureSimulationAvailable;
   }
 
   function actor() {
@@ -696,6 +865,12 @@ export const DASHBOARD_JAVASCRIPT = `
   });
   element("clear-kill").addEventListener("click", function () {
     void changeKillSwitch("/api/kill-switch/clear", "Freigabe");
+  });
+
+  window.addEventListener("bugbounty:dashboard-state", function (event) {
+    var nextState = event.detail;
+    if (!nextState || nextState.version !== 1 || nextState.externalIntegrationsEnabled !== false) return;
+    render(nextState);
   });
 
   void loadState().catch(function (error) {

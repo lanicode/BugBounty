@@ -20,6 +20,7 @@
     "test:egress": "vitest run tests/unit/egress tests/integration/*loopback.test.ts",
     "test:platform-source": "vitest run tests/unit/platform-source tests/property/platform-source.property.test.ts",
     "doctor": "tsx apps/cli/index.ts doctor",
+    "app": "tsx apps/dashboard/index.ts",
     "dashboard": "tsx apps/dashboard/index.ts",
     "validate": "tsx apps/cli/index.ts validate",
     "policy:hash": "tsx apps/cli/index.ts policy:hash",
