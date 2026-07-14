@@ -14,7 +14,14 @@ import {
   type RunningDemoSaasServer,
 } from "../../packages/demo-saas/index.js";
 import { SimulationOrchestrator } from "../../packages/simulation/index.js";
-import { MacOSKeychainSecretStore } from "../../packages/secret-store/index.js";
+import {
+  createKeychainOperatorSigner,
+  type OperatorSigner,
+} from "../../packages/operator-auth/index.js";
+import {
+  MacOSKeychainSecretStore,
+  type SecretStore,
+} from "../../packages/secret-store/index.js";
 import { errorCode } from "../../packages/shared/errors.js";
 
 async function main(): Promise<void> {
@@ -23,13 +30,14 @@ async function main(): Promise<void> {
   const database = await ControlPlaneDatabase.file(
     resolve(runtimeRoot, "control-plane.sqlite"),
   );
-  const store = new ControlPlaneStore(database);
+  const clock = (): Date => new Date();
+  const store = new ControlPlaneStore(database, clock);
   store.setKillSwitch(
     true,
     `system-startup-${String(process.pid)}`,
     new Date().toISOString(),
   );
-  const demo = new DemoSaas(() => new Date());
+  const demo = new DemoSaas(clock);
   let demoServer: RunningDemoSaasServer | undefined;
   let dashboardServer: RunningDashboardServer | undefined;
   let closing = false;
@@ -46,17 +54,26 @@ async function main(): Promise<void> {
 
   try {
     demoServer = await startDemoSaasServer(demo, 0);
+    const secretStore = new MacOSKeychainSecretStore();
+    const operatorSigner = await configuredOperatorSigner(secretStore);
     const simulation = new SimulationOrchestrator(
       store,
       demo,
       resolve(runtimeRoot, "event-store"),
-      new MacOSKeychainSecretStore(),
+      secretStore,
       (version) =>
         `keychain://bugbounty-copilot/event-store-v${String(version)}`,
-      () => new Date(),
+      clock,
+      operatorSigner,
     );
     dashboardServer = await startDashboardServer(
-      { store, demo, simulation, now: () => new Date() },
+      {
+        store,
+        demo,
+        simulation,
+        ...(operatorSigner === undefined ? {} : { operatorSigner }),
+        now: clock,
+      },
       4173,
     );
     process.stdout.write(
@@ -82,6 +99,35 @@ async function main(): Promise<void> {
     await close().catch(() => undefined);
     throw error;
   }
+}
+
+async function configuredOperatorSigner(
+  secretStore: SecretStore,
+): Promise<OperatorSigner | undefined> {
+  const keyReference = process.env["BUGBOUNTY_OPERATOR_KEY_REFERENCE"];
+  const operatorId = process.env["BUGBOUNTY_OPERATOR_ID"];
+  const revisionText = process.env["BUGBOUNTY_OPERATOR_KEY_REVISION"];
+  if (
+    keyReference === undefined &&
+    operatorId === undefined &&
+    revisionText === undefined
+  )
+    return undefined;
+  if (
+    keyReference === undefined ||
+    operatorId === undefined ||
+    revisionText === undefined ||
+    !/^[1-9][0-9]*$/u.test(revisionText)
+  )
+    throw new Error("OPERATOR_SIGNER_CONFIG_INVALID");
+  const keyRevision = Number(revisionText);
+  if (!Number.isSafeInteger(keyRevision))
+    throw new Error("OPERATOR_SIGNER_CONFIG_INVALID");
+  return createKeychainOperatorSigner(secretStore, {
+    keyReference,
+    operatorId,
+    keyRevision,
+  });
 }
 
 main().catch((error: unknown) => {

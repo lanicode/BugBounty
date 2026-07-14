@@ -13,6 +13,10 @@ import {
 } from "../../packages/simulation/index.js";
 import { canonicalJson, sha256 } from "../../packages/shared/canonical.js";
 import { InMemorySecretStore } from "../../packages/secret-store/index.js";
+import {
+  TEST_OPERATOR_ID,
+  TEST_OPERATOR_SIGNER,
+} from "../fixtures/operator-auth.factory.js";
 
 const NOW = "2026-07-13T12:00:00.000Z";
 const databases: ControlPlaneDatabase[] = [];
@@ -34,7 +38,7 @@ function evidence(
 ): HumanSimulationEvidence {
   return {
     version: 2,
-    actor: "local-e2e-reviewer",
+    actor: TEST_OPERATOR_ID,
     confirmedAt: NOW,
     reviewDigest: orchestrator.preview().reviewDigest,
     confirmations: {
@@ -59,7 +63,7 @@ function evidence(
 async function setup() {
   const database = ControlPlaneDatabase.memory();
   databases.push(database);
-  const store = new ControlPlaneStore(database);
+  const store = new ControlPlaneStore(database, () => new Date(NOW));
   const directory = await mkdtemp(join(tmpdir(), "bbc-simulation-"));
   const orchestrator = new SimulationOrchestrator(
     store,
@@ -68,6 +72,7 @@ async function setup() {
     eventSecrets(),
     () => EVENT_KEY_REFERENCE,
     () => new Date(NOW),
+    TEST_OPERATOR_SIGNER,
   );
   return { store, directory, orchestrator };
 }
@@ -143,16 +148,16 @@ describe("Phase 2 complete local simulation", () => {
     const approvals = store.listApprovals();
     expect(
       approvals.find(({ id }) => id === "policy-v1-acceptance")?.decidedAt,
-    ).toBe("2026-07-13T11:59:55.000Z");
+    ).toBe(NOW);
     expect(
       approvals.find(({ id }) => id === "campaign-v1-approval")?.decidedAt,
-    ).toBe("2026-07-13T11:59:56.000Z");
+    ).toBe(NOW);
     expect(
       approvals.find(({ id }) => id === "policy-v2-acceptance")?.decidedAt,
-    ).toBe("2026-07-13T11:59:57.000Z");
+    ).toBe(NOW);
     expect(
       approvals.find(({ id }) => id === "campaign-v2-approval")?.decidedAt,
-    ).toBe("2026-07-13T11:59:58.000Z");
+    ).toBe(NOW);
     expect(
       store
         .listAuditEntries()
@@ -250,6 +255,60 @@ describe("Phase 2 complete local simulation", () => {
     expect(store.isKillSwitchActive()).toBe(true);
   });
 
+  it("requires an injected OperatorSigner before simulation, approval, or kill-clear state can change", async () => {
+    const database = ControlPlaneDatabase.memory();
+    databases.push(database);
+    const store = new ControlPlaneStore(database, () => new Date(NOW));
+    const directory = await mkdtemp(join(tmpdir(), "bbc-simulation-unsigned-"));
+    const orchestrator = new SimulationOrchestrator(
+      store,
+      new DemoSaas(() => new Date(NOW)),
+      directory,
+      eventSecrets(),
+      () => EVENT_KEY_REFERENCE,
+      () => new Date(NOW),
+    );
+    const before = {
+      killSwitchActive: store.isKillSwitchActive(),
+      credential: store.getLocalOperatorCredential(),
+      programs: store.listPrograms(),
+      policies: store.listPolicies("program-local-demo"),
+      campaigns: store.listCampaigns(),
+      approvals: store.listApprovals(),
+      identities: store.listIdentities(),
+      ownedObjects: store.listOwnedObjects(),
+      reports: store.listReportDrafts(),
+      audit: store.listAuditEntries(),
+    };
+
+    await expect(orchestrator.run(evidence(orchestrator))).rejects.toThrow(
+      "OPERATOR_SIGNER_REQUIRED",
+    );
+    expect({
+      killSwitchActive: store.isKillSwitchActive(),
+      credential: store.getLocalOperatorCredential(),
+      programs: store.listPrograms(),
+      policies: store.listPolicies("program-local-demo"),
+      campaigns: store.listCampaigns(),
+      approvals: store.listApprovals(),
+      identities: store.listIdentities(),
+      ownedObjects: store.listOwnedObjects(),
+      reports: store.listReportDrafts(),
+      audit: store.listAuditEntries(),
+    }).toEqual(before);
+    expect(await readdir(directory)).toEqual([]);
+    expect(
+      database.get("SELECT count(*) AS value FROM signed_approval_decisions"),
+    ).toMatchObject({ value: 0 });
+    expect(
+      database.get("SELECT count(*) AS value FROM signed_kill_switch_clears"),
+    ).toMatchObject({ value: 0 });
+
+    const engaged = store.setKillSwitch(true, "signerless-emergency-stop", NOW);
+    expect(engaged.active).toBe(true);
+    expect(store.isKillSwitchActive()).toBe(true);
+  });
+
   it("blocks before state changes when the event secret store is missing or fails", async () => {
     for (const secrets of [
       new InMemorySecretStore(),
@@ -259,7 +318,7 @@ describe("Phase 2 complete local simulation", () => {
     ]) {
       const database = ControlPlaneDatabase.memory();
       databases.push(database);
-      const store = new ControlPlaneStore(database);
+      const store = new ControlPlaneStore(database, () => new Date(NOW));
       const directory = await mkdtemp(join(tmpdir(), "bbc-simulation-secret-"));
       const orchestrator = new SimulationOrchestrator(
         store,
@@ -268,6 +327,7 @@ describe("Phase 2 complete local simulation", () => {
         secrets,
         () => EVENT_KEY_REFERENCE,
         () => new Date(NOW),
+        TEST_OPERATOR_SIGNER,
       );
       await expect(orchestrator.run(evidence(orchestrator))).rejects.toThrow(
         "SIMULATION_EVENT_SECRET_UNAVAILABLE",
@@ -280,7 +340,7 @@ describe("Phase 2 complete local simulation", () => {
   it("rejects demo-policy drift after review before any control-plane mutation", async () => {
     const database = ControlPlaneDatabase.memory();
     databases.push(database);
-    const store = new ControlPlaneStore(database);
+    const store = new ControlPlaneStore(database, () => new Date(NOW));
     const demo = new DemoSaas(() => new Date(NOW));
     const directory = await mkdtemp(join(tmpdir(), "bbc-simulation-stale-"));
     const orchestrator = new SimulationOrchestrator(
@@ -290,6 +350,7 @@ describe("Phase 2 complete local simulation", () => {
       eventSecrets(),
       () => EVENT_KEY_REFERENCE,
       () => new Date(NOW),
+      TEST_OPERATOR_SIGNER,
     );
     const confirmed = evidence(orchestrator);
     const reviewedHash = demo.snapshot().currentPolicy.contentHash;
@@ -320,7 +381,7 @@ describe("Phase 2 complete local simulation", () => {
   it("stops before the next step when the persistent kill switch engages", async () => {
     const database = ControlPlaneDatabase.memory();
     databases.push(database);
-    const store = new ControlPlaneStore(database);
+    const store = new ControlPlaneStore(database, () => new Date(NOW));
     const directory = await mkdtemp(join(tmpdir(), "bbc-simulation-kill-"));
     let demoClockCalls = 0;
     const demo = new DemoSaas(() => {
@@ -340,6 +401,7 @@ describe("Phase 2 complete local simulation", () => {
       eventSecrets(),
       () => EVENT_KEY_REFERENCE,
       () => new Date(NOW),
+      TEST_OPERATOR_SIGNER,
     );
 
     await expect(orchestrator.run(evidence(orchestrator))).rejects.toThrow(
@@ -378,14 +440,14 @@ describe("Phase 2 complete local simulation", () => {
   it("re-engages the persistent kill switch when the injected clock fails after clear", async () => {
     const database = ControlPlaneDatabase.memory();
     databases.push(database);
-    const store = new ControlPlaneStore(database);
-    const directory = await mkdtemp(join(tmpdir(), "bbc-simulation-clock-"));
     let calls = 0;
     const clock = (): Date => {
       calls += 1;
       if (calls >= 3) throw new Error("CLOCK_FAILED");
       return new Date(NOW);
     };
+    const store = new ControlPlaneStore(database, clock);
+    const directory = await mkdtemp(join(tmpdir(), "bbc-simulation-clock-"));
     const orchestrator = new SimulationOrchestrator(
       store,
       new DemoSaas(() => new Date(NOW)),
@@ -393,9 +455,12 @@ describe("Phase 2 complete local simulation", () => {
       eventSecrets(),
       () => EVENT_KEY_REFERENCE,
       clock,
+      TEST_OPERATOR_SIGNER,
     );
     const confirmed = evidence(orchestrator);
-    await expect(orchestrator.run(confirmed)).rejects.toThrow("CLOCK_FAILED");
+    await expect(orchestrator.run(confirmed)).rejects.toThrow(
+      "OPERATOR_CLOCK_UNAVAILABLE",
+    );
     expect(store.isKillSwitchActive()).toBe(true);
   });
 });

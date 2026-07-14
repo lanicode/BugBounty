@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { chromium } from "playwright";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  ApprovalQueue,
   ControlPlaneDatabase,
   ControlPlaneStore,
 } from "../../packages/control-plane/index.js";
@@ -18,6 +19,10 @@ import { SimulationOrchestrator } from "../../packages/simulation/index.js";
 import { InMemorySecretStore } from "../../packages/secret-store/index.js";
 import type { ProgramConfig } from "../../packages/config/types.js";
 import { programConfig } from "../fixtures/factories.js";
+import {
+  TEST_OPERATOR_ID,
+  TEST_OPERATOR_SIGNER,
+} from "../fixtures/operator-auth.factory.js";
 
 const NOW = Date.parse("2026-07-13T12:00:00.000Z");
 
@@ -27,6 +32,10 @@ interface DashboardState {
   readonly externalIntegrationsEnabled: false;
   readonly phase1SecurityStatus: string;
   readonly simulationStatus: string;
+  readonly operatorAuthentication: {
+    readonly signerConfigured: boolean;
+    readonly operatorId: string | null;
+  };
   readonly killSwitch: { readonly active: boolean };
   readonly counts: {
     readonly programs: number;
@@ -66,6 +75,7 @@ interface SimulationResponse {
 
 interface Harness {
   readonly database: ControlPlaneDatabase;
+  readonly store: ControlPlaneStore;
   readonly server: RunningDashboardServer;
 }
 
@@ -77,12 +87,16 @@ afterEach(async () => {
   harnesses.length = 0;
 });
 
-async function startHarness(): Promise<Harness> {
+async function startHarness(
+  options: { readonly withOperatorSigner?: boolean } = {},
+): Promise<Harness> {
   const database = ControlPlaneDatabase.memory();
-  const store = new ControlPlaneStore(database);
   let ticks = 0;
   const now = (): Date => new Date(NOW + ticks++ * 1_000);
+  const store = new ControlPlaneStore(database, now);
   const demo = new DemoSaas(now);
+  const operatorSigner =
+    options.withOperatorSigner === false ? undefined : TEST_OPERATOR_SIGNER;
   const eventRoot = await mkdtemp(join(tmpdir(), "dashboard-events-"));
   const eventSecrets = new InMemorySecretStore();
   eventSecrets.set("secret://dashboard/event-key", new Uint8Array(32).fill(9));
@@ -93,13 +107,15 @@ async function startHarness(): Promise<Harness> {
     eventSecrets,
     () => "secret://dashboard/event-key",
     now,
+    operatorSigner,
   );
   try {
-    const server = await startDashboardServer(
-      { store, demo, simulation, now },
-      0,
-    );
-    const harness = { database, server };
+    const dependencies =
+      operatorSigner === undefined
+        ? { store, demo, simulation, now }
+        : { store, demo, simulation, operatorSigner, now };
+    const server = await startDashboardServer(dependencies, 0);
+    const harness = { database, store, server };
     harnesses.push(harness);
     return harness;
   } catch (error) {
@@ -157,6 +173,10 @@ describe("local dashboard HTTP boundary", () => {
       mode: "simulation",
       externalIntegrationsEnabled: false,
       phase1SecurityStatus: "enforced",
+      operatorAuthentication: {
+        signerConfigured: true,
+        operatorId: TEST_OPERATOR_ID,
+      },
       killSwitch: { active: true },
       counts: { programs: 0 },
     });
@@ -303,7 +323,7 @@ lifecycle: active
       "/api/simulation/run",
       initial.csrfToken,
       {
-        actor: "local-dashboard-user",
+        actor: TEST_OPERATOR_ID,
         confirmations: {
           ...confirmations(),
           queueReportReview: false,
@@ -319,7 +339,7 @@ lifecycle: active
       "/api/simulation/run",
       initial.csrfToken,
       {
-        actor: "local-dashboard-user",
+        actor: TEST_OPERATOR_ID,
         confirmations: confirmations(),
         confirmationTimes: confirmationTimes(),
         reviewDigest: initial.simulationReview.reviewDigest,
@@ -354,7 +374,7 @@ lifecycle: active
       server,
       "/api/kill-switch/engage",
       after.csrfToken,
-      { actor: "local-dashboard-user", confirmed: true },
+      { actor: TEST_OPERATOR_ID, confirmed: true },
     );
     expect(engaged.status).toBe(200);
     expect(await engaged.json()).toMatchObject({ active: true });
@@ -364,7 +384,7 @@ lifecycle: active
       server,
       "/api/kill-switch/clear",
       after.csrfToken,
-      { actor: "local-dashboard-user", confirmed: true },
+      { actor: TEST_OPERATOR_ID, confirmed: true },
     );
     expect(cleared.status).toBe(200);
     expect(await cleared.json()).toMatchObject({ active: false });
@@ -389,7 +409,7 @@ lifecycle: active
         expectedRevision: openApproval?.revision,
         expectedPayloadHash: openApproval?.payloadHash,
         decision: "accepted",
-        actor: "local-dashboard-user",
+        actor: TEST_OPERATOR_ID,
         userAction: "explicit_local_report_review",
       },
     );
@@ -403,6 +423,139 @@ lifecycle: active
         line.includes("approval_decision"),
       ),
     ).toBe(true);
+  });
+
+  it("fails closed for positive operations when no operator signer is configured", async () => {
+    const { database, store, server } = await startHarness({
+      withOperatorSigner: false,
+    });
+    const approval = new ApprovalQueue().enqueue({
+      id: "unsigned-dashboard-approval",
+      kind: "report_bundle",
+      summary: "Review a local unsigned dashboard fixture",
+      technicalDetails: "Local fixture only; no external submission exists.",
+      impact: "No effect unless an authenticated operator decides it.",
+      policyVersion: null,
+      policyHash: null,
+      createdAt: "2026-07-13T11:59:59.000Z",
+      auditReference: "audit:unsigned-dashboard-approval",
+    });
+    store.persistApproval(approval);
+
+    const initial = await state(server);
+    const baseline = persistedDashboardState(initial);
+    expect(initial).toMatchObject({
+      simulationStatus: "ready",
+      operatorAuthentication: {
+        signerConfigured: false,
+        operatorId: null,
+      },
+      killSwitch: { active: true },
+      counts: { openApprovals: 1 },
+    });
+
+    const simulation = await postJson(
+      server,
+      "/api/simulation/run",
+      initial.csrfToken,
+      {
+        actor: TEST_OPERATOR_ID,
+        confirmations: confirmations(),
+        confirmationTimes: confirmationTimes(),
+        reviewDigest: initial.simulationReview.reviewDigest,
+      },
+    );
+    expect(simulation.status).toBe(409);
+    expect(await simulation.json()).toEqual({
+      error: "OPERATOR_SIGNER_REQUIRED",
+    });
+    expect(persistedDashboardState(await state(server))).toEqual(baseline);
+
+    const clear = await postJson(
+      server,
+      "/api/kill-switch/clear",
+      initial.csrfToken,
+      { actor: TEST_OPERATOR_ID, confirmed: true },
+    );
+    expect(clear.status).toBe(409);
+    expect(await clear.json()).toEqual({ error: "OPERATOR_SIGNER_REQUIRED" });
+    expect(persistedDashboardState(await state(server))).toEqual(baseline);
+
+    const decision = await postJson(
+      server,
+      "/api/approvals/decide",
+      initial.csrfToken,
+      {
+        id: approval.id,
+        expectedRevision: approval.revision,
+        expectedPayloadHash: approval.payloadHash,
+        decision: "accepted",
+        actor: TEST_OPERATOR_ID,
+        userAction: "unsigned_local_dashboard_decision",
+      },
+    );
+    expect(decision.status).toBe(409);
+    expect(await decision.json()).toEqual({
+      error: "OPERATOR_SIGNER_REQUIRED",
+    });
+    expect(persistedDashboardState(await state(server))).toEqual(baseline);
+    expect(store.isKillSwitchActive()).toBe(true);
+    expect(store.getLocalOperatorCredential()).toBeUndefined();
+    expect(
+      database.get(
+        "SELECT COUNT(*) AS total FROM operator_signed_statements",
+      )?.["total"],
+    ).toBe(0);
+  });
+
+  it("permits fail-safe kill-switch engagement without an operator signer", async () => {
+    const { database, store, server } = await startHarness({
+      withOperatorSigner: false,
+    });
+    const initial = await state(server);
+    expect(initial.operatorAuthentication).toEqual({
+      signerConfigured: false,
+      operatorId: null,
+    });
+    expect(initial.killSwitch.active).toBe(true);
+    const initialRevision = database.get(
+      "SELECT revision FROM system_state WHERE key='global_kill_switch'",
+    )?.["revision"];
+    if (typeof initialRevision !== "number")
+      throw new Error("TEST_KILL_SWITCH_REVISION_MISSING");
+
+    const engaged = await postJson(
+      server,
+      "/api/kill-switch/engage",
+      initial.csrfToken,
+      { actor: TEST_OPERATOR_ID, confirmed: true },
+    );
+    expect(engaged.status).toBe(200);
+    expect(await engaged.json()).toMatchObject({
+      active: true,
+      revision: initialRevision + 1,
+    });
+
+    const after = await state(server);
+    expect(after.operatorAuthentication).toEqual(
+      initial.operatorAuthentication,
+    );
+    expect(after.killSwitch.active).toBe(true);
+    expect(after.counts).toEqual(initial.counts);
+    expect(after.simulationStatus).toBe(initial.simulationStatus);
+    expect(
+      after.expert.auditLog.some(
+        (line) =>
+          line.includes("kill_switch_change") && line.includes("engaged"),
+      ),
+    ).toBe(true);
+    expect(store.isKillSwitchActive()).toBe(true);
+    expect(store.getLocalOperatorCredential()).toBeUndefined();
+    expect(
+      database.get(
+        "SELECT COUNT(*) AS total FROM operator_signed_statements",
+      )?.["total"],
+    ).toBe(0);
   });
 });
 
@@ -432,6 +585,10 @@ describe("local dashboard browser UI", () => {
       );
       await externalBanner.waitFor();
       expect(await externalBanner.isVisible()).toBe(true);
+      expect(await page.locator("#simulation-actor").inputValue()).toBe(
+        TEST_OPERATOR_ID,
+      );
+      expect(await page.locator("#simulation-actor").isEditable()).toBe(false);
       for (const heading of [
         "Übersicht",
         "Programme",
@@ -594,6 +751,18 @@ function confirmationTimes(): Record<string, string> {
     acceptPolicyV2: "2026-07-13T11:59:57.000Z",
     approveCampaignV2: "2026-07-13T11:59:58.000Z",
     queueReportReview: "2026-07-13T11:59:59.000Z",
+  };
+}
+
+function persistedDashboardState(value: DashboardState): unknown {
+  return {
+    simulationStatus: value.simulationStatus,
+    operatorAuthentication: value.operatorAuthentication,
+    killSwitch: value.killSwitch,
+    counts: value.counts,
+    programs: value.programs,
+    approvals: value.approvals,
+    auditLog: value.expert.auditLog,
   };
 }
 

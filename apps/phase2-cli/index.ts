@@ -14,6 +14,7 @@ import {
   type HumanSimulationEvidence,
 } from "../../packages/simulation/index.js";
 import { MacOSKeychainSecretStore } from "../../packages/secret-store/index.js";
+import { createKeychainOperatorSigner } from "../../packages/operator-auth/index.js";
 import { errorCode, SecurityError } from "../../packages/shared/errors.js";
 
 async function main(): Promise<void> {
@@ -35,14 +36,18 @@ async function main(): Promise<void> {
   await mkdir(runtimeRoot, { recursive: true, mode: 0o700 });
   const database = ControlPlaneDatabase.memory();
   try {
+    const clock = (): Date => new Date();
+    const secretStore = new MacOSKeychainSecretStore();
+    const operatorSigner = await requiredOperatorSigner(secretStore);
     const orchestrator = new SimulationOrchestrator(
-      new ControlPlaneStore(database),
-      new DemoSaas(() => new Date()),
+      new ControlPlaneStore(database, clock),
+      new DemoSaas(clock),
       resolve(runtimeRoot, "event-store"),
-      new MacOSKeychainSecretStore(),
+      secretStore,
       (version) =>
         `keychain://bugbounty-copilot/event-store-v${String(version)}`,
-      () => new Date(),
+      clock,
+      operatorSigner,
     );
     const review = orchestrator.preview();
     process.stdout.write(`Review-Paket:\n${JSON.stringify(review, null, 2)}\n`);
@@ -62,6 +67,27 @@ async function main(): Promise<void> {
   } finally {
     database.close();
   }
+}
+
+async function requiredOperatorSigner(secretStore: MacOSKeychainSecretStore) {
+  const keyReference = process.env["BUGBOUNTY_OPERATOR_KEY_REFERENCE"];
+  const operatorId = process.env["BUGBOUNTY_OPERATOR_ID"];
+  const revisionText = process.env["BUGBOUNTY_OPERATOR_KEY_REVISION"];
+  if (
+    keyReference === undefined ||
+    operatorId === undefined ||
+    revisionText === undefined ||
+    !/^[1-9][0-9]*$/u.test(revisionText)
+  )
+    throw new SecurityError("OPERATOR_SIGNER_CONFIG_INVALID");
+  const keyRevision = Number(revisionText);
+  if (!Number.isSafeInteger(keyRevision))
+    throw new SecurityError("OPERATOR_SIGNER_CONFIG_INVALID");
+  return createKeychainOperatorSigner(secretStore, {
+    keyReference,
+    operatorId,
+    keyRevision,
+  });
 }
 
 main().catch((error: unknown) => {

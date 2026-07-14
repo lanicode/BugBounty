@@ -19,6 +19,10 @@ import type {
   SimulationOrchestrator,
   SimulationSummary,
 } from "../simulation/orchestrator.js";
+import {
+  isTrustedOperatorSigner,
+  type OperatorSigner,
+} from "../operator-auth/index.js";
 import { SIMULATION_CONFIRMATION_ORDER } from "../simulation/orchestrator.js";
 import { errorCode, SecurityError } from "../shared/errors.js";
 import {
@@ -45,10 +49,20 @@ const SECURITY_HEADERS = Object.freeze({
 
 const CONFIRMATION_KEYS = SIMULATION_CONFIRMATION_ORDER;
 
+interface DashboardApprovalDecisionInput {
+  readonly id: string;
+  readonly expectedRevision: 0;
+  readonly expectedPayloadHash: string;
+  readonly decision: "accepted" | "rejected";
+  readonly actor: string;
+  readonly userAction: string;
+}
+
 export interface DashboardDependencies {
   readonly store: ControlPlaneStore;
   readonly demo: DemoSaas;
   readonly simulation: SimulationOrchestrator;
+  readonly operatorSigner?: OperatorSigner;
   readonly now?: () => Date;
 }
 
@@ -67,6 +81,12 @@ export async function startDashboardServer(
     throw new Error("DASHBOARD_PORT_INVALID");
   const now = dependencies.now ?? (() => new Date());
   const csrfToken = randomBytes(32).toString("base64url");
+  const operatorSessionId = randomBytes(32).toString("base64url");
+  if (
+    dependencies.operatorSigner !== undefined &&
+    !isTrustedOperatorSigner(dependencies.operatorSigner)
+  )
+    throw new SecurityError("OPERATOR_SIGNER_UNTRUSTED");
   const binding: { expectedHost?: string; origin?: string } = {};
   let lastSimulation: SimulationSummary | undefined;
   let simulationRunning = false;
@@ -151,17 +171,51 @@ export async function startDashboardServer(
       case "/api/kill-switch/engage":
       case "/api/kill-switch/clear": {
         const input = parseKillSwitchRequest(body);
-        const result = dependencies.store.setKillSwitch(
-          pathname.endsWith("/engage"),
-          input.actor,
-          timestamp(now),
-        );
+        const at = timestamp(now);
+        const result = pathname.endsWith("/engage")
+          ? dependencies.store.setKillSwitch(true, input.actor, at)
+          : clearKillSwitchWithSigner(
+              dependencies,
+              operatorSessionId,
+              input.actor,
+              at,
+            );
         sendJson(response, 200, result);
         return;
       }
       case "/api/approvals/decide": {
-        const input = parseApprovalDecisionRequest(body, timestamp(now));
-        const approval = dependencies.store.decideApproval(input);
+        const at = timestamp(now);
+        const input = parseApprovalDecisionRequest(body);
+        const signer = requireOperatorSigner(dependencies);
+        assertSignerMatchesActor(signer, input.actor);
+        ensureOperatorEnrolled(
+          dependencies.store,
+          signer,
+          operatorSessionId,
+          at,
+        );
+        const context = dependencies.store.describeApprovalDecision(input.id);
+        if (
+          input.expectedRevision !== context.expectedRevision ||
+          input.expectedPayloadHash !== context.approvalPayloadHashSha256
+        )
+          throw new SecurityError("DASHBOARD_APPROVAL_DECISION_STALE");
+        const approval = dependencies.store.decideApproval(
+          signer.signApprovalDecision({
+            controlPlaneId: context.controlPlaneId,
+            approvalId: context.approvalId,
+            approvalKind: context.approvalKind,
+            approvalPayloadHashSha256: context.approvalPayloadHashSha256,
+            expectedRevision: context.expectedRevision,
+            decision: input.decision,
+            userAction: input.userAction,
+            contextDigestSha256: context.contextDigestSha256,
+            sessionId: operatorSessionId,
+            nonce: randomBytes(32).toString("base64url"),
+            issuedAt: at,
+            expiresAt: operatorStatementExpiry(at),
+          }),
+        );
         sendJson(response, 200, { approval });
         return;
       }
@@ -269,6 +323,12 @@ function buildDashboardState(
         : "ready",
     generatedAt,
     csrfToken,
+    operatorAuthentication: {
+      signerConfigured: isTrustedOperatorSigner(dependencies.operatorSigner),
+      operatorId: isTrustedOperatorSigner(dependencies.operatorSigner)
+        ? dependencies.operatorSigner.credential.operator_id
+        : null,
+    },
     simulationReview,
     killSwitch: { active: killSwitchActive },
     counts: {
@@ -471,8 +531,7 @@ function isPostRoute(pathname: string): boolean {
 
 function parseApprovalDecisionRequest(
   value: unknown,
-  at: string,
-): Parameters<ControlPlaneStore["decideApproval"]>[0] {
+): DashboardApprovalDecisionInput {
   assertExactObject(
     value,
     [
@@ -512,8 +571,81 @@ function parseApprovalDecisionRequest(
     decision,
     actor,
     userAction: userAction.trim(),
-    at,
   });
+}
+
+function requireOperatorSigner(
+  dependencies: DashboardDependencies,
+): OperatorSigner {
+  const signer = dependencies.operatorSigner;
+  if (!isTrustedOperatorSigner(signer))
+    throw new SecurityError("OPERATOR_SIGNER_REQUIRED");
+  return signer;
+}
+
+function assertSignerMatchesActor(signer: OperatorSigner, actor: string): void {
+  if (signer.credential.operator_id !== actor)
+    throw new SecurityError("OPERATOR_IDENTITY_MISMATCH");
+}
+
+function ensureOperatorEnrolled(
+  store: ControlPlaneStore,
+  signer: OperatorSigner,
+  sessionId: string,
+  at: string,
+): void {
+  const current = store.getLocalOperatorCredential();
+  if (current !== undefined) {
+    if (
+      current.operator_id !== signer.credential.operator_id ||
+      current.public_key_spki_base64url !==
+        signer.credential.public_key_spki_base64url ||
+      current.key_fingerprint_sha256 !==
+        signer.credential.key_fingerprint_sha256 ||
+      current.key_revision !== signer.credential.key_revision
+    )
+      throw new SecurityError("OPERATOR_CREDENTIAL_MISMATCH");
+  }
+  const proof = signer.signEnrollment({
+    controlPlaneId: store.getControlPlaneId(),
+    sessionId,
+    nonce: randomBytes(32).toString("base64url"),
+    issuedAt: at,
+    expiresAt: operatorStatementExpiry(at),
+  });
+  if (current === undefined) store.enrollLocalOperator(proof);
+  else store.authenticateLocalOperatorSession(proof);
+}
+
+function clearKillSwitchWithSigner(
+  dependencies: DashboardDependencies,
+  sessionId: string,
+  actor: string,
+  at: string,
+): { readonly active: false; readonly revision: number } {
+  const signer = requireOperatorSigner(dependencies);
+  assertSignerMatchesActor(signer, actor);
+  ensureOperatorEnrolled(dependencies.store, signer, sessionId, at);
+  const context = dependencies.store.describeKillSwitchClear();
+  return dependencies.store.clearKillSwitch(
+    signer.signKillSwitchClear({
+      controlPlaneId: context.controlPlaneId,
+      expectedRevision: context.expectedRevision,
+      userAction: "explicit_local_dashboard_kill_switch_clear",
+      contextDigestSha256: context.contextDigestSha256,
+      sessionId,
+      nonce: randomBytes(32).toString("base64url"),
+      issuedAt: at,
+      expiresAt: operatorStatementExpiry(at),
+    }),
+  );
+}
+
+function operatorStatementExpiry(issuedAt: string): string {
+  const milliseconds = Date.parse(issuedAt);
+  if (!Number.isFinite(milliseconds))
+    throw new SecurityError("OPERATOR_STATEMENT_TIME_INVALID");
+  return new Date(milliseconds + 5 * 60 * 1_000).toISOString();
 }
 
 function assertMutationHeaders(

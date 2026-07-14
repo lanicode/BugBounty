@@ -17,6 +17,7 @@ import {
 import type { ControlPlaneStore } from "../control-plane/store.js";
 import type {
   ApprovalKind,
+  ApprovalRecord,
   CampaignRecord,
   TestIdentityRole,
 } from "../control-plane/types.js";
@@ -28,6 +29,10 @@ import {
   SimulationReceiptAuthority,
 } from "../ownership-ledger/ledger.js";
 import type { SecretStore } from "../secret-store/store.js";
+import {
+  isTrustedOperatorSigner,
+  type OperatorSigner,
+} from "../operator-auth/index.js";
 import { canonicalJson, sha256 } from "../shared/canonical.js";
 import { SecurityError } from "../shared/errors.js";
 
@@ -161,6 +166,7 @@ export const SIMULATION_CONFIRMATION_ORDER = Object.freeze([
 
 export class SimulationOrchestrator {
   #review: SimulationReviewPackage | undefined;
+  readonly #operatorSessionId = randomBytes(32).toString("base64url");
 
   public constructor(
     private readonly store: ControlPlaneStore,
@@ -169,7 +175,14 @@ export class SimulationOrchestrator {
     private readonly eventSecrets: SecretStore,
     private readonly eventKeyReference: (version: number) => string,
     private readonly now: () => Date,
-  ) {}
+    private readonly operatorSigner?: OperatorSigner,
+  ) {
+    if (
+      this.operatorSigner !== undefined &&
+      !isTrustedOperatorSigner(this.operatorSigner)
+    )
+      throw new SecurityError("OPERATOR_SIGNER_UNTRUSTED");
+  }
 
   public preview(): SimulationReviewPackage {
     if (this.#review !== undefined) return this.#review;
@@ -247,6 +260,7 @@ export class SimulationOrchestrator {
         throw new SecurityError("SIMULATION_REVIEW_DIGEST_MISMATCH");
       if (!this.store.isKillSwitchActive())
         throw new SecurityError("SIMULATION_REQUIRES_FRESH_STATE");
+      const signer = this.requireOperatorSigner(confirmed.actor);
       const demoPolicyV1 = this.demo.snapshot().currentPolicy;
       const policyV1 = makePolicyV1(demoPolicyV1.rules);
       if (policyV1.policyHash !== this.preview().policyV1.hash)
@@ -254,10 +268,20 @@ export class SimulationOrchestrator {
       await this.assertEventKeyReady();
       const at = confirmed.confirmedAt;
       const initialAt = confirmed.confirmationTimes.clearKillSwitch;
-      this.store.setKillSwitch(
-        false,
-        confirmed.actor,
-        confirmed.confirmationTimes.clearKillSwitch,
+      const initialSignedAt = strictClockTimestamp(this.now);
+      this.ensureOperatorEnrolled(signer, initialSignedAt);
+      const killContext = this.store.describeKillSwitchClear();
+      this.store.clearKillSwitch(
+        signer.signKillSwitchClear({
+          controlPlaneId: killContext.controlPlaneId,
+          expectedRevision: killContext.expectedRevision,
+          userAction: "explicit_local_simulation_kill_switch_clear",
+          contextDigestSha256: killContext.contextDigestSha256,
+          sessionId: this.#operatorSessionId,
+          nonce: randomBytes(32).toString("base64url"),
+          issuedAt: initialSignedAt,
+          expiresAt: operatorStatementExpiry(initialSignedAt),
+        }),
       );
       const steps: SimulationStep[] = [];
       const recordStep = (step: SimulationStep): void => {
@@ -321,13 +345,17 @@ export class SimulationOrchestrator {
         1,
       );
       recordStep("campaign_contract_created");
-      this.acceptCampaignApproval("campaign-v1-approval", campaign, confirmed);
+      const campaignV1DecisionAt = this.acceptCampaignApproval(
+        "campaign-v1-approval",
+        campaign,
+        confirmed,
+      );
       campaign = this.advanceCampaign(
         campaign,
         {
           kind: "approve",
           actor: confirmed.actor,
-          at: confirmed.confirmationTimes.approveCampaignV1,
+          at: campaignV1DecisionAt,
         },
         1,
       );
@@ -452,13 +480,17 @@ export class SimulationOrchestrator {
         throw new SecurityError("SIMULATION_CAMPAIGN_REVIEW_MISMATCH");
       this.store.updateCampaign(campaign.revision, rebound);
       campaign = rebound;
-      this.acceptCampaignApproval("campaign-v2-approval", campaign, confirmed);
+      const campaignV2DecisionAt = this.acceptCampaignApproval(
+        "campaign-v2-approval",
+        campaign,
+        confirmed,
+      );
       campaign = this.advanceCampaign(
         campaign,
         {
           kind: "approve",
           actor: confirmed.actor,
-          at: confirmed.confirmationTimes.approveCampaignV2,
+          at: campaignV2DecisionAt,
         },
         2,
       );
@@ -546,21 +578,18 @@ export class SimulationOrchestrator {
       policyHash,
       at: policyApprovalCreationTime(evidence, version),
     });
-    this.store.decideApproval({
-      id: approval.id,
-      expectedRevision: approval.revision,
-      expectedPayloadHash: approval.payloadHash,
+    const decision = this.decideApproval({
+      approvalId: approval.id,
       decision: "accepted",
-      actor: evidence.actor,
       userAction: `explicit_local_policy_v${String(version)}_acceptance`,
-      at: policyConfirmationTime(evidence, version),
+      actor: evidence.actor,
     });
     this.store.acceptPolicy({
       programId: "program-local-demo",
       version,
       expectedPolicyHash: policyHash,
       acceptedBy: evidence.actor,
-      acceptedAt: policyConfirmationTime(evidence, version),
+      acceptedAt: requiredDecisionTimestamp(decision),
       auditReference: `audit:${approvalId}`,
     });
   }
@@ -569,7 +598,7 @@ export class SimulationOrchestrator {
     approvalId: string,
     campaign: CampaignRecord,
     evidence: HumanSimulationEvidence,
-  ): void {
+  ): string {
     const approval = this.enqueueApproval({
       id: approvalId,
       kind: "campaign_contract",
@@ -580,15 +609,75 @@ export class SimulationOrchestrator {
       policyHash: campaign.policyHash,
       at: campaignApprovalCreationTime(evidence, campaign.policyVersion),
     });
-    this.store.decideApproval({
-      id: approval.id,
-      expectedRevision: 0,
-      expectedPayloadHash: approval.payloadHash,
-      decision: "accepted",
-      actor: evidence.actor,
-      userAction: `explicit_local_campaign_v${String(campaign.policyVersion)}_approval`,
-      at: campaignConfirmationTime(evidence, campaign.policyVersion),
+    return requiredDecisionTimestamp(
+      this.decideApproval({
+        approvalId: approval.id,
+        decision: "accepted",
+        userAction: `explicit_local_campaign_v${String(campaign.policyVersion)}_approval`,
+        actor: evidence.actor,
+      }),
+    );
+  }
+
+  private decideApproval(input: {
+    readonly approvalId: string;
+    readonly decision: "accepted" | "rejected";
+    readonly userAction: string;
+    readonly actor: string;
+  }): ApprovalRecord {
+    const signer = this.requireOperatorSigner(input.actor);
+    const signedAt = strictClockTimestamp(this.now);
+    this.ensureOperatorEnrolled(signer, signedAt);
+    const context = this.store.describeApprovalDecision(input.approvalId);
+    return this.store.decideApproval(
+      signer.signApprovalDecision({
+        controlPlaneId: context.controlPlaneId,
+        approvalId: context.approvalId,
+        approvalKind: context.approvalKind,
+        approvalPayloadHashSha256: context.approvalPayloadHashSha256,
+        expectedRevision: context.expectedRevision,
+        decision: input.decision,
+        userAction: input.userAction,
+        contextDigestSha256: context.contextDigestSha256,
+        sessionId: this.#operatorSessionId,
+        nonce: randomBytes(32).toString("base64url"),
+        issuedAt: signedAt,
+        expiresAt: operatorStatementExpiry(signedAt),
+      }),
+    );
+  }
+
+  private requireOperatorSigner(actor: string): OperatorSigner {
+    const signer = this.operatorSigner;
+    if (!isTrustedOperatorSigner(signer))
+      throw new SecurityError("OPERATOR_SIGNER_REQUIRED");
+    if (signer.credential.operator_id !== actor)
+      throw new SecurityError("OPERATOR_IDENTITY_MISMATCH");
+    return signer;
+  }
+
+  private ensureOperatorEnrolled(signer: OperatorSigner, at: string): void {
+    const current = this.store.getLocalOperatorCredential();
+    if (current !== undefined) {
+      if (
+        current.operator_id !== signer.credential.operator_id ||
+        current.public_key_spki_base64url !==
+          signer.credential.public_key_spki_base64url ||
+        current.key_fingerprint_sha256 !==
+          signer.credential.key_fingerprint_sha256 ||
+        current.key_revision !== signer.credential.key_revision
+      )
+        throw new SecurityError("OPERATOR_CREDENTIAL_MISMATCH");
+    }
+    const proof = signer.signEnrollment({
+      controlPlaneId: this.store.getControlPlaneId(),
+      sessionId: this.#operatorSessionId,
+      nonce: randomBytes(32).toString("base64url"),
+      issuedAt: at,
+      expiresAt: operatorStatementExpiry(at),
     });
+    if (current === undefined) this.store.enrollLocalOperator(proof);
+    else this.store.authenticateLocalOperatorSession(proof);
   }
 
   private readonly approvals = new ApprovalQueue();
@@ -878,6 +967,49 @@ function failureTimestamp(now: () => Date): string {
     // A clock dependency failure must not prevent kill-switch engagement.
   }
   return new Date().toISOString();
+}
+
+function strictClockTimestamp(now: () => Date): string {
+  let candidate: unknown;
+  try {
+    candidate = now();
+  } catch {
+    throw new SecurityError("OPERATOR_CLOCK_UNAVAILABLE");
+  }
+  if (
+    typeof candidate !== "object" ||
+    candidate === null ||
+    Reflect.getPrototypeOf(candidate) !== Date.prototype
+  )
+    throw new SecurityError("OPERATOR_CLOCK_INVALID");
+  let milliseconds: unknown;
+  try {
+    const getTime: unknown = Reflect.get(Date.prototype, "getTime");
+    if (typeof getTime !== "function") throw new Error("DATE_INTRINSIC");
+    milliseconds = Reflect.apply(getTime, candidate, []);
+  } catch {
+    throw new SecurityError("OPERATOR_CLOCK_INVALID");
+  }
+  if (typeof milliseconds !== "number" || !Number.isFinite(milliseconds))
+    throw new SecurityError("OPERATOR_CLOCK_INVALID");
+  return new Date(milliseconds).toISOString();
+}
+
+function requiredDecisionTimestamp(decision: ApprovalRecord): string {
+  if (
+    decision.status === "open" ||
+    decision.revision !== 1 ||
+    decision.decidedAt === null
+  )
+    throw new SecurityError("SIGNED_APPROVAL_DECISION_INVALID");
+  return decision.decidedAt;
+}
+
+function operatorStatementExpiry(issuedAt: string): string {
+  const milliseconds = Date.parse(issuedAt);
+  if (!Number.isFinite(milliseconds))
+    throw new SecurityError("OPERATOR_STATEMENT_TIME_INVALID");
+  return new Date(milliseconds + 5 * 60 * 1_000).toISOString();
 }
 
 function makePolicyV1(rules: {

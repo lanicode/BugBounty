@@ -115,7 +115,7 @@ export const DASHBOARD_HTML = `<!doctype html>
         <p>Prüfe das versions- und hashgebundene Review-Paket. Die Kontrollpunkte werden anschließend nur in der vorgegebenen Reihenfolge freigeschaltet; es wird nichts extern eingereicht.</p>
         <div id="simulation-review" class="review-package" aria-live="polite">Review-Paket wird geladen …</div>
         <label for="simulation-actor">Lokaler Akteur</label>
-        <input id="simulation-actor" value="local-dashboard-user" autocomplete="off">
+        <input id="simulation-actor" value="" autocomplete="off">
         <div class="confirmation-grid">
           <label><input id="confirm-clearKillSwitch" type="checkbox" disabled> Kill Switch für diesen lokalen Lauf freigeben</label>
           <label><input id="confirm-acceptPolicyV1" type="checkbox" disabled> Angezeigte Policy Version 1 samt Hash lokal akzeptieren</label>
@@ -361,6 +361,8 @@ export const DASHBOARD_JAVASCRIPT = `
     csrfToken = state.csrfToken;
     reviewDigest = state.simulationReview.reviewDigest;
     serverGeneratedMillis = Date.parse(state.generatedAt);
+    element("simulation-actor").value = state.operatorAuthentication.operatorId || "";
+    element("simulation-actor").readOnly = state.operatorAuthentication.signerConfigured;
     setText("count-programs", state.counts.programs);
     setText("count-active-campaigns", state.counts.activeCampaigns);
     setText("count-paused-campaigns", state.counts.pausedCampaigns);
