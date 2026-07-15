@@ -11,7 +11,6 @@ import {
   MacOSHackerOneKeychainMutationBackend,
   resolveHackerOneMetadataReadRuntime,
 } from "../../packages/hackerone-readonly/index.js";
-import { MacOSKeychainSecretStore } from "../../packages/secret-store/index.js";
 import { HackerOneMetadataActionGate } from "../../packages/external-actions/index.js";
 import { errorCode, SecurityError } from "../../packages/shared/errors.js";
 
@@ -44,11 +43,8 @@ async function main(): Promise<void> {
       controlPlane,
       runtime,
     );
-    const keychain = new MacOSKeychainSecretStore();
-    const credentials = new HackerOneCredentialVault(
-      keychain,
-      new MacOSHackerOneKeychainMutationBackend(),
-    );
+    const keychain = new MacOSHackerOneKeychainMutationBackend();
+    const credentials = new HackerOneCredentialVault(keychain, keychain);
     const client = new HackerOneReadOnlyClient({
       runtime,
       credentials,

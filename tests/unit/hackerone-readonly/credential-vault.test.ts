@@ -1,3 +1,7 @@
+import { appendFile, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import type { SecretStore } from "../../../packages/secret-store/index.js";
 import { sha256 } from "../../../packages/shared/canonical.js";
@@ -5,10 +9,12 @@ import {
   consumeHackerOneCredentialLease,
   HackerOneCredentialVault,
   MacOSHackerOneKeychainMutationBackend,
-  SpawnHackerOneSecurityCliRunner,
+  prepareMacOSHackerOneKeychainHelper,
+  SpawnHackerOneKeychainHelperRunner,
   type HackerOneKeychainMutationBackend,
-  type HackerOneSecurityCliProcess,
-  type HackerOneSecurityCliRunner,
+  type HackerOneKeychainHelperOperation,
+  type HackerOneKeychainHelperProcess,
+  type HackerOneKeychainHelperRunner,
 } from "../../../packages/hackerone-readonly/credential-vault.js";
 import {
   HACKERONE_IDENTIFIER_REFERENCE,
@@ -16,8 +22,25 @@ import {
 } from "../../../packages/hackerone-readonly/types.js";
 
 const encoder = new TextEncoder();
+const HELPER_SOURCE_PATH = fileURLToPath(
+  new URL(
+    "../../../packages/hackerone-readonly/native/macos-keychain-helper.c",
+    import.meta.url,
+  ),
+);
 const SYNTHETIC_IDENTIFIER = "synthetic-identifier-value";
 const SYNTHETIC_TOKEN = "synthetic-token-value";
+
+function syntheticCredentialEnvelope(
+  role: "identifier" | "token",
+  value = "printable-secret",
+): Uint8Array {
+  const generation = Buffer.alloc(16, 1).toString("base64url");
+  const encodedSecret = Buffer.from(value, "utf8").toString("base64url");
+  return encoder.encode(
+    `BBC-H1-CRED-V1.${role === "identifier" ? "i" : "t"}.${generation}.${encodedSecret}`,
+  );
+}
 
 class RecordingSecretStore implements SecretStore {
   public readonly calls: string[] = [];
@@ -48,26 +71,38 @@ class RecordingMutationBackend implements HackerOneKeychainMutationBackend {
   public readonly failures = new Set<MutationName>();
   public readonly synchronousFailures = new Set<MutationName>();
 
+  public constructor(private readonly persisted?: RecordingSecretStore) {}
+
   public storeIdentifier(value: Uint8Array): Promise<void> {
-    return this.store("storeIdentifier", value);
+    return this.store("storeIdentifier", HACKERONE_IDENTIFIER_REFERENCE, value);
   }
 
   public storeToken(value: Uint8Array): Promise<void> {
-    return this.store("storeToken", value);
+    return this.store("storeToken", HACKERONE_TOKEN_REFERENCE, value);
   }
 
   public deleteIdentifier(): Promise<void> {
-    return this.invoke("deleteIdentifier");
+    return this.remove("deleteIdentifier", HACKERONE_IDENTIFIER_REFERENCE);
   }
 
   public deleteToken(): Promise<void> {
-    return this.invoke("deleteToken");
+    return this.remove("deleteToken", HACKERONE_TOKEN_REFERENCE);
   }
 
-  private store(name: MutationName, value: Uint8Array): Promise<void> {
+  private async store(
+    name: MutationName,
+    reference: string,
+    value: Uint8Array,
+  ): Promise<void> {
     this.copies.push(Uint8Array.from(value));
     this.references.push(value);
-    return this.invoke(name);
+    await this.invoke(name);
+    this.persisted?.values.set(reference, Uint8Array.from(value));
+  }
+
+  private async remove(name: MutationName, reference: string): Promise<void> {
+    await this.invoke(name);
+    this.persisted?.values.delete(reference);
   }
 
   private invoke(name: MutationName): Promise<void> {
@@ -80,24 +115,44 @@ class RecordingMutationBackend implements HackerOneKeychainMutationBackend {
   }
 }
 
-class RecordingSecurityCliRunner implements HackerOneSecurityCliRunner {
+class RecordingKeychainHelperRunner implements HackerOneKeychainHelperRunner {
   public readonly calls: {
-    readonly args: readonly string[];
+    readonly operation: HackerOneKeychainHelperOperation;
     readonly secretCopy: Uint8Array | null;
     readonly secretReference: Uint8Array | undefined;
   }[] = [];
 
-  public run(args: readonly string[], secret?: Uint8Array): Promise<void> {
+  public constructor(private readonly persisted?: RecordingSecretStore) {}
+
+  public execute(
+    operation: HackerOneKeychainHelperOperation,
+    secret?: Uint8Array,
+  ): Promise<Uint8Array | undefined> {
     this.calls.push({
-      args: [...args],
+      operation,
       secretCopy: secret === undefined ? null : Uint8Array.from(secret),
       secretReference: secret,
     });
-    return Promise.resolve();
+    const reference = operation.endsWith("-identifier")
+      ? HACKERONE_IDENTIFIER_REFERENCE
+      : operation.endsWith("-token")
+        ? HACKERONE_TOKEN_REFERENCE
+        : undefined;
+    if (reference !== undefined && operation.startsWith("read-")) {
+      const value = this.persisted?.values.get(reference);
+      return value === undefined
+        ? Promise.reject(new Error("SYNTHETIC_HELPER_SECRET_MISSING"))
+        : Promise.resolve(Uint8Array.from(value));
+    }
+    if (reference !== undefined && secret !== undefined)
+      this.persisted?.values.set(reference, Uint8Array.from(secret));
+    else if (reference !== undefined && operation.startsWith("delete-"))
+      this.persisted?.values.delete(reference);
+    return Promise.resolve(undefined);
   }
 }
 
-class FailingSecurityCliProcess implements HackerOneSecurityCliProcess {
+class FailingKeychainHelperProcess implements HackerOneKeychainHelperProcess {
   public input: Uint8Array | undefined;
   public killCount = 0;
   public listenersRemoved = false;
@@ -149,19 +204,66 @@ class FailingSecurityCliProcess implements HackerOneSecurityCliProcess {
   }
 }
 
+class SuccessfulKeychainHelperProcess implements HackerOneKeychainHelperProcess {
+  public inputReference: Uint8Array | undefined;
+  public inputSnapshot: Uint8Array | undefined;
+  public listenersRemoved = false;
+  private closeListener:
+    ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined;
+  private stdoutListener: ((chunk: unknown) => void) | undefined;
+
+  public constructor(private readonly stdout?: Buffer) {}
+
+  public onStdoutData(listener: (chunk: unknown) => void): void {
+    this.stdoutListener = listener;
+  }
+
+  public onStderrData(listener: (chunk: unknown) => void): void {
+    void listener;
+  }
+
+  public onStdinError(listener: () => void): void {
+    void listener;
+  }
+
+  public onError(listener: () => void): void {
+    void listener;
+  }
+
+  public onClose(
+    listener: (code: number | null, signal: NodeJS.Signals | null) => void,
+  ): void {
+    this.closeListener = listener;
+  }
+
+  public writeInput(input: Uint8Array | undefined): void {
+    this.inputReference = input;
+    this.inputSnapshot =
+      input === undefined ? undefined : Uint8Array.from(input);
+    if (this.stdout !== undefined) this.stdoutListener?.(this.stdout);
+    this.closeListener?.(0, null);
+  }
+
+  public removeAllListeners(): void {
+    this.listenersRemoved = true;
+    this.closeListener = undefined;
+    this.stdoutListener = undefined;
+  }
+
+  public kill(): void {
+    throw new Error("SYNTHETIC_SUCCESS_PROCESS_MUST_NOT_BE_KILLED");
+  }
+}
+
 async function configuredSecretStore(): Promise<RecordingSecretStore> {
   const store = new RecordingSecretStore();
-  const mutations = new RecordingMutationBackend();
+  const mutations = new RecordingMutationBackend(store);
   await new HackerOneCredentialVault(store, mutations).store(
     SYNTHETIC_IDENTIFIER,
     SYNTHETIC_TOKEN,
   );
-  const identifierEnvelope = mutations.copies[0];
-  const tokenEnvelope = mutations.copies[1];
-  if (identifierEnvelope === undefined || tokenEnvelope === undefined)
-    throw new Error("TEST_PAIR_SETUP_FAILED");
-  store.values.set(HACKERONE_IDENTIFIER_REFERENCE, identifierEnvelope);
-  store.values.set(HACKERONE_TOKEN_REFERENCE, tokenEnvelope);
+  store.calls.length = 0;
+  store.returned.length = 0;
   return store;
 }
 
@@ -305,14 +407,15 @@ describe("HackerOne credential presence and loading", () => {
   });
 
   it("rejects generation-mismatched entries left by interleaved writers", async () => {
-    const firstWriter = new RecordingMutationBackend();
-    const secondWriter = new RecordingMutationBackend();
-    const unusedSecrets = new RecordingSecretStore();
-    await new HackerOneCredentialVault(unusedSecrets, firstWriter).store(
+    const firstSecrets = new RecordingSecretStore();
+    const secondSecrets = new RecordingSecretStore();
+    const firstWriter = new RecordingMutationBackend(firstSecrets);
+    const secondWriter = new RecordingMutationBackend(secondSecrets);
+    await new HackerOneCredentialVault(firstSecrets, firstWriter).store(
       "first-identifier",
       "first-token",
     );
-    await new HackerOneCredentialVault(unusedSecrets, secondWriter).store(
+    await new HackerOneCredentialVault(secondSecrets, secondWriter).store(
       "second-identifier",
       "second-token",
     );
@@ -367,11 +470,9 @@ describe("HackerOne credential presence and loading", () => {
 
 describe("HackerOne credential mutation", () => {
   it("writes identifier then token, returns only a fingerprint, and zeroes both buffers", async () => {
-    const mutations = new RecordingMutationBackend();
-    const vault = new HackerOneCredentialVault(
-      await configuredSecretStore(),
-      mutations,
-    );
+    const secrets = await configuredSecretStore();
+    const mutations = new RecordingMutationBackend(secrets);
+    const vault = new HackerOneCredentialVault(secrets, mutations);
 
     const fingerprint = await vault.store(
       SYNTHETIC_IDENTIFIER,
@@ -417,12 +518,28 @@ describe("HackerOne credential mutation", () => {
       expect(value.every((byte) => byte === 0)).toBe(true);
   });
 
-  it("accepts printable ASCII TTY buffers without mutating the caller copies", async () => {
+  it("fails closed and removes both entries when persisted readback does not match the new pair", async () => {
+    const stalePair = await configuredSecretStore();
     const mutations = new RecordingMutationBackend();
-    const vault = new HackerOneCredentialVault(
-      await configuredSecretStore(),
-      mutations,
-    );
+    const vault = new HackerOneCredentialVault(stalePair, mutations);
+
+    await expect(
+      vault.store("replacement-identifier", "replacement-token"),
+    ).rejects.toThrow("HACKERONE_KEYCHAIN_WRITE_FAILED");
+    expect(mutations.calls).toEqual([
+      "storeIdentifier",
+      "storeToken",
+      "deleteIdentifier",
+      "deleteToken",
+    ]);
+    for (const value of stalePair.returned)
+      expect(value.every((byte) => byte === 0)).toBe(true);
+  });
+
+  it("accepts printable ASCII TTY buffers without mutating the caller copies", async () => {
+    const secrets = await configuredSecretStore();
+    const mutations = new RecordingMutationBackend(secrets);
+    const vault = new HackerOneCredentialVault(secrets, mutations);
     const identifier = encoder.encode(SYNTHETIC_IDENTIFIER);
     const token = encoder.encode(SYNTHETIC_TOKEN);
     const expectedIdentifier = Uint8Array.from(identifier);
@@ -438,11 +555,9 @@ describe("HackerOne credential mutation", () => {
   });
 
   it("uses the exact printable envelope boundary and rejects one byte beyond it", async () => {
-    const mutations = new RecordingMutationBackend();
-    const vault = new HackerOneCredentialVault(
-      await configuredSecretStore(),
-      mutations,
-    );
+    const secrets = await configuredSecretStore();
+    const mutations = new RecordingMutationBackend(secrets);
+    const vault = new HackerOneCredentialVault(secrets, mutations);
     const maximum = new Uint8Array(3_041).fill(0x41);
     const oversized = new Uint8Array(3_042).fill(0x41);
 
@@ -629,49 +744,24 @@ describe("HackerOne credential mutation", () => {
 });
 
 describe("fixed macOS HackerOne Keychain boundary", () => {
-  it("uses fixed service/accounts and passes synthetic secrets outside argv", async () => {
-    const runner = new RecordingSecurityCliRunner();
+  it("uses only fixed helper operations and passes synthetic envelopes outside argv", async () => {
+    const persisted = new RecordingSecretStore();
+    const runner = new RecordingKeychainHelperRunner(persisted);
     const backend = new MacOSHackerOneKeychainMutationBackend("darwin", runner);
-    await new HackerOneCredentialVault(
-      new RecordingSecretStore(),
-      backend,
-    ).store(SYNTHETIC_IDENTIFIER, SYNTHETIC_TOKEN);
+    await new HackerOneCredentialVault(backend, backend).store(
+      SYNTHETIC_IDENTIFIER,
+      SYNTHETIC_TOKEN,
+    );
     await backend.deleteIdentifier();
     await backend.deleteToken();
 
-    expect(runner.calls.map(({ args }) => args)).toEqual([
-      [
-        "add-generic-password",
-        "-U",
-        "-s",
-        "bugbounty-copilot",
-        "-a",
-        "hackerone-api-identifier",
-        "-w",
-      ],
-      [
-        "add-generic-password",
-        "-U",
-        "-s",
-        "bugbounty-copilot",
-        "-a",
-        "hackerone-api-token",
-        "-w",
-      ],
-      [
-        "delete-generic-password",
-        "-s",
-        "bugbounty-copilot",
-        "-a",
-        "hackerone-api-identifier",
-      ],
-      [
-        "delete-generic-password",
-        "-s",
-        "bugbounty-copilot",
-        "-a",
-        "hackerone-api-token",
-      ],
+    expect(runner.calls.map(({ operation }) => operation)).toEqual([
+      "store-identifier",
+      "store-token",
+      "read-identifier",
+      "read-token",
+      "delete-identifier",
+      "delete-token",
     ]);
     expect(runner.calls[0]?.secretCopy).not.toEqual(
       encoder.encode(SYNTHETIC_IDENTIFIER),
@@ -686,40 +776,186 @@ describe("fixed macOS HackerOne Keychain boundary", () => {
       expect(envelope).not.toContain(0x00);
       expect(envelope).not.toContain(0x0a);
     }
-    expect(runner.calls[2]?.secretCopy).toBeNull();
-    expect(runner.calls[3]?.secretCopy).toBeNull();
-    for (const { args } of runner.calls) {
-      const serialized = JSON.stringify(args);
+    for (const call of runner.calls.slice(2))
+      expect(call.secretCopy).toBeNull();
+    for (const { operation } of runner.calls) {
+      const serialized = JSON.stringify(operation);
       expect(serialized).not.toContain(SYNTHETIC_IDENTIFIER);
       expect(serialized).not.toContain(SYNTHETIC_TOKEN);
     }
   });
 
-  it("fails before runner invocation on non-macOS platforms", () => {
-    const runner = new RecordingSecurityCliRunner();
+  it("fails before runner invocation on non-macOS platforms", async () => {
+    const runner = new RecordingKeychainHelperRunner();
     const backend = new MacOSHackerOneKeychainMutationBackend("linux", runner);
-    expect(() => backend.storeToken(encoder.encode(SYNTHETIC_TOKEN))).toThrow(
+    await expect(
+      backend.storeToken(encoder.encode(SYNTHETIC_TOKEN)),
+    ).rejects.toThrow("HACKERONE_SECRET_STORE_UNAVAILABLE");
+    await expect(backend.deleteToken()).rejects.toThrow(
       "HACKERONE_SECRET_STORE_UNAVAILABLE",
     );
-    expect(() => backend.deleteToken()).toThrow(
+    await expect(backend.get(HACKERONE_TOKEN_REFERENCE)).rejects.toThrow(
       "HACKERONE_SECRET_STORE_UNAVAILABLE",
+    );
+    await expect(prepareMacOSHackerOneKeychainHelper("linux")).rejects.toThrow(
+      "HACKERONE_KEYCHAIN_HELPER_FAILED",
     );
     expect(runner.calls).toEqual([]);
   });
 
+  it("rejects malformed envelopes with the native-helper error before invocation", async () => {
+    const runner = new RecordingKeychainHelperRunner();
+    const backend = new MacOSHackerOneKeychainMutationBackend("darwin", runner);
+
+    await expect(
+      backend.storeToken(encoder.encode("printable-but-not-an-envelope")),
+    ).rejects.toThrow("HACKERONE_KEYCHAIN_HELPER_FAILED");
+    expect(runner.calls).toEqual([]);
+  });
+
+  it.runIf(process.platform === "darwin")(
+    "binds an isolated native helper build to source and binary digests",
+    async () => {
+      const directoryPath = await realpath(
+        await mkdtemp(join(tmpdir(), "bugbounty-helper-build-test-")),
+      );
+      const binaryPath = join(directoryPath, "hackerone-keychain-helper");
+      const digestPath = `${binaryPath}.sha256`;
+      const layout = {
+        sourcePath: HELPER_SOURCE_PATH,
+        directoryPath,
+        binaryPath,
+        digestPath,
+      } as const;
+      try {
+        await prepareMacOSHackerOneKeychainHelper("darwin", layout);
+        const trustedBinary = await readFile(binaryPath);
+        try {
+          const digestLines = (await readFile(digestPath, "utf8"))
+            .trimEnd()
+            .split("\n");
+          expect(digestLines).toHaveLength(2);
+          expect(digestLines[1]).toBe(sha256(trustedBinary));
+
+          await appendFile(binaryPath, Buffer.from([0]));
+          await prepareMacOSHackerOneKeychainHelper("darwin", layout);
+          const rebuiltBinary = await readFile(binaryPath);
+          try {
+            expect(rebuiltBinary.byteLength).toBe(trustedBinary.byteLength);
+            const rebuiltDigestLines = (await readFile(digestPath, "utf8"))
+              .trimEnd()
+              .split("\n");
+            expect(rebuiltDigestLines).toHaveLength(2);
+            expect(rebuiltDigestLines[1]).toBe(sha256(rebuiltBinary));
+            const helperSource = await readFile(HELPER_SOURCE_PATH);
+            try {
+              expect(rebuiltDigestLines[0]).toBe(sha256(helperSource));
+            } finally {
+              helperSource.fill(0);
+            }
+          } finally {
+            rebuiltBinary.fill(0);
+          }
+        } finally {
+          trustedBinary.fill(0);
+        }
+      } finally {
+        await rm(directoryPath, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.runIf(process.platform === "darwin")(
+    "rejects isolated build paths outside their canonical private fixture",
+    async () => {
+      const directoryPath = await realpath(
+        await mkdtemp(join(tmpdir(), "bugbounty-helper-build-test-")),
+      );
+      try {
+        await expect(
+          prepareMacOSHackerOneKeychainHelper("darwin", {
+            sourcePath: HELPER_SOURCE_PATH,
+            directoryPath,
+            binaryPath: join(tmpdir(), "outside-helper"),
+            digestPath: join(tmpdir(), "outside-helper.sha256"),
+          }),
+        ).rejects.toThrow("HACKERONE_KEYCHAIN_HELPER_FAILED");
+      } finally {
+        await rm(directoryPath, { recursive: true, force: true });
+      }
+    },
+  );
+
   it.each(["stdin-error", "child-error", "sync-throw"] as const)(
-    "kills the security process and zeroes stdin on %s",
+    "kills the native helper and zeroes stdin on %s",
     async (failure) => {
-      const child = new FailingSecurityCliProcess(failure);
-      const runner = new SpawnHackerOneSecurityCliRunner(() => child);
+      const child = new FailingKeychainHelperProcess(failure);
+      const runner = new SpawnHackerOneKeychainHelperRunner(
+        () => Promise.resolve("/synthetic/fixed-helper"),
+        () => child,
+      );
 
       await expect(
-        runner.run(["synthetic-operation"], encoder.encode("printable-secret")),
-      ).rejects.toThrow("HACKERONE_KEYCHAIN_CLI_FAILED");
+        runner.execute("store-token", syntheticCredentialEnvelope("token")),
+      ).rejects.toThrow("HACKERONE_KEYCHAIN_HELPER_FAILED");
       expect(child.killCount).toBe(1);
       expect(child.listenersRemoved).toBe(true);
       expect(child.input).toBeDefined();
       expect(child.input?.every((byte) => byte === 0)).toBe(true);
     },
   );
+
+  it("starts only the fixed native helper operation and supplies one bounded raw stdin value", async () => {
+    const child = new SuccessfulKeychainHelperProcess();
+    let capturedBinary: string | undefined;
+    let capturedOperation: HackerOneKeychainHelperOperation | undefined;
+    const runner = new SpawnHackerOneKeychainHelperRunner(
+      () => Promise.resolve("/synthetic/fixed-helper"),
+      (binary, operation) => {
+        capturedBinary = binary;
+        capturedOperation = operation;
+        return child;
+      },
+    );
+
+    await expect(
+      runner.execute("store-token", syntheticCredentialEnvelope("token")),
+    ).resolves.toBeUndefined();
+
+    expect(capturedBinary).toBe("/synthetic/fixed-helper");
+    expect(capturedOperation).toBe("store-token");
+    expect(new TextDecoder().decode(child.inputSnapshot)).toMatch(
+      /^BBC-H1-CRED-V1\.t\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]+$/u,
+    );
+    expect(child.inputReference?.every((byte) => byte === 0)).toBe(true);
+    expect(child.listenersRemoved).toBe(true);
+  });
+
+  it("returns bounded helper read output while erasing the process chunk", async () => {
+    const processChunk = Buffer.from("synthetic-envelope");
+    const child = new SuccessfulKeychainHelperProcess(processChunk);
+    const runner = new SpawnHackerOneKeychainHelperRunner(
+      () => Promise.resolve("/synthetic/fixed-helper"),
+      () => child,
+    );
+
+    const result = await runner.execute("read-identifier");
+
+    expect(new TextDecoder().decode(result)).toBe("synthetic-envelope");
+    expect(processChunk.every((byte) => byte === 0)).toBe(true);
+    result?.fill(0);
+  });
+
+  it("rejects arbitrary printable material before the native helper starts", async () => {
+    const processFactory = vi.fn(() => new SuccessfulKeychainHelperProcess());
+    const runner = new SpawnHackerOneKeychainHelperRunner(
+      () => Promise.resolve("/synthetic/fixed-helper"),
+      processFactory,
+    );
+
+    await expect(
+      runner.execute("store-token", encoder.encode("printable-secret")),
+    ).rejects.toThrow("HACKERONE_KEYCHAIN_HELPER_FAILED");
+    expect(processFactory).not.toHaveBeenCalled();
+  });
 });

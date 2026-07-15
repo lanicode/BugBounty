@@ -1,5 +1,19 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  open,
+  realpath,
+  rename,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { sha256 } from "../shared/canonical.js";
 import { SecurityError } from "../shared/errors.js";
 import type { SecretStore } from "../secret-store/index.js";
@@ -8,11 +22,14 @@ import {
   HACKERONE_TOKEN_REFERENCE,
 } from "./types.js";
 
-const KEYCHAIN_SERVICE = "bugbounty-copilot";
-const IDENTIFIER_ACCOUNT = "hackerone-api-identifier";
-const TOKEN_ACCOUNT = "hackerone-api-token";
-const MAX_KEYCHAIN_STDIN_BYTES = 4_096;
-const MAX_KEYCHAIN_ENVELOPE_BYTES = MAX_KEYCHAIN_STDIN_BYTES - 1;
+const MAX_KEYCHAIN_ENVELOPE_BYTES = 4_095;
+const MAX_KEYCHAIN_HELPER_OUTPUT_BYTES = MAX_KEYCHAIN_ENVELOPE_BYTES;
+const KEYCHAIN_HELPER_TIMEOUT_MS = 10_000;
+const MAX_KEYCHAIN_HELPER_BINARY_BYTES = 4 * 1_024 * 1_024;
+const MAX_KEYCHAIN_HELPER_DIGEST_BYTES = 256;
+const MAX_KEYCHAIN_HELPER_SOURCE_BYTES = 1 * 1_024 * 1_024;
+const ISOLATED_HELPER_DIRECTORY =
+  /^bugbounty-helper-build-test-[A-Za-z0-9]{6}$/u;
 const PAIR_ENVELOPE_PREFIX = Object.freeze([
   0x42, 0x42, 0x43, 0x2d, 0x48, 0x31, 0x2d, 0x43, 0x52, 0x45, 0x44, 0x2d, 0x56,
   0x31, 0x2e,
@@ -263,7 +280,6 @@ export class HackerOneCredentialVault implements HackerOneCredentialAccess {
       if (!validSecret(identifier) || !validSecret(token))
         throw new SecurityError("HACKERONE_CREDENTIAL_INPUT_INVALID");
 
-      const fingerprint = shortFingerprint(token);
       generation = randomBytes(PAIR_GENERATION_BYTES);
       identifierEnvelope = createCredentialEnvelope(
         "identifier",
@@ -272,19 +288,13 @@ export class HackerOneCredentialVault implements HackerOneCredentialAccess {
       );
       tokenEnvelope = createCredentialEnvelope("token", generation, token);
       mutationStarted = true;
-      try {
-        await this.mutations.storeIdentifier(identifierEnvelope);
-        await this.mutations.storeToken(tokenEnvelope);
-      } catch {
-        await this.deletePair();
-        throw new SecurityError("HACKERONE_KEYCHAIN_WRITE_FAILED");
-      }
-      return fingerprint;
+      await this.mutations.storeIdentifier(identifierEnvelope);
+      await this.mutations.storeToken(tokenEnvelope);
+      return await this.verifyPersistedPair(identifier, token, generation);
     } catch (error) {
       if (
         error instanceof SecurityError &&
-        (error.code === "HACKERONE_CREDENTIAL_INPUT_INVALID" ||
-          error.code === "HACKERONE_KEYCHAIN_WRITE_FAILED")
+        error.code === "HACKERONE_CREDENTIAL_INPUT_INVALID"
       )
         throw error;
       if (mutationStarted) await this.deletePair();
@@ -308,62 +318,122 @@ export class HackerOneCredentialVault implements HackerOneCredentialAccess {
       Promise.resolve().then(() => this.mutations.deleteToken()),
     ]);
   }
+
+  private async verifyPersistedPair(
+    expectedIdentifier: Uint8Array,
+    expectedToken: Uint8Array,
+    expectedGeneration: Uint8Array,
+  ): Promise<string> {
+    let identifierEnvelope: Uint8Array | undefined;
+    let tokenEnvelope: Uint8Array | undefined;
+    let identifier: ParsedCredentialEnvelope | undefined;
+    let token: ParsedCredentialEnvelope | undefined;
+    try {
+      identifierEnvelope = await this.secrets.get(
+        HACKERONE_IDENTIFIER_REFERENCE,
+      );
+      tokenEnvelope = await this.secrets.get(HACKERONE_TOKEN_REFERENCE);
+      identifier = parseCredentialEnvelope(identifierEnvelope, "identifier");
+      token = parseCredentialEnvelope(tokenEnvelope, "token");
+      const identifierDigest = credentialBindingDigest(identifier.secret);
+      const expectedIdentifierDigest =
+        credentialBindingDigest(expectedIdentifier);
+      const tokenDigest = credentialBindingDigest(token.secret);
+      const expectedTokenDigest = credentialBindingDigest(expectedToken);
+      if (
+        !sameGeneration(identifier.generation, expectedGeneration) ||
+        !sameGeneration(token.generation, expectedGeneration) ||
+        !sameDigest(identifierDigest, expectedIdentifierDigest) ||
+        !sameDigest(tokenDigest, expectedTokenDigest)
+      )
+        throw new Error("invalid");
+      return tokenDigest.slice(0, 12);
+    } catch {
+      throw new SecurityError("HACKERONE_KEYCHAIN_WRITE_FAILED");
+    } finally {
+      identifierEnvelope?.fill(0);
+      tokenEnvelope?.fill(0);
+      identifier?.generation.fill(0);
+      identifier?.secret.fill(0);
+      token?.generation.fill(0);
+      token?.secret.fill(0);
+    }
+  }
 }
 
-export class MacOSHackerOneKeychainMutationBackend implements HackerOneKeychainMutationBackend {
+export type HackerOneKeychainHelperOperation =
+  | "delete-identifier"
+  | "delete-token"
+  | "read-identifier"
+  | "read-token"
+  | "store-identifier"
+  | "store-token";
+
+export interface HackerOneKeychainHelperRunner {
+  execute(
+    operation: HackerOneKeychainHelperOperation,
+    secret?: Uint8Array,
+  ): Promise<Uint8Array | undefined>;
+}
+
+export class MacOSHackerOneKeychainMutationBackend
+  implements HackerOneKeychainMutationBackend, SecretStore
+{
   public constructor(
     private readonly platform: NodeJS.Platform = process.platform,
-    private readonly runner: HackerOneSecurityCliRunner = new SpawnHackerOneSecurityCliRunner(),
+    private readonly runner: HackerOneKeychainHelperRunner = new SpawnHackerOneKeychainHelperRunner(),
   ) {
     Object.freeze(this);
   }
 
+  public async get(reference: string): Promise<Uint8Array> {
+    this.assertAvailable();
+    const operation =
+      reference === HACKERONE_IDENTIFIER_REFERENCE
+        ? "read-identifier"
+        : reference === HACKERONE_TOKEN_REFERENCE
+          ? "read-token"
+          : undefined;
+    if (operation === undefined)
+      throw new SecurityError("HACKERONE_SECRET_STORE_UNAVAILABLE");
+    const value = await this.runner.execute(operation);
+    if (
+      value === undefined ||
+      value.byteLength === 0 ||
+      value.byteLength > MAX_KEYCHAIN_ENVELOPE_BYTES
+    ) {
+      value?.fill(0);
+      throw new SecurityError("HACKERONE_SECRET_STORE_UNAVAILABLE");
+    }
+    return value;
+  }
+
   public storeIdentifier(value: Uint8Array): Promise<void> {
-    return this.store(IDENTIFIER_ACCOUNT, "identifier", value);
+    return this.store("store-identifier", "identifier", value);
   }
 
   public storeToken(value: Uint8Array): Promise<void> {
-    return this.store(TOKEN_ACCOUNT, "token", value);
+    return this.store("store-token", "token", value);
   }
 
-  public deleteIdentifier(): Promise<void> {
-    return this.delete(IDENTIFIER_ACCOUNT);
+  public async deleteIdentifier(): Promise<void> {
+    this.assertAvailable();
+    await this.runner.execute("delete-identifier");
   }
 
-  public deleteToken(): Promise<void> {
-    return this.delete(TOKEN_ACCOUNT);
+  public async deleteToken(): Promise<void> {
+    this.assertAvailable();
+    await this.runner.execute("delete-token");
   }
 
-  private store(
-    account: string,
+  private async store(
+    operation: "store-identifier" | "store-token",
     role: CredentialRole,
     value: Uint8Array,
   ): Promise<void> {
     this.assertAvailable();
     assertCredentialEnvelope(value, role);
-    return this.runner.run(
-      [
-        "add-generic-password",
-        "-U",
-        "-s",
-        KEYCHAIN_SERVICE,
-        "-a",
-        account,
-        "-w",
-      ],
-      value,
-    );
-  }
-
-  private delete(account: string): Promise<void> {
-    this.assertAvailable();
-    return this.runner.run([
-      "delete-generic-password",
-      "-s",
-      KEYCHAIN_SERVICE,
-      "-a",
-      account,
-    ]);
+    await this.runner.execute(operation, value);
   }
 
   private assertAvailable(): void {
@@ -372,11 +442,7 @@ export class MacOSHackerOneKeychainMutationBackend implements HackerOneKeychainM
   }
 }
 
-export interface HackerOneSecurityCliRunner {
-  run(args: readonly string[], secret?: Uint8Array): Promise<void>;
-}
-
-export interface HackerOneSecurityCliProcess {
+export interface HackerOneKeychainHelperProcess {
   onStdoutData(listener: (chunk: unknown) => void): void;
   onStderrData(listener: (chunk: unknown) => void): void;
   onStdinError(listener: () => void): void;
@@ -389,94 +455,157 @@ export interface HackerOneSecurityCliProcess {
   kill(): void;
 }
 
-export type HackerOneSecurityCliProcessFactory = (
-  args: readonly string[],
-) => HackerOneSecurityCliProcess;
+export type HackerOneKeychainHelperProcessFactory = (
+  binaryPath: string,
+  operation: HackerOneKeychainHelperOperation,
+) => HackerOneKeychainHelperProcess;
 
-export class SpawnHackerOneSecurityCliRunner implements HackerOneSecurityCliRunner {
+export type HackerOneKeychainHelperBinaryProvider = () => Promise<string>;
+
+export class SpawnHackerOneKeychainHelperRunner implements HackerOneKeychainHelperRunner {
   public constructor(
-    private readonly processFactory: HackerOneSecurityCliProcessFactory = spawnSecurityCliProcess,
+    private readonly binaryProvider: HackerOneKeychainHelperBinaryProvider = ensureHackerOneKeychainHelper,
+    private readonly processFactory: HackerOneKeychainHelperProcessFactory = spawnKeychainHelperProcess,
   ) {
     Object.freeze(this);
   }
 
-  public run(args: readonly string[], secret?: Uint8Array): Promise<void> {
-    return runSecurityCli(args, secret, this.processFactory);
+  public async execute(
+    operation: HackerOneKeychainHelperOperation,
+    secret?: Uint8Array,
+  ): Promise<Uint8Array | undefined> {
+    const isStore = operation.startsWith("store-");
+    const role: CredentialRole = operation.endsWith("-identifier")
+      ? "identifier"
+      : "token";
+    if (
+      (isStore &&
+        (secret === undefined ||
+          secret.byteLength === 0 ||
+          secret.byteLength > MAX_KEYCHAIN_ENVELOPE_BYTES ||
+          !printableAscii(secret))) ||
+      (!isStore && secret !== undefined)
+    )
+      throw new SecurityError("HACKERONE_KEYCHAIN_HELPER_FAILED");
+    if (isStore) {
+      try {
+        if (secret === undefined) throw new Error("missing");
+        assertCredentialEnvelope(secret, role);
+      } catch {
+        throw new SecurityError("HACKERONE_KEYCHAIN_HELPER_FAILED");
+      }
+    }
+    let binaryPath: string;
+    try {
+      binaryPath = await this.binaryProvider();
+    } catch {
+      throw new SecurityError("HACKERONE_KEYCHAIN_HELPER_FAILED");
+    }
+    return runKeychainHelper(
+      binaryPath,
+      operation,
+      secret,
+      this.processFactory,
+    );
   }
 }
 
-function runSecurityCli(
-  args: readonly string[],
-  secret?: Uint8Array,
-  processFactory: HackerOneSecurityCliProcessFactory = spawnSecurityCliProcess,
-): Promise<void> {
+function runKeychainHelper(
+  binaryPath: string,
+  operation: HackerOneKeychainHelperOperation,
+  secret: Uint8Array | undefined,
+  processFactory: HackerOneKeychainHelperProcessFactory,
+): Promise<Uint8Array | undefined> {
   return new Promise((resolve, reject) => {
-    const input =
-      secret === undefined ? undefined : secretInput(Uint8Array.from(secret));
-    let child: HackerOneSecurityCliProcess;
+    const input = secret === undefined ? undefined : Buffer.from(secret);
+    let child: HackerOneKeychainHelperProcess;
     try {
-      child = processFactory(args);
+      child = processFactory(binaryPath, operation);
     } catch {
       input?.fill(0);
-      reject(new SecurityError("HACKERONE_KEYCHAIN_CLI_FAILED"));
+      reject(new SecurityError("HACKERONE_KEYCHAIN_HELPER_FAILED"));
       return;
     }
-    let outputBytes = 0;
+    const stdoutChunks: Buffer[] = [];
+    let stdoutBytes = 0;
     let settled = false;
+    const expectsOutput = operation.startsWith("read-");
     const finish = (error?: Error): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      input?.fill(0);
       child.removeAllListeners();
-      if (error === undefined) resolve();
-      else reject(error);
+      input?.fill(0);
+      let output: Uint8Array | undefined;
+      try {
+        if (error === undefined && expectsOutput) {
+          if (
+            stdoutBytes === 0 ||
+            stdoutBytes > MAX_KEYCHAIN_HELPER_OUTPUT_BYTES
+          )
+            error = new SecurityError("HACKERONE_KEYCHAIN_HELPER_FAILED");
+          else {
+            const joined = Buffer.concat(stdoutChunks, stdoutBytes);
+            output = Uint8Array.from(joined);
+            joined.fill(0);
+          }
+        } else if (error === undefined && stdoutBytes !== 0) {
+          error = new SecurityError("HACKERONE_KEYCHAIN_HELPER_FAILED");
+        }
+      } finally {
+        for (const chunk of stdoutChunks) chunk.fill(0);
+      }
+      if (error === undefined) resolve(output);
+      else {
+        output?.fill(0);
+        reject(error);
+      }
+    };
+    const fail = (): void => {
+      killHelperChild(child);
+      finish(new SecurityError("HACKERONE_KEYCHAIN_HELPER_FAILED"));
     };
     const timer = setTimeout(() => {
-      killChild(child);
-      finish(new SecurityError("HACKERONE_KEYCHAIN_CLI_TIMEOUT"));
-    }, 5_000);
+      killHelperChild(child);
+      finish(new SecurityError("HACKERONE_KEYCHAIN_HELPER_TIMEOUT"));
+    }, KEYCHAIN_HELPER_TIMEOUT_MS);
     timer.unref();
-    const countOutput = (chunk: unknown): void => {
+    child.onStdoutData((chunk: unknown) => {
       if (!Buffer.isBuffer(chunk)) {
-        killChild(child);
-        finish(new SecurityError("HACKERONE_KEYCHAIN_CLI_FAILED"));
+        fail();
         return;
       }
-      outputBytes += chunk.byteLength;
-      chunk.fill(0);
-      if (outputBytes > MAX_KEYCHAIN_STDIN_BYTES) {
-        killChild(child);
-        finish(new SecurityError("HACKERONE_KEYCHAIN_CLI_FAILED"));
-      }
-    };
-    child.onStdoutData(countOutput);
-    child.onStderrData(countOutput);
-    child.onStdinError(() => {
-      killChild(child);
-      finish(new SecurityError("HACKERONE_KEYCHAIN_CLI_FAILED"));
+      stdoutBytes += chunk.byteLength;
+      stdoutChunks.push(chunk);
+      if (stdoutBytes > MAX_KEYCHAIN_HELPER_OUTPUT_BYTES) fail();
     });
-    child.onError(() => {
-      killChild(child);
-      finish(new SecurityError("HACKERONE_KEYCHAIN_CLI_FAILED"));
+    child.onStderrData((chunk: unknown) => {
+      if (Buffer.isBuffer(chunk)) chunk.fill(0);
+      fail();
     });
+    child.onStdinError(fail);
+    child.onError(fail);
     child.onClose((code, signal) => {
       if (code === 0 && signal === null) finish();
-      else finish(new SecurityError("HACKERONE_KEYCHAIN_CLI_FAILED"));
+      else finish(new SecurityError("HACKERONE_KEYCHAIN_HELPER_FAILED"));
     });
     try {
       child.writeInput(input);
     } catch {
-      killChild(child);
-      finish(new SecurityError("HACKERONE_KEYCHAIN_CLI_FAILED"));
+      fail();
     }
   });
 }
 
-function spawnSecurityCliProcess(
-  args: readonly string[],
-): HackerOneSecurityCliProcess {
-  const child = spawn("/usr/bin/security", [...args], {
+function spawnKeychainHelperProcess(
+  binaryPath: string,
+  operation: HackerOneKeychainHelperOperation,
+): HackerOneKeychainHelperProcess {
+  const separator = operation.indexOf("-");
+  const command = operation.slice(0, separator);
+  const role = operation.slice(separator + 1);
+  const child = spawn(binaryPath, [command, role], {
+    env: {},
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
@@ -513,28 +642,298 @@ function spawnSecurityCliProcess(
   });
 }
 
-function secretInput(secret: Uint8Array): Buffer {
-  try {
-    if (
-      secret.byteLength === 0 ||
-      secret.byteLength > MAX_KEYCHAIN_ENVELOPE_BYTES ||
-      !printableAscii(secret)
-    )
-      throw new SecurityError("HACKERONE_KEYCHAIN_CLI_FAILED");
-    const input = Buffer.alloc(secret.byteLength + 1);
-    input.set(secret);
-    input[input.byteLength - 1] = 0x0a;
-    return input;
-  } finally {
-    secret.fill(0);
+const KEYCHAIN_HELPER_SOURCE_PATH = fileURLToPath(
+  new URL("./native/macos-keychain-helper.c", import.meta.url),
+);
+const KEYCHAIN_HELPER_DIRECTORY_PATH = fileURLToPath(
+  new URL("../../.local/native/", import.meta.url),
+);
+const KEYCHAIN_HELPER_BINARY_PATH = fileURLToPath(
+  new URL("../../.local/native/hackerone-keychain-helper", import.meta.url),
+);
+const KEYCHAIN_HELPER_DIGEST_PATH = `${KEYCHAIN_HELPER_BINARY_PATH}.sha256`;
+export interface HackerOneKeychainHelperBuildLayout {
+  readonly sourcePath: string;
+  readonly directoryPath: string;
+  readonly binaryPath: string;
+  readonly digestPath: string;
+}
+
+const PRODUCTION_KEYCHAIN_HELPER_LAYOUT: HackerOneKeychainHelperBuildLayout =
+  Object.freeze({
+    sourcePath: KEYCHAIN_HELPER_SOURCE_PATH,
+    directoryPath: KEYCHAIN_HELPER_DIRECTORY_PATH,
+    binaryPath: KEYCHAIN_HELPER_BINARY_PATH,
+    digestPath: KEYCHAIN_HELPER_DIGEST_PATH,
+  });
+let keychainHelperBuild: Promise<string> | undefined;
+
+export async function prepareMacOSHackerOneKeychainHelper(
+  platform: NodeJS.Platform = process.platform,
+  isolatedTestLayout?: HackerOneKeychainHelperBuildLayout,
+): Promise<void> {
+  if (platform !== "darwin")
+    throw new SecurityError("HACKERONE_KEYCHAIN_HELPER_FAILED");
+  if (isolatedTestLayout === undefined) await ensureHackerOneKeychainHelper();
+  else {
+    await assertIsolatedTestBuildLayout(isolatedTestLayout);
+    await buildHackerOneKeychainHelper(isolatedTestLayout);
   }
 }
 
-function killChild(child: HackerOneSecurityCliProcess): void {
+async function assertIsolatedTestBuildLayout(
+  layout: HackerOneKeychainHelperBuildLayout,
+): Promise<void> {
+  try {
+    if (
+      process.env["NODE_ENV"] !== "test" ||
+      layout.sourcePath !== KEYCHAIN_HELPER_SOURCE_PATH ||
+      !isAbsolute(layout.directoryPath) ||
+      resolve(layout.directoryPath) !== layout.directoryPath ||
+      layout.binaryPath !==
+        join(layout.directoryPath, "hackerone-keychain-helper") ||
+      layout.digestPath !== `${layout.binaryPath}.sha256` ||
+      !ISOLATED_HELPER_DIRECTORY.test(basename(layout.directoryPath))
+    )
+      throw new Error("invalid");
+    const [canonicalDirectory, canonicalTemporaryRoot] = await Promise.all([
+      realpath(layout.directoryPath),
+      realpath(tmpdir()),
+    ]);
+    if (
+      canonicalDirectory !== layout.directoryPath ||
+      dirname(canonicalDirectory) !== canonicalTemporaryRoot
+    )
+      throw new Error("invalid");
+  } catch {
+    throw new SecurityError("HACKERONE_KEYCHAIN_HELPER_FAILED");
+  }
+}
+
+function ensureHackerOneKeychainHelper(): Promise<string> {
+  if (keychainHelperBuild !== undefined) return keychainHelperBuild;
+  const currentBuild = buildHackerOneKeychainHelper(
+    PRODUCTION_KEYCHAIN_HELPER_LAYOUT,
+  );
+  keychainHelperBuild = currentBuild;
+  return currentBuild.finally(() => {
+    if (keychainHelperBuild === currentBuild) keychainHelperBuild = undefined;
+  });
+}
+
+async function buildHackerOneKeychainHelper(
+  layout: HackerOneKeychainHelperBuildLayout,
+): Promise<string> {
+  if (process.platform !== "darwin" || typeof process.getuid !== "function")
+    throw new SecurityError("HACKERONE_KEYCHAIN_HELPER_FAILED");
+  const source = await readFixedHelperSource(layout.sourcePath);
+  const sourceDigest = sha256(source);
+  const suffix = `${String(process.pid)}-${randomBytes(8).toString("hex")}`;
+  const temporarySource = `${layout.binaryPath}.${suffix}.c`;
+  const temporaryBinary = `${layout.binaryPath}.${suffix}.tmp`;
+  const temporaryDigest = `${layout.digestPath}.${suffix}.tmp`;
+  try {
+    await preparePrivateHelperDirectory(layout.directoryPath);
+    if (await trustedHelperBinary(sourceDigest, layout))
+      return layout.binaryPath;
+    await writeFile(temporarySource, source, { flag: "wx", mode: 0o600 });
+    await compileHackerOneKeychainHelper(
+      temporarySource,
+      temporaryBinary,
+      layout.directoryPath,
+    );
+    await chmod(temporaryBinary, 0o700);
+    const binaryDigest = await privateFileDigest(
+      temporaryBinary,
+      0o700,
+      MAX_KEYCHAIN_HELPER_BINARY_BYTES,
+    );
+    await writeFile(temporaryDigest, `${sourceDigest}\n${binaryDigest}\n`, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    await rename(temporaryBinary, layout.binaryPath);
+    await rename(temporaryDigest, layout.digestPath);
+    if (!(await trustedHelperBinary(sourceDigest, layout)))
+      throw new SecurityError("HACKERONE_KEYCHAIN_HELPER_FAILED");
+    return layout.binaryPath;
+  } catch {
+    throw new SecurityError("HACKERONE_KEYCHAIN_HELPER_FAILED");
+  } finally {
+    source.fill(0);
+    await Promise.allSettled([
+      unlink(temporarySource),
+      unlink(temporaryBinary),
+      unlink(temporaryDigest),
+    ]);
+  }
+}
+
+async function readFixedHelperSource(sourcePath: string): Promise<Buffer> {
+  const handle = await open(
+    sourcePath,
+    fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+  );
+  try {
+    const status = await handle.stat();
+    if (
+      !status.isFile() ||
+      status.nlink !== 1 ||
+      status.uid !== process.getuid?.() ||
+      status.size < 1 ||
+      status.size > MAX_KEYCHAIN_HELPER_SOURCE_BYTES
+    )
+      throw new SecurityError("HACKERONE_KEYCHAIN_HELPER_FAILED");
+    const source = await handle.readFile();
+    if (source.byteLength !== status.size) {
+      source.fill(0);
+      throw new SecurityError("HACKERONE_KEYCHAIN_HELPER_FAILED");
+    }
+    return source;
+  } catch {
+    throw new SecurityError("HACKERONE_KEYCHAIN_HELPER_FAILED");
+  } finally {
+    await handle.close();
+  }
+}
+
+async function preparePrivateHelperDirectory(
+  directoryPath: string,
+): Promise<void> {
+  await mkdir(directoryPath, {
+    recursive: true,
+    mode: 0o700,
+  });
+  const status = await lstat(directoryPath);
+  if (
+    !status.isDirectory() ||
+    status.isSymbolicLink() ||
+    status.uid !== process.getuid?.() ||
+    (status.mode & 0o077) !== 0
+  )
+    throw new SecurityError("HACKERONE_KEYCHAIN_HELPER_FAILED");
+}
+
+async function trustedHelperBinary(
+  sourceDigest: string,
+  layout: HackerOneKeychainHelperBuildLayout,
+): Promise<boolean> {
+  let digestFile: Buffer | undefined;
+  try {
+    const binaryDigest = await privateFileDigest(
+      layout.binaryPath,
+      0o700,
+      MAX_KEYCHAIN_HELPER_BINARY_BYTES,
+    );
+    digestFile = await readPrivateFile(
+      layout.digestPath,
+      0o600,
+      MAX_KEYCHAIN_HELPER_DIGEST_BYTES,
+    );
+    return digestFile.toString("utf8") === `${sourceDigest}\n${binaryDigest}\n`;
+  } catch {
+    return false;
+  } finally {
+    digestFile?.fill(0);
+  }
+}
+
+async function privateFileDigest(
+  path: string,
+  expectedMode: number,
+  maximumBytes: number,
+): Promise<string> {
+  const contents = await readPrivateFile(path, expectedMode, maximumBytes);
+  try {
+    return sha256(contents);
+  } finally {
+    contents.fill(0);
+  }
+}
+
+async function readPrivateFile(
+  path: string,
+  expectedMode: number,
+  maximumBytes: number,
+): Promise<Buffer> {
+  const handle = await open(
+    path,
+    fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+  );
+  try {
+    const status = await handle.stat();
+    const uid = process.getuid?.();
+    if (
+      uid === undefined ||
+      !status.isFile() ||
+      status.nlink !== 1 ||
+      status.uid !== uid ||
+      (status.mode & 0o777) !== expectedMode ||
+      status.size < 1 ||
+      status.size > maximumBytes
+    )
+      throw new SecurityError("HACKERONE_KEYCHAIN_HELPER_FAILED");
+    const contents = await handle.readFile();
+    if (contents.byteLength !== status.size) {
+      contents.fill(0);
+      throw new SecurityError("HACKERONE_KEYCHAIN_HELPER_FAILED");
+    }
+    return contents;
+  } finally {
+    await handle.close();
+  }
+}
+
+function compileHackerOneKeychainHelper(
+  sourcePath: string,
+  outputPath: string,
+  temporaryDirectoryPath: string,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "/usr/bin/xcrun",
+      [
+        "clang",
+        "-std=c17",
+        "-O2",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-Wno-deprecated-declarations",
+        "-framework",
+        "Security",
+        "-framework",
+        "CoreFoundation",
+        sourcePath,
+        "-o",
+        outputPath,
+      ],
+      {
+        encoding: "buffer",
+        env: {
+          PATH: "/usr/bin:/bin",
+          TMPDIR: temporaryDirectoryPath,
+        },
+        maxBuffer: 4_096,
+        timeout: 30_000,
+        windowsHide: true,
+      },
+      (error, stdout, stderr) => {
+        if (Buffer.isBuffer(stdout)) stdout.fill(0);
+        if (Buffer.isBuffer(stderr)) stderr.fill(0);
+        if (error === null) resolve();
+        else reject(new SecurityError("HACKERONE_KEYCHAIN_HELPER_FAILED"));
+      },
+    );
+  });
+}
+
+function killHelperChild(child: HackerOneKeychainHelperProcess): void {
   try {
     child.kill();
   } catch {
-    // The operation remains failed closed even if the OS already reaped it.
+    // Failure remains closed if the OS has already reaped the helper.
   }
 }
 
@@ -628,7 +1027,7 @@ function assertCredentialEnvelope(
   try {
     parsed = parseCredentialEnvelope(envelope, expectedRole);
   } catch {
-    throw new SecurityError("HACKERONE_KEYCHAIN_CLI_FAILED");
+    throw new SecurityError("HACKERONE_KEYCHAIN_HELPER_FAILED");
   } finally {
     parsed?.generation.fill(0);
     parsed?.secret.fill(0);
@@ -792,8 +1191,4 @@ function sameDigest(left: string, right: string): boolean {
   for (let index = 0; index < 64; index += 1)
     difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
   return difference === 0;
-}
-
-function shortFingerprint(value: Uint8Array): string {
-  return credentialBindingDigest(value).slice(0, 12);
 }

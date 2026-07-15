@@ -339,9 +339,10 @@ function prepareHackerOneMetadata(
     controlPlane,
     runtime,
   );
+  const hackerOneKeychain = new MacOSHackerOneKeychainMutationBackend(platform);
   const credentials = new HackerOneCredentialVault(
-    new MacOSKeychainSecretStore(undefined, platform),
-    new MacOSHackerOneKeychainMutationBackend(platform),
+    hackerOneKeychain,
+    hackerOneKeychain,
   );
   const killSwitch = Object.freeze({
     isActive: (): boolean => controlPlane.isKillSwitchActive(),

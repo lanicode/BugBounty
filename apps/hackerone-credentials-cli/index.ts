@@ -1,11 +1,11 @@
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { ControlPlaneDatabase } from "../../packages/control-plane/index.js";
 import {
   HackerOneCredentialVault,
   HackerOneMetadataStore,
   MacOSHackerOneKeychainMutationBackend,
 } from "../../packages/hackerone-readonly/index.js";
-import { MacOSKeychainSecretStore } from "../../packages/secret-store/index.js";
 import { errorCode, SecurityError } from "../../packages/shared/errors.js";
 
 const MAX_TTY_CREDENTIAL_BYTES = 4_000;
@@ -16,10 +16,8 @@ async function main(): Promise<void> {
   if (process.platform !== "darwin")
     throw new SecurityError("HACKERONE_SECRET_STORE_UNAVAILABLE");
   requireInteractiveTerminal();
-  const vault = new HackerOneCredentialVault(
-    new MacOSKeychainSecretStore(),
-    new MacOSHackerOneKeychainMutationBackend(),
-  );
+  const keychain = new MacOSHackerOneKeychainMutationBackend();
+  const vault = new HackerOneCredentialVault(keychain, keychain);
 
   if (command === "status") {
     const status = await vault.probe();
@@ -33,8 +31,8 @@ async function main(): Promise<void> {
     return;
   }
 
-  await disablePersistedAdapter();
   if (command === "remove") {
+    await disablePersistedAdapter();
     await vault.remove();
     process.stdout.write("Credentials entfernt; Adapter deaktiviert.\n");
     return;
@@ -45,6 +43,7 @@ async function main(): Promise<void> {
   try {
     identifier = await readHiddenCredential("HackerOne API-Identifier: ");
     token = await readHiddenCredential("HackerOne API-Token: ");
+    await disablePersistedAdapter();
     const fingerprint = await vault.storeBytes(identifier, token);
     process.stdout.write(
       `Credentials im macOS-Schlüsselbund gespeichert; Adapter deaktiviert; Token-Fingerprint: ${fingerprint}\n`,
@@ -86,20 +85,56 @@ async function disablePersistedAdapter(): Promise<void> {
   }
 }
 
-function readHiddenCredential(prompt: string): Promise<Uint8Array> {
+export interface HiddenCredentialInput {
+  isRaw: boolean;
+  on(event: "data", listener: (chunk: unknown) => void): unknown;
+  pause(): unknown;
+  removeListener(event: "data", listener: (chunk: unknown) => void): unknown;
+  resume(): unknown;
+  setRawMode(mode: boolean): unknown;
+}
+
+export interface HiddenCredentialOutput {
+  write(value: string | Uint8Array): unknown;
+}
+
+export function readHiddenCredential(
+  prompt: string,
+  input: HiddenCredentialInput = process.stdin,
+  output: HiddenCredentialOutput = process.stdout,
+): Promise<Uint8Array> {
   return new Promise((resolveInput, rejectInput) => {
-    const input = process.stdin;
-    const output = process.stdout;
     const scratch = Buffer.alloc(MAX_TTY_CREDENTIAL_BYTES);
     const wasRaw = input.isRaw;
     let length = 0;
     let settled = false;
 
-    const cleanup = (): void => {
-      input.removeListener("data", onData);
-      input.setRawMode(wasRaw);
+    const cleanup = (): Error | undefined => {
+      let failed = false;
+      try {
+        input.removeListener("data", onData);
+      } catch {
+        failed = true;
+      }
+      try {
+        input.setRawMode(wasRaw);
+      } catch {
+        failed = true;
+      }
+      try {
+        input.pause();
+      } catch {
+        failed = true;
+      }
       scratch.fill(0);
-      output.write("\n");
+      try {
+        output.write("\n");
+      } catch {
+        failed = true;
+      }
+      return failed
+        ? new SecurityError("HACKERONE_TTY_INPUT_INVALID")
+        : undefined;
     };
     const finish = (error?: Error): void => {
       if (settled) return;
@@ -108,9 +143,12 @@ function readHiddenCredential(prompt: string): Promise<Uint8Array> {
         error === undefined && length > 0
           ? Uint8Array.from(scratch.subarray(0, length))
           : undefined;
-      cleanup();
-      if (error !== undefined) rejectInput(error);
-      else if (value !== undefined) resolveInput(value);
+      const cleanupError = cleanup();
+      const failure = error ?? cleanupError;
+      if (failure !== undefined) {
+        value?.fill(0);
+        rejectInput(failure);
+      } else if (value !== undefined) resolveInput(value);
       else rejectInput(new SecurityError("HACKERONE_CREDENTIAL_INPUT_INVALID"));
     };
     const onData = (chunk: unknown): void => {
@@ -151,14 +189,28 @@ function readHiddenCredential(prompt: string): Promise<Uint8Array> {
       }
     };
 
-    output.write(prompt);
-    input.setRawMode(true);
-    input.resume();
-    input.on("data", onData);
+    try {
+      output.write(prompt);
+      input.setRawMode(true);
+      input.on("data", onData);
+      input.resume();
+    } catch {
+      finish(new SecurityError("HACKERONE_TTY_INPUT_INVALID"));
+    }
   });
 }
 
-main().catch((error: unknown) => {
-  process.stderr.write(`${errorCode(error)}\n`);
-  process.exitCode = 1;
-});
+export function hackerOneCredentialCliExitCode(error: unknown): 1 | 130 {
+  return errorCode(error) === "HACKERONE_TTY_INPUT_ABORTED" ? 130 : 1;
+}
+
+const invokedPath = process.argv[1];
+if (
+  invokedPath !== undefined &&
+  resolve(invokedPath) === resolve(fileURLToPath(import.meta.url))
+)
+  void main().catch((error: unknown) => {
+    const code = errorCode(error);
+    process.stderr.write(`${code}\n`);
+    process.exitCode = hackerOneCredentialCliExitCode(error);
+  });
