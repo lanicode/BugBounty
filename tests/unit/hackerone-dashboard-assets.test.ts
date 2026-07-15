@@ -144,13 +144,120 @@ describe("HackerOne dashboard assets", () => {
       "var killed = status.killSwitchActive !== false;",
     );
     expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(
-      'element("hackerone-test").disabled = operationRunning || !enabled || killed;',
+      'element("hackerone-test").disabled = operationRunning || !activation.secureCoreReady || !enabled || killed;',
     );
     expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(
-      'element("hackerone-sync-catalog").disabled = operationRunning || !enabled || killed;',
+      'element("hackerone-sync-catalog").disabled = operationRunning || !activation.secureCoreReady || !enabled || killed;',
     );
     expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(
-      'element("hackerone-sync-program").disabled = operationRunning || !enabled || killed || !selected;',
+      'element("hackerone-sync-program").disabled = operationRunning || !activation.secureCoreReady || !enabled || killed || !selected;',
+    );
+  });
+
+  it("keeps every security-core-dependent control disabled in setup-shell mode", () => {
+    for (const id of [
+      "hackerone-test",
+      "hackerone-sync-catalog",
+      "hackerone-program-select",
+      "hackerone-select-program",
+      "hackerone-sync-program",
+      "hackerone-campaign-select",
+      "hackerone-bind-campaign",
+      "hackerone-manual-json",
+      "hackerone-manual-import",
+    ])
+      expect(HACKERONE_DASHBOARD_JAVASCRIPT).toMatch(
+        new RegExp(
+          `element\\("${id}"\\)\\.disabled = [^;]*!activation\\.secureCoreReady`,
+          "u",
+        ),
+      );
+    expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(
+      'element("hackerone-policy-confirm").disabled = !secureCoreReady || !pending || operationRunning;',
+    );
+    expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(
+      'element("hackerone-accept-policy").disabled = !secureCoreReady || !pending || !confirmed || operationRunning;',
+    );
+  });
+
+  it("shows every activation prerequisite and never leaves a disabled activation unexplained", () => {
+    for (const id of [
+      "hackerone-activation-readiness-badge",
+      "hackerone-activation-requirements",
+      "hackerone-activation-context",
+    ])
+      expect(HACKERONE_DASHBOARD_HTML).toContain(`id="${id}"`);
+
+    expect(HACKERONE_DASHBOARD_HTML).toContain(
+      'aria-describedby="hackerone-activation-context"',
+    );
+    for (const field of [
+      "projection.secureCoreReady === true",
+      "projection.secureCoreReasonCodes",
+      "status.externalIntegrationsEnabled === true",
+      "status.adapterConfigured === true",
+      "status.identifierPresent === true && status.tokenPresent === true",
+      "status.killSwitchActive === false",
+    ])
+      expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(field);
+
+    expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(
+      'element("hackerone-enable").disabled = operationRunning || enabled || !activation.ready;',
+    );
+    expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(
+      "Der Aktivierungsbutton bleibt gesperrt, bis alle oben sichtbaren Voraussetzungen erfüllt sind.",
+    );
+    expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(
+      "BUGBOUNTY_EXTERNAL_INTEGRATIONS_ENABLED=true fehlt",
+    );
+    expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(
+      "BUGBOUNTY_HACKERONE_READONLY_ENABLED=true fehlt oder ist ungültig",
+    );
+  });
+
+  it("keeps local credential management independent from activation prerequisites", () => {
+    expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(
+      'element("hackerone-save-credentials").disabled = operationRunning || !available;',
+    );
+    expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(
+      'element("hackerone-remove-credentials").disabled = operationRunning || !available;',
+    );
+    expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(
+      "Credentials können unabhängig davon lokal gespeichert oder entfernt werden.",
+    );
+  });
+
+  it("ships all mutation controls disabled and disables them again after a state failure", () => {
+    for (const id of [
+      "hackerone-identifier",
+      "hackerone-token",
+      "hackerone-save-credentials",
+      "hackerone-remove-credentials",
+      "hackerone-enable",
+      "hackerone-disable",
+      "hackerone-test",
+      "hackerone-sync-catalog",
+      "hackerone-program-select",
+      "hackerone-select-program",
+      "hackerone-sync-program",
+      "hackerone-campaign-select",
+      "hackerone-bind-campaign",
+      "hackerone-manual-json",
+      "hackerone-manual-import",
+      "hackerone-policy-confirm",
+      "hackerone-accept-policy",
+    ])
+      expect(HACKERONE_DASHBOARD_HTML).toMatch(
+        new RegExp(`id="${id}"[^>]*\\bdisabled\\b`, "u"),
+      );
+    expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(
+      "function disableAllControls()",
+    );
+    expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(
+      'element("hackerone-identifier").value = "";',
+    );
+    expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(
+      'element("hackerone-token").value = "";',
     );
   });
 });

@@ -188,7 +188,6 @@ export async function startDashboardServer(
     if (!isPostRoute(pathname))
       throw new DashboardHttpError(404, "DASHBOARD_ROUTE_NOT_FOUND");
     if (pathname === "/api/hackerone/credentials/store") {
-      assertSecureCoreReady(dependencies);
       const declaredLength = assertCredentialMutationHeaders(
         request,
         origin,
@@ -244,7 +243,6 @@ export async function startDashboardServer(
         return;
       }
       case "/api/hackerone/credentials/remove": {
-        assertSecureCoreReady(dependencies);
         assertEmptyObject(body, "HACKERONE_DASHBOARD_REQUEST_INVALID");
         await requireHackerOne(dependencies).removeCredentials();
         sendJson(response, 200, { removed: true, adapterEnabled: false });
@@ -289,7 +287,6 @@ export async function startDashboardServer(
         return;
       }
       case "/api/hackerone/integration/disable": {
-        assertSecureCoreReady(dependencies);
         assertEmptyObject(body, "HACKERONE_DASHBOARD_REQUEST_INVALID");
         await requireHackerOne(dependencies).disable();
         sendJson(response, 200, { enabled: false });
@@ -723,6 +720,7 @@ async function buildDashboardState(
   const hackerOne = await buildHackerOneDashboardState(
     dependencies.hackerOne,
     campaigns,
+    dependencies.readiness,
   );
 
   return {
@@ -932,10 +930,14 @@ function hackerOneStatusText(value: unknown): string {
 async function buildHackerOneDashboardState(
   service: HackerOneMetadataService | undefined,
   campaigns: readonly CampaignRecord[],
+  readiness: RuntimeReadiness,
 ): Promise<unknown> {
+  const secureCoreReasonCodes = Object.freeze([...readiness.reasonCodes]);
   if (service === undefined)
     return Object.freeze({
       available: false,
+      secureCoreReady: readiness.ready,
+      secureCoreReasonCodes,
       status: Object.freeze({
         actionClass: "HACKERONE_METADATA_READ",
         status: "deactivated",
@@ -1009,6 +1011,8 @@ async function buildHackerOneDashboardState(
     );
   return Object.freeze({
     available: true,
+    secureCoreReady: readiness.ready,
+    secureCoreReasonCodes,
     status: projectHackerOneStatus(status),
     programs,
     programCount: allPrograms.length,

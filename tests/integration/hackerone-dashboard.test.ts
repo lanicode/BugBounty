@@ -41,6 +41,8 @@ const ASSET_IDENTIFIER =
 
 interface HackerOneDashboardProjection {
   readonly available: boolean;
+  readonly secureCoreReady: boolean;
+  readonly secureCoreReasonCodes: readonly string[];
   readonly status: {
     readonly status: string;
     readonly externalIntegrationsEnabled: boolean;
@@ -877,7 +879,7 @@ describe("HackerOne dashboard HTTP boundary", () => {
     expect(transport.plans).toHaveLength(0);
   });
 
-  it("blocks every HackerOne mutation in the local setup shell before any effect", async () => {
+  it("allows only local credential safety actions in the setup shell and blocks every external-capable action", async () => {
     const { server, database, credentials, transport } = await startHarness({
       secureCoreReady: false,
       killSwitchActive: false,
@@ -890,20 +892,44 @@ describe("HackerOne dashboard HTTP boundary", () => {
       "setup-shell-identifier",
       "setup-shell-token",
     );
-    const blockedCredentialStore = await postCredentialFrame(
+    expect(initial.hackerOne.secureCoreReady).toBe(false);
+    expect(initial.hackerOne.secureCoreReasonCodes).toEqual([
+      "RUNTIME_EVENT_KEY_MINIMUM_VERSION_SETUP_REQUIRED",
+      "RUNTIME_OPERATOR_SETUP_REQUIRED",
+      "RUNTIME_SECRET_STORE_SETUP_REQUIRED",
+    ]);
+    const storedCredential = await postCredentialFrame(
       server,
       initial.csrfToken,
       credentialPayload,
     );
     credentialPayload.fill(0);
-    expect(blockedCredentialStore.status).toBe(409);
-    expect(await blockedCredentialStore.json()).toEqual({
-      error: "DASHBOARD_SECURE_CORE_NOT_READY",
+    expect(storedCredential.status).toBe(200);
+    expect(await storedCredential.json()).toEqual({
+      stored: true,
+      adapterEnabled: false,
     });
+    const removedCredential = await postJson(
+      server,
+      "/api/hackerone/credentials/remove",
+      initial.csrfToken,
+      {},
+    );
+    expect(removedCredential.status).toBe(200);
+    expect(await removedCredential.json()).toEqual({
+      removed: true,
+      adapterEnabled: false,
+    });
+    const disabled = await postJson(
+      server,
+      "/api/hackerone/integration/disable",
+      initial.csrfToken,
+      {},
+    );
+    expect(disabled.status).toBe(200);
+    expect(await disabled.json()).toEqual({ enabled: false });
     const cases: readonly (readonly [string, unknown])[] = [
-      ["/api/hackerone/credentials/remove", {}],
       ["/api/hackerone/integration/enable", {}],
-      ["/api/hackerone/integration/disable", {}],
       ["/api/hackerone/connection-test", {}],
       ["/api/hackerone/programs/synchronize", {}],
       ["/api/hackerone/program/select", { programRef: validRef }],
@@ -930,8 +956,8 @@ describe("HackerOne dashboard HTTP boundary", () => {
         error: "DASHBOARD_SECURE_CORE_NOT_READY",
       });
     }
-    expect(credentials.storeCount).toBe(0);
-    expect(credentials.removeCount).toBe(0);
+    expect(credentials.storeCount).toBe(1);
+    expect(credentials.removeCount).toBe(1);
     expect(transport.plans).toHaveLength(0);
     expect((await state(server)).hackerOne.programs).toHaveLength(0);
     expect(

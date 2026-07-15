@@ -26,24 +26,29 @@ export const HACKERONE_DASHBOARD_HTML = `
       <p class="muted">Diese einmalige lokale Aktion überträgt beide Werte ausschließlich binär an den loopbackgebundenen Dashboard-Prozess und speichert sie im macOS-Schlüsselbund. Die Werte werden weder angezeigt noch in Browser-Speichern persistiert. Alternativ steht der lokale TTY-Adminbefehl <code>pnpm hackerone:credentials store</code> bereit.</p>
       <form id="hackerone-credential-form" autocomplete="off">
         <label for="hackerone-identifier">API-Identifier</label>
-        <input id="hackerone-identifier" type="password" autocomplete="off" spellcheck="false" maxlength="3000">
+        <input id="hackerone-identifier" type="password" autocomplete="off" spellcheck="false" maxlength="3000" disabled>
         <label for="hackerone-token">API-Token</label>
-        <input id="hackerone-token" type="password" autocomplete="off" spellcheck="false" maxlength="3000">
+        <input id="hackerone-token" type="password" autocomplete="off" spellcheck="false" maxlength="3000" disabled>
       </form>
       <div class="button-row">
-        <button id="hackerone-save-credentials" type="button">Credentials lokal speichern</button>
-        <button id="hackerone-remove-credentials" class="danger" type="button">Credentials entfernen</button>
+        <button id="hackerone-save-credentials" type="button" disabled>Credentials lokal speichern</button>
+        <button id="hackerone-remove-credentials" class="danger" type="button" disabled>Credentials entfernen</button>
       </div>
     </article>
 
     <article>
-      <h3>Integrationskontrolle</h3>
+      <div class="section-heading">
+        <h3>Integrationskontrolle</h3>
+        <span id="hackerone-activation-readiness-badge" class="capability-badge">VORAUSSETZUNGEN WERDEN GEPRÜFT</span>
+      </div>
       <p class="muted">Aktivierung erweitert ausschließlich die Capability HACKERONE_METADATA_READ. Der globale Kill Switch bleibt vorrangig.</p>
+      <ul id="hackerone-activation-requirements" class="step-list" aria-label="Voraussetzungen für die HackerOne-Aktivierung" aria-live="polite"></ul>
+      <p id="hackerone-activation-context" class="review-package" aria-live="polite">Aktivierungsvoraussetzungen werden geprüft.</p>
       <div class="button-row">
-        <button id="hackerone-enable" type="button">Read-only-Integration aktivieren</button>
-        <button id="hackerone-disable" class="danger" type="button">Integration deaktivieren</button>
-        <button id="hackerone-test" type="button">Verbindung testen</button>
-        <button id="hackerone-sync-catalog" type="button">Programmkatalog synchronisieren</button>
+        <button id="hackerone-enable" type="button" aria-describedby="hackerone-activation-context" disabled>Read-only-Integration aktivieren</button>
+        <button id="hackerone-disable" class="danger" type="button" disabled>Integration deaktivieren</button>
+        <button id="hackerone-test" type="button" disabled>Verbindung testen</button>
+        <button id="hackerone-sync-catalog" type="button" disabled>Programmkatalog synchronisieren</button>
       </div>
     </article>
   </div>
@@ -53,10 +58,10 @@ export const HACKERONE_DASHBOARD_HTML = `
       <div><p class="eyebrow">Lokale Auswahl</p><h3 id="hackerone-program-selection-heading">Programm auswählen und Details synchronisieren</h3></div>
     </div>
     <label for="hackerone-program-select">Importiertes Programm</label>
-    <select id="hackerone-program-select"><option value="">Kein Programm verfügbar</option></select>
+    <select id="hackerone-program-select" disabled><option value="">Kein Programm verfügbar</option></select>
     <div class="button-row">
-      <button id="hackerone-select-program" type="button">Auswahl übernehmen</button>
-      <button id="hackerone-sync-program" type="button">Programmdetails, Scopes und Ausschlüsse synchronisieren</button>
+      <button id="hackerone-select-program" type="button" disabled>Auswahl übernehmen</button>
+      <button id="hackerone-sync-program" type="button" disabled>Programmdetails, Scopes und Ausschlüsse synchronisieren</button>
     </div>
   </section>
 
@@ -66,8 +71,8 @@ export const HACKERONE_DASHBOARD_HTML = `
     </div>
     <p class="muted">Die Bindung verwendet ausschließlich exakte lokale Referenzen. Bei späterem Policy-Drift können nur ausdrücklich gebundene aktive Kampagnen pausiert werden.</p>
     <label for="hackerone-campaign-select">Lokale Kampagne</label>
-    <select id="hackerone-campaign-select"><option value="">Keine Kampagne verfügbar</option></select>
-    <button id="hackerone-bind-campaign" type="button">Abhängige Kampagne binden</button>
+    <select id="hackerone-campaign-select" disabled><option value="">Keine Kampagne verfügbar</option></select>
+    <button id="hackerone-bind-campaign" type="button" disabled>Abhängige Kampagne binden</button>
   </section>
 
   <section aria-labelledby="hackerone-manual-import-heading">
@@ -77,8 +82,8 @@ export const HACKERONE_DASHBOARD_HTML = `
     </div>
     <p class="muted">Der Import bleibt als manuell und ungeprüft markiert. Er stellt keine Policy-Annahme dar.</p>
     <label for="hackerone-manual-json">Striktes lokales JSON-Dokument</label>
-    <textarea id="hackerone-manual-json" rows="12" spellcheck="false" autocomplete="off"></textarea>
-    <button id="hackerone-manual-import" type="button">JSON lokal importieren</button>
+    <textarea id="hackerone-manual-json" rows="12" spellcheck="false" autocomplete="off" disabled></textarea>
+    <button id="hackerone-manual-import" type="button" disabled>JSON lokal importieren</button>
   </section>
 
   <section aria-labelledby="hackerone-policy-accept-heading">
@@ -87,7 +92,7 @@ export const HACKERONE_DASHBOARD_HTML = `
       <span id="hackerone-policy-acceptance-badge" class="capability-badge">KEINE AUSWAHL</span>
     </div>
     <p id="hackerone-policy-acceptance-context" class="review-package">Keine aktuelle Policy ausgewählt.</p>
-    <label><input id="hackerone-policy-confirm" type="checkbox"> Ich habe die aktuelle Policy, Scopes, Ausschlüsse und den Diff geprüft und akzeptiere exakt diese lokale Snapshot-Version.</label>
+    <label><input id="hackerone-policy-confirm" type="checkbox" disabled> Ich habe die aktuelle Policy, Scopes, Ausschlüsse und den Diff geprüft und akzeptiere exakt diese lokale Snapshot-Version.</label>
     <button id="hackerone-accept-policy" type="button" disabled>Aktuelle Policy explizit akzeptieren</button>
   </section>
 
@@ -164,11 +169,36 @@ export const HACKERONE_DASHBOARD_JAVASCRIPT = `
   var refreshRunning = false;
   var CREDENTIAL_FRAME_HEADER_BYTES = 9;
   var MAX_CREDENTIAL_BYTES = 3000;
+  var CONTROL_IDS = Object.freeze([
+    "hackerone-identifier",
+    "hackerone-token",
+    "hackerone-save-credentials",
+    "hackerone-remove-credentials",
+    "hackerone-enable",
+    "hackerone-disable",
+    "hackerone-test",
+    "hackerone-sync-catalog",
+    "hackerone-program-select",
+    "hackerone-select-program",
+    "hackerone-sync-program",
+    "hackerone-campaign-select",
+    "hackerone-bind-campaign",
+    "hackerone-manual-json",
+    "hackerone-manual-import",
+    "hackerone-policy-confirm",
+    "hackerone-accept-policy"
+  ]);
 
   function element(id) {
     var found = document.getElementById(id);
     if (!found) throw new Error("HACKERONE_UI_ELEMENT_MISSING:" + id);
     return found;
+  }
+
+  function disableAllControls() {
+    CONTROL_IDS.forEach(function (id) {
+      element(id).disabled = true;
+    });
   }
 
   function record(value) {
@@ -623,6 +653,7 @@ export const HACKERONE_DASHBOARD_JAVASCRIPT = `
     var stored = record(projection.currentSnapshot);
     var snapshot = snapshotRecord(projection);
     var pending = !!(stored && stored.acceptancePending === true && snapshot);
+    var secureCoreReady = projection.secureCoreReady === true;
     var confirmed = element("hackerone-policy-confirm").checked;
     var previous = record(projection.previousPolicy);
     var diff = record(projection.drift);
@@ -633,12 +664,106 @@ export const HACKERONE_DASHBOARD_JAVASCRIPT = `
         ? "Snapshot " + plain(snapshot.snapshotDigest) + " · Policy " + plain(snapshot.policyDigest) + " · Quelle " + translated(snapshot.source) + " · Vorherige Policy " + (previous ? plain(previous.policyDigest) : "keine") + " · Diff " + (diff ? plain(array(diff.changes).map(translateChange)) : "erste Version")
         : "Keine aktuelle Policy ausgewählt."
     );
-    element("hackerone-policy-confirm").disabled = !pending || operationRunning;
-    element("hackerone-accept-policy").disabled = !pending || !confirmed || operationRunning;
+    element("hackerone-policy-confirm").disabled = !secureCoreReady || !pending || operationRunning;
+    element("hackerone-accept-policy").disabled = !secureCoreReady || !pending || !confirmed || operationRunning;
+  }
+
+  function activationState(projection) {
+    var status = record(projection.status) || {};
+    var secureCoreReasonCodes = array(projection.secureCoreReasonCodes)
+      .filter(function (value) {
+        return typeof value === "string" && /^[A-Z][A-Z0-9_]{2,127}$/.test(value);
+      })
+      .slice(0, 16);
+    var state = {
+      secureCoreReady: projection.secureCoreReady === true,
+      externalIntegrationsEnabled: status.externalIntegrationsEnabled === true,
+      adapterConfigured: status.adapterConfigured === true,
+      credentialPairPresent:
+        status.identifierPresent === true && status.tokenPresent === true,
+      killSwitchReleased: status.killSwitchActive === false,
+      secureCoreReasonCodes: secureCoreReasonCodes
+    };
+    state.ready =
+      state.secureCoreReady &&
+      state.externalIntegrationsEnabled &&
+      state.adapterConfigured &&
+      state.credentialPairPresent &&
+      state.killSwitchReleased;
+    return state;
+  }
+
+  function renderActivationReadiness(projection) {
+    var activation = activationState(projection);
+    var requirements = [
+      {
+        label: "Sicherheitskern",
+        ready: activation.secureCoreReady,
+        detail: activation.secureCoreReady
+          ? "bereit"
+          : activation.secureCoreReasonCodes.length > 0
+            ? activation.secureCoreReasonCodes.join(", ")
+            : "DASHBOARD_SECURE_CORE_NOT_READY"
+      },
+      {
+        label: "Externe Integrationen",
+        ready: activation.externalIntegrationsEnabled,
+        detail: activation.externalIntegrationsEnabled
+          ? "Startup-Schalter aktiv"
+          : "BUGBOUNTY_EXTERNAL_INTEGRATIONS_ENABLED=true fehlt"
+      },
+      {
+        label: "HackerOne Read-only",
+        ready: activation.adapterConfigured,
+        detail: activation.adapterConfigured
+          ? "Capability konfiguriert"
+          : "BUGBOUNTY_HACKERONE_READONLY_ENABLED=true fehlt oder ist ungültig"
+      },
+      {
+        label: "Credential-Paar",
+        ready: activation.credentialPairPresent,
+        detail: activation.credentialPairPresent
+          ? "Identifier und Token im Schlüsselbund vorhanden"
+          : "Identifier und Token müssen beide im Schlüsselbund vorhanden sein"
+      },
+      {
+        label: "Globaler Kill Switch",
+        ready: activation.killSwitchReleased,
+        detail: activation.killSwitchReleased
+          ? "signiert freigegeben"
+          : "aktiv; zuerst über die lokale Operatorgrenze freigeben"
+      }
+    ];
+    var nodes = requirements.map(function (requirement) {
+      var item = document.createElement("li");
+      item.className = requirement.ready ? "done" : "current";
+      item.textContent =
+        (requirement.ready ? "Bereit: " : "Offen: ") +
+        requirement.label +
+        " · " +
+        requirement.detail;
+      return item;
+    });
+    element("hackerone-activation-requirements").replaceChildren.apply(
+      element("hackerone-activation-requirements"),
+      nodes
+    );
+    setText(
+      "hackerone-activation-readiness-badge",
+      activation.ready ? "AKTIVIERUNG BEREIT" : "AKTIVIERUNG BLOCKIERT"
+    );
+    setText(
+      "hackerone-activation-context",
+      activation.ready
+        ? "Alle fünf Voraussetzungen sind erfüllt. Die Read-only-Integration kann jetzt ausdrücklich aktiviert werden."
+        : "Der Aktivierungsbutton bleibt gesperrt, bis alle oben sichtbaren Voraussetzungen erfüllt sind. Credentials können unabhängig davon lokal gespeichert oder entfernt werden."
+    );
+    return activation;
   }
 
   function renderControls(projection) {
     var status = record(projection.status) || {};
+    var activation = activationState(projection);
     var available = projection.available === true;
     var enabled = status.adapterEnabled === true;
     var killed = status.killSwitchActive !== false;
@@ -649,16 +774,22 @@ export const HACKERONE_DASHBOARD_JAVASCRIPT = `
     element("hackerone-token").disabled = operationRunning || !available;
     element("hackerone-save-credentials").disabled = operationRunning || !available;
     element("hackerone-remove-credentials").disabled = operationRunning || !available;
-    element("hackerone-enable").disabled = operationRunning || enabled || status.adapterConfigured !== true;
+    element("hackerone-enable").disabled = operationRunning || enabled || !activation.ready;
+    element("hackerone-enable").title = enabled
+      ? "Read-only-Integration ist bereits aktiviert."
+      : activation.ready
+        ? "Alle Aktivierungsvoraussetzungen sind erfüllt."
+        : "Aktivierung blockiert; offene Voraussetzungen stehen direkt oberhalb des Buttons.";
     element("hackerone-disable").disabled = operationRunning || !enabled;
-    element("hackerone-test").disabled = operationRunning || !enabled || killed;
-    element("hackerone-sync-catalog").disabled = operationRunning || !enabled || killed;
-    element("hackerone-program-select").disabled = operationRunning || !programsAvailable;
-    element("hackerone-select-program").disabled = operationRunning || !programsAvailable;
-    element("hackerone-sync-program").disabled = operationRunning || !enabled || killed || !selected;
-    element("hackerone-campaign-select").disabled = operationRunning || !campaignsAvailable;
-    element("hackerone-bind-campaign").disabled = operationRunning || !selected || !campaignsAvailable;
-    element("hackerone-manual-import").disabled = operationRunning || !available;
+    element("hackerone-test").disabled = operationRunning || !activation.secureCoreReady || !enabled || killed;
+    element("hackerone-sync-catalog").disabled = operationRunning || !activation.secureCoreReady || !enabled || killed;
+    element("hackerone-program-select").disabled = operationRunning || !activation.secureCoreReady || !programsAvailable;
+    element("hackerone-select-program").disabled = operationRunning || !activation.secureCoreReady || !programsAvailable;
+    element("hackerone-sync-program").disabled = operationRunning || !activation.secureCoreReady || !enabled || killed || !selected;
+    element("hackerone-campaign-select").disabled = operationRunning || !activation.secureCoreReady || !campaignsAvailable;
+    element("hackerone-bind-campaign").disabled = operationRunning || !activation.secureCoreReady || !selected || !campaignsAvailable;
+    element("hackerone-manual-json").disabled = operationRunning || !activation.secureCoreReady || !available;
+    element("hackerone-manual-import").disabled = operationRunning || !activation.secureCoreReady || !available;
     renderPolicyAcceptance(projection);
   }
 
@@ -674,6 +805,7 @@ export const HACKERONE_DASHBOARD_JAVASCRIPT = `
     renderVersions(projection);
     renderDiff(projection);
     renderSuitability(projection);
+    renderActivationReadiness(projection);
     renderControls(projection);
   }
 
@@ -699,6 +831,9 @@ export const HACKERONE_DASHBOARD_JAVASCRIPT = `
     } catch {
       currentProjection = null;
       csrfToken = "";
+      element("hackerone-identifier").value = "";
+      element("hackerone-token").value = "";
+      disableAllControls();
       operationStatus("HackerOne-Zustand ist fail-closed nicht verfügbar.", true);
     } finally {
       refreshRunning = false;
@@ -947,6 +1082,7 @@ export const HACKERONE_DASHBOARD_JAVASCRIPT = `
   }
 
   function start() {
+    disableAllControls();
     bindActions();
     window.addEventListener("bugbounty:dashboard-state", function (event) {
       var root = record(event.detail);
