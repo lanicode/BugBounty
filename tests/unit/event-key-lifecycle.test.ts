@@ -317,7 +317,7 @@ describe("event key lifecycle", () => {
     const state = JSON.parse(await readFile(statePath, "utf8")) as {
       authenticationTag: string;
     };
-    state.authenticationTag = `${state.authenticationTag === "f".repeat(64) ? "e" : "f"}${state.authenticationTag.slice(1)}`;
+    state.authenticationTag = `${state.authenticationTag.startsWith("f") ? "e" : "f"}${state.authenticationTag.slice(1)}`;
     await writeFile(statePath, canonicalJson(state), "utf8");
     await chmod(statePath, 0o600);
     await expect(
