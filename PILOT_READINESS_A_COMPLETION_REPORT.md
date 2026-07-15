@@ -73,11 +73,12 @@ Der neue Pfad ist geschlossen und fail-closed aufgebaut:
     blockiert. Alle übrigen Mutationen verwenden feste
     Same-Origin-JSON-Routen.
 13. Ein lokal installierbarer macOS-App-Launcher startet die Anwendung ohne
-    sichtbares Terminal. Er verwendet eine Minimalumgebung, validiert nur
-    `127.0.0.1`, besitzt Startup- und Termination-Deadlines und hält eine
-    Loopback-Single-Instance-Lease. Externe Schalter sind standardmäßig aus;
-    nicht geheime Event-/Operator-Metadaten werden nur bei einem ausdrücklichen
-    Installerlauf übernommen.
+    sichtbares Terminal. Sein lokal kompiliertes, ad hoc signiertes natives
+    AppKit-Executable bleibt für Reopen und Quit ansprechbar. Es verwendet eine
+    Minimalumgebung, validiert nur `127.0.0.1`, besitzt Startup- und
+    Termination-Deadlines und hält eine Loopback-Single-Instance-Lease. Externe
+    Schalter sind standardmäßig aus; nicht geheime Event-/Operator-Metadaten
+    werden nur bei einem ausdrücklichen Installerlauf übernommen.
 
 ## Implementierter externer API-Umfang
 
@@ -149,10 +150,13 @@ nicht erreichbar.
   getrennt.
 - Lokaler macOS-App-Launcher mit privater Konfiguration, explizitem
   `local-only`-Standard, optionalem H1-Read-only-Modus, Minimalumgebung,
-  Startup-/Shutdown-Grenzen und Single-Instance-Lease. Das weiterhin
-  begrenzte Kaltstartfenster beträgt dreißig Sekunden; Timeout und ein
-  erkannter paralleler Launcher-Start erhalten eigene lokale Hinweise,
-  während alle anderen Fehler generisch fail-closed bleiben.
+  nativem AppKit-Event-Loop, eigener Kindprozessgruppe, kontrollierten
+  Startup-/Shutdown-Grenzen und Single-Instance-Lease. Der Installer baut ein
+  architekturlokales Mach-O-Executable, signiert das fertige Bundle ad hoc und
+  verifiziert die Signatur vor dem atomaren Austausch. Das weiterhin begrenzte
+  Kaltstartfenster beträgt dreißig Sekunden; Reopen, Timeout und ein erkannter
+  paralleler Launcher-Start erhalten eigene lokale Hinweise, während alle
+  anderen Fehler generisch fail-closed bleiben.
 
 ### Ausdrückliche Security-Core-Änderungen
 
@@ -258,22 +262,22 @@ Netzwerkrequest und kennzeichnet jeden Datensatz als `manual_unverified`.
 
 Alle folgenden Prüfungen wurden auf dem finalen Arbeitsstand ausgeführt.
 
-| Prüfung                   | Tatsächlich ausgeführter Befehl                                                                             | Finales Ergebnis                                                        |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| Typecheck                 | `./node_modules/.bin/tsc --noEmit`                                                                          | bestanden                                                               |
-| Lint                      | `./node_modules/.bin/eslint . --max-warnings 0`                                                             | bestanden, 0 Warnungen                                                  |
-| Format                    | `./node_modules/.bin/prettier --check .`                                                                    | bestanden                                                               |
-| Vollständige Suite        | `./node_modules/.bin/vitest run --maxWorkers=1`                                                             | 107 Dateien, 876/876 Tests                                              |
-| Property-Tests            | `./node_modules/.bin/vitest run tests/property --maxWorkers=1`                                              | 17 Dateien, 45/45 Tests                                                 |
-| Browser-Harness           | `PLAYWRIGHT_NO_COPY_PROMPT=1 ./node_modules/.bin/playwright test --config playwright.config.ts`             | 2/2 Tests                                                               |
-| Egress-Regressionen       | `./node_modules/.bin/vitest run tests/unit/egress tests/integration/*loopback.test.ts --maxWorkers=1`       | 6 Dateien, 33/33 Tests                                                  |
-| H1-Loopback/API/Dashboard | gezielter Vitest-Lauf der H1-Unit-, Property-, Security- und Loopbacktests                                  | 19 Dateien, 346/346 Tests                                               |
-| Secret-Leak-Prüfung       | `./node_modules/.bin/vitest run tests/security --maxWorkers=1`                                              | 1 Datei, 5/5 Tests                                                      |
-| Native Keychain           | `sh tests/native/macos-keychain-helper-contract.sh && sh tests/native/macos-keychain-helper-integration.sh` | Contract und synthetischer lokaler Keychain-Zyklus bestanden            |
-| macOS-App-Launcher        | `./node_modules/.bin/vitest run tests/unit/macos-app-launcher.test.ts --maxWorkers=1`                       | 1 Datei, 7/7 Tests                                                      |
-| Build                     | `./node_modules/.bin/tsc -p tsconfig.build.json`                                                            | bestanden                                                               |
-| Coverage                  | `./node_modules/.bin/vitest run --coverage --maxWorkers=1`                                                  | 87,12 % Statements; 83,21 % Branches; 94,67 % Funktionen; 88,24 % Lines |
-| Dependency-Audit          | `npx --yes pnpm@11.7.0 audit --audit-level high`                                                            | keine bekannten Schwachstellen gefunden                                 |
+| Prüfung                   | Tatsächlich ausgeführter Befehl                                                                       | Finales Ergebnis                                                                                                       |
+| ------------------------- | ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Typecheck                 | `./node_modules/.bin/tsc --noEmit`                                                                    | bestanden                                                                                                              |
+| Lint                      | `./node_modules/.bin/eslint . --max-warnings 0`                                                       | bestanden, 0 Warnungen                                                                                                 |
+| Format                    | `./node_modules/.bin/prettier --check .`                                                              | bestanden                                                                                                              |
+| Vollständige Suite        | `./node_modules/.bin/vitest run --maxWorkers=1`                                                       | 107 Dateien, 877/877 Tests                                                                                             |
+| Property-Tests            | `./node_modules/.bin/vitest run tests/property --maxWorkers=1`                                        | 17 Dateien, 45/45 Tests                                                                                                |
+| Browser-Harness           | `PLAYWRIGHT_NO_COPY_PROMPT=1 ./node_modules/.bin/playwright test --config playwright.config.ts`       | 2/2 Tests                                                                                                              |
+| Egress-Regressionen       | `./node_modules/.bin/vitest run tests/unit/egress tests/integration/*loopback.test.ts --maxWorkers=1` | 6 Dateien, 33/33 Tests                                                                                                 |
+| H1-Loopback/API/Dashboard | Bestandteil des vollständigen Vitest-Laufs                                                            | alle H1-Unit-, Property-, Security- und Loopbacktests im grünen 877/877-Gesamtlauf enthalten                           |
+| Secret-Leak-Prüfung       | `./node_modules/.bin/vitest run tests/security --maxWorkers=1`                                        | 1 Datei, 5/5 Tests                                                                                                     |
+| Native macOS-Komponenten  | `npm run test:native`                                                                                 | Keychain-Contract/-Zyklus, App-Wrapper-Contract, POSIX-Lifecycle sowie LaunchServices-Reopen und AppKit-Quit bestanden |
+| macOS-App-Launcher        | `./node_modules/.bin/vitest run tests/unit/macos-app-launcher.test.ts --maxWorkers=1`                 | 1 Datei, 8/8 Tests                                                                                                     |
+| Build                     | `./node_modules/.bin/tsc -p tsconfig.build.json`                                                      | bestanden                                                                                                              |
+| Coverage                  | `./node_modules/.bin/vitest run --coverage --maxWorkers=1`                                            | 87,12 % Statements; 83,21 % Branches; 94,67 % Funktionen; 88,24 % Lines                                                |
+| Dependency-Audit          | `npx --yes pnpm@11.7.0 audit --audit-level high`                                                      | keine bekannten Schwachstellen gefunden                                                                                |
 
 Der fest auf `api.hackerone.com:443` verdrahtete Produktions-Transport wird
 in automatisierten Tests nicht live ausgeführt. Alle automatisierten
@@ -299,8 +303,10 @@ Die vollständige Liste steht in
   API-Identifier-/Token-Paar; ein vom Plattformkonto nur als einzelner Token
   ausgegebenes Credential bleibt bis zu einer separat geprüften
   Auth-Kompatibilität fail-closed.
-- Der Finder-Launcher ist noch nicht mit vollständig synthetisch
-  provisioniertem Security-Core bis `secureCoreReady` end-to-end qualifiziert.
+- Der Finder-Launcher ist lokal bis zum vorhandenen Security-Core-Status
+  gestartet und auf Reopen/Quit geprüft; ein vollständig synthetisch neu
+  provisionierter Security-Core bis `secureCoreReady` bleibt nicht
+  automatisiert.
 
 ## Erklärung zu externen Kontakten
 

@@ -7,9 +7,10 @@ Loopback-Dashboard-URL.
 
 ## Einmalige Installation
 
-Im Repository müssen Node.js 24 oder neuer und die bereits installierten
-Projektabhängigkeiten vorhanden sein. Der Installer lädt nichts aus dem
-Internet nach:
+Im Repository müssen Node.js 24 oder neuer, die Apple Command Line Tools und
+die bereits installierten Projektabhängigkeiten vorhanden sein. Der Installer
+lädt nichts aus dem Internet nach. Er kompiliert die kleine native AppKit-Hülle
+lokal und signiert das fertige Bundle ad hoc:
 
 ```bash
 npx --yes pnpm@11.7.0 install --frozen-lockfile
@@ -25,6 +26,12 @@ Anschließend liegt die App unter:
 Sie kann im Finder geöffnet und bei Bedarf in das Dock gezogen werden. Nach
 einem Verschieben oder erneuten Klonen des Repositorys muss der Installer im
 neuen Repository noch einmal ausgeführt werden.
+
+Liegt das Repository wie in dieser Installation im macOS-geschützten
+Downloads-Ordner, fragt macOS beim ersten Finder-Start einmalig nach dem
+Dateizugriff. Der Dialog nennt ausschließlich den Zugriff auf das lokale
+Repository; **Erlauben** ist für diesen Ablageort erforderlich. Die Freigabe
+erzeugt keine Netzwerkberechtigung und ändert keine External-Integration.
 
 Der Standardlauncher setzt beide externen Integrationsschalter bei jedem
 Start ausdrücklich auf `false`. Für die weiterhin manuell zu aktivierende,
@@ -80,10 +87,15 @@ BUGBOUNTY_COPILOT_APP_DIR="$HOME/Applications" \
 
 - Die `.app` speichert nur den kanonischen Repository-Pfad, den beim
   Installieren aus `process.execPath` ermittelten kanonischen, ausführbaren
-  und nicht symbolisch verlinkten Node-Pfad, den nicht geheimen Modus
-  `local-only`/`hackerone-readonly` und die vier oben beschriebenen
-  nicht geheimen Referenz-/Versionswerte. Alle Dateien sind nur für den
-  aktuellen Benutzer lesbar und werden nie als Shellcode ausgewertet.
+  und nicht symbolisch verlinkten Node-Pfad, den kanonischen lokalen
+  `tsx`-Pfad, den nicht geheimen Modus `local-only`/`hackerone-readonly` und
+  die vier oben beschriebenen nicht geheimen Referenz-/Versionswerte. Alle
+  Dateien sind nur für den aktuellen Benutzer lesbar und werden nie als
+  Shellcode ausgewertet.
+- Das `CFBundleExecutable` ist ein lokal kompiliertes und ad hoc signiertes
+  Mach-O-Programm mit echter AppKit-Ereignisschleife. Es startet den
+  TypeScript-Supervisor ohne Shell in einer eigenen Prozessgruppe und bleibt
+  für Finder-Reopen-, Quit- und Abmeldeereignisse ansprechbar.
 - Vor jedem Start werden alle Konfigurationsdateien erneut auf Eigentümer,
   Modus, Einzeiligkeit und kanonisches Format geprüft. Die Anwendung erhält
   eine neu konstruierte Minimalumgebung; geerbte Werte wie `NODE_OPTIONS`,
@@ -115,16 +127,23 @@ BUGBOUNTY_COPILOT_APP_DIR="$HOME/Applications" \
   External-Integrations-Policy der Anwendung wird nicht verändert. Der
   Launcher verschafft keine zusätzliche Capability.
 
-Der Launcher ist bewusst kein signiertes/distributables macOS-Produktpaket.
-Er wird lokal aus dem geprüften Repository installiert und enthält weder
-Auto-Updater noch Hintergrunddienst. Solange die App läuft, bleibt der lokale
-Node-Prozess aktiv. Das Schließen des Browserfensters beendet ihn nicht und ein
-erneuter Doppelklick öffnet die URL bei einer bereits laufenden unsichtbaren
-Instanz nicht zuverlässig erneut. Zum vollständigen Beenden in der macOS-
-Aktivitätsanzeige den Prozess **BugBountyCopilotLauncher** auswählen und
-**Beenden** wählen; der Launcher beendet dann Dashboard und Lease kontrolliert.
-Beim Abmelden wird er ebenfalls mit beendet. Ein eigener Menüleisten-/Reopen-
-Controller ist in dieser lokalen Alpha noch nicht implementiert.
+Der Launcher ist bewusst kein notarisiertes oder für andere Macs
+distributables Produktpaket. Er wird auf dem aktuellen Mac für dessen
+Architektur aus dem geprüften Repository kompiliert, ad hoc signiert und
+enthält weder Auto-Updater noch Hintergrunddienst. Solange die App läuft,
+bleibt der lokale Node-Prozess aktiv. Das Schließen des Browserfensters beendet
+ihn nicht. Ein erneuter Doppelklick wird vom nativen Reopen-Controller
+beantwortet und zeigt einen lokalen Hinweis, öffnet aber bewusst keine
+vermutete URL: Der Dashboard-Port kann ausweichen und ein fremder lokaler
+Listener darf nicht als bestehende App-Instanz vertraut werden.
+
+Zum vollständigen Beenden in der macOS-Aktivitätsanzeige den Prozess
+**BugBountyCopilotLauncher** auswählen und **Beenden** wählen. Der native Host
+sendet dann `SIGTERM` an die separate Prozessgruppe seines Supervisors,
+erzwingt nach einer begrenzten Frist `SIGKILL` und wartet auf den direkten
+Kindprozess. Beim
+Abmelden wird derselbe kontrollierte Quit-Pfad verwendet. **Sofort beenden**
+umgeht wie bei jeder macOS-App die kontrollierte Aufräumfrist.
 
 Der erste lokale TypeScript-Start kann auf einem kalten System länger dauern.
 Das weiterhin begrenzte Startfenster beträgt deshalb dreißig Sekunden. Läuft
@@ -132,11 +151,10 @@ es ab, werden Dashboard und Lease kontrolliert beendet und die App zeigt einen
 eigenen Hinweis zum erneuten Öffnen; andere Fehler bleiben generisch
 fail-closed.
 
-Ein erkannter paralleler Launcher-Start erzeugt weiterhin keine zweite Instanz
-und öffnet keine vermutete URL. Wird dabei tatsächlich ein zweiter
-Launcher-Prozess gestartet, zeigt er ausdrücklich **Bug Bounty Copilot läuft
-bereits** statt eines irreführenden Repositoryfehlers. Ein normaler
-Finder-Doppelklick kann bei einer von LaunchServices bereits geführten App
-stattdessen ohne neuen Prozess bleiben. Verwende in beiden Fällen das bereits
-geöffnete Browserfenster. Ist es geschlossen, beende die laufende App wie oben
-beschrieben und öffne sie erneut.
+Ein erkannter paralleler Launcher-Start erzeugt weiterhin keine zweite
+Produktinstanz und öffnet keine vermutete URL. Sowohl ein normaler
+LaunchServices-Reopen als auch ein zweiter, an der Lease blockierter Prozess
+zeigen ausdrücklich **Bug Bounty Copilot läuft bereits** statt eines
+irreführenden Repositoryfehlers. Verwende das bereits geöffnete Browserfenster.
+Ist es geschlossen, beende die laufende App wie oben beschrieben und öffne sie
+erneut.

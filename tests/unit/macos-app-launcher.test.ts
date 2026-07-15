@@ -1,9 +1,11 @@
 import {
   chmod,
+  copyFile,
   lstat,
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   realpath,
   stat,
   symlink,
@@ -304,6 +306,14 @@ describe("macOS app launcher", () => {
         (await stat(join(resources, "repository-path"))).mode & 0o077,
       ).toBe(0);
       expect((await stat(join(resources, "node-path"))).mode & 0o077).toBe(0);
+      const tsxPath = (
+        await readFile(join(resources, "tsx-path"), "utf8")
+      ).trim();
+      expect(tsxPath.startsWith(`${ROOT}/`)).toBe(true);
+      expect((await stat(tsxPath)).isFile()).toBe(true);
+      expect((await lstat(tsxPath)).isSymbolicLink()).toBe(false);
+      expect(await realpath(tsxPath)).toBe(tsxPath);
+      expect((await stat(join(resources, "tsx-path"))).mode & 0o077).toBe(0);
       expect(await readFile(join(resources, "integration-mode"), "utf8")).toBe(
         "local-only\n",
       );
@@ -321,30 +331,144 @@ describe("macOS app launcher", () => {
         );
         expect((await stat(join(resources, filename))).mode & 0o077).toBe(0);
       }
+      expect((await readdir(resources)).sort()).toEqual(
+        [
+          "event-key-minimum-version",
+          "integration-mode",
+          "node-path",
+          "operator-id",
+          "operator-key-reference",
+          "operator-key-revision",
+          "repository-path",
+          "tsx-path",
+        ].sort(),
+      );
 
-      const executable = await readFile(
-        join(app, "Contents/MacOS/BugBountyCopilotLauncher"),
+      const executablePath = join(
+        app,
+        "Contents/MacOS/BugBountyCopilotLauncher",
+      );
+      const executable = await readFile(executablePath);
+      expect([...executable.subarray(0, 4)]).toEqual([0xcf, 0xfa, 0xed, 0xfe]);
+      expect((await stat(executablePath)).isFile()).toBe(true);
+      expect((await lstat(executablePath)).isSymbolicLink()).toBe(false);
+      expect((await stat(executablePath)).mode & 0o077).toBe(0);
+      expect(executable.includes(Buffer.from(ROOT))).toBe(false);
+      expect(executable.includes(Buffer.from("hackerone.com"))).toBe(false);
+      expect(executable.includes(Buffer.from("api.hackerone.com"))).toBe(false);
+
+      const nativeSource = await readFile(
+        join(ROOT, "apps/macos-launcher/native/BugBountyCopilotLauncher.m"),
         "utf8",
       );
-      expect(executable).not.toContain(ROOT);
-      expect(executable).not.toContain("hackerone.com");
-      expect(executable).not.toContain("api.hackerone.com");
-      expect(executable).not.toContain("https://");
-      expect(executable).not.toMatch(/\b(?:curl|npm|npx|pnpm)\b/u);
-      expect(executable).not.toMatch(/token|cookie|password/i);
-      expect(executable).toContain(
-        '/usr/bin/env -i PATH="/usr/bin:/bin:/usr/sbin:/sbin"',
+      expect(nativeSource).toContain("<NSApplicationDelegate>");
+      expect(nativeSource).toContain("[application run]");
+      expect(nativeSource).toContain("posix_spawn(");
+      expect(nativeSource).toContain("POSIX_SPAWN_SETPGROUP");
+      expect(nativeSource).toContain("waitpid(child");
+      expect(nativeSource).toContain("kAlreadyRunningExitCode = 73");
+      expect(nativeSource).toContain("kStartupTimeoutExitCode = 74");
+      expect(nativeSource).not.toContain("hackerone.com");
+      expect(nativeSource).not.toContain("api.hackerone.com");
+      expect(nativeSource).not.toContain("https://");
+      expect(nativeSource).not.toMatch(/\b(?:curl|npm|npx|pnpm)\b/u);
+      expect(nativeSource).not.toMatch(/\b(?:system|popen|NSLog)\s*\(/u);
+
+      const signature = await runCommand("/usr/bin/codesign", [
+        "--verify",
+        "--strict",
+        app,
+      ]);
+      expect(signature.code).toBe(0);
+      expect(signature.stdout).toBe("");
+      expect(signature.stderr).toBe("");
+
+      const signatureDetails = await runCommand("/usr/bin/codesign", [
+        "-dv",
+        "--verbose=4",
+        app,
+      ]);
+      expect(signatureDetails.code).toBe(0);
+      expect(signatureDetails.stdout).toBe("");
+      expect(signatureDetails.stderr).toContain(
+        "Identifier=dev.local.bugbounty-copilot.launcher",
       );
-      expect(executable).toContain('[ ! -L "$NODE_EXECUTABLE" ]');
-      expect(executable).toContain('if [ "$STATUS" -eq 73 ]');
-      expect(executable).toContain('elif [ "$STATUS" -eq 74 ]');
-      expect(executable).toContain("Bug Bounty Copilot läuft bereits");
-      expect(executable).toContain("Der erste lokale Start hat zu lange");
-      expect(executable).toContain("show_blocked_message");
+      expect(signatureDetails.stderr).toContain("Signature=adhoc");
+      expect(signatureDetails.stderr).toContain("Sealed Resources version=2");
+      expect(signatureDetails.stderr).toContain("files=8");
+
+      const entitlements = await runCommand("/usr/bin/codesign", [
+        "-d",
+        "--entitlements",
+        "-",
+        app,
+      ]);
+      expect(entitlements.code).toBe(0);
+      expect(entitlements.stdout).toBe("");
+      expect(entitlements.stderr).not.toContain("<key>");
+
+      for (const [key, expected] of [
+        ["CFBundleExecutable", "BugBountyCopilotLauncher"],
+        ["CFBundleIdentifier", "dev.local.bugbounty-copilot.launcher"],
+        ["CFBundleShortVersionString", "0.1.1"],
+        ["CFBundleVersion", "2"],
+        ["LSMinimumSystemVersion", "13.0"],
+        ["LSUIElement", "true"],
+        ["LSMultipleInstancesProhibited", "true"],
+        [
+          "NSDownloadsFolderUsageDescription",
+          "Bug Bounty Copilot benötigt Zugriff auf das lokale Repository im Downloads-Ordner, um die Anwendung ohne Terminal zu starten.",
+        ],
+      ] as const) {
+        const value = await runCommand("/usr/bin/plutil", [
+          "-extract",
+          key,
+          "raw",
+          "--",
+          join(app, "Contents/Info.plist"),
+        ]);
+        expect(value.code).toBe(0);
+        expect(value.stdout.trim()).toBe(expected);
+        expect(value.stderr).toBe("");
+      }
+
+      const dependencies = await runCommand("/usr/bin/otool", [
+        "-L",
+        executablePath,
+      ]);
+      expect(dependencies.code).toBe(0);
+      expect(dependencies.stderr).toBe("");
+      for (const dependency of dependencies.stdout.split("\n").slice(1)) {
+        if (dependency.trim() === "") continue;
+        expect(dependency.trim()).toMatch(/^\/(?:System\/Library|usr\/lib)\//u);
+      }
+
+      const undefinedSymbols = await runCommand("/usr/bin/nm", [
+        "-u",
+        executablePath,
+      ]);
+      expect(undefinedSymbols.code).toBe(0);
+      expect(undefinedSymbols.stdout).not.toMatch(
+        /\b_(?:connect|getaddrinfo|socket)\b|NSURLSession/u,
+      );
+
+      const loadCommands = await runCommand("/usr/bin/otool", [
+        "-l",
+        executablePath,
+      ]);
+      expect(loadCommands.code).toBe(0);
+      expect(loadCommands.stdout).toMatch(/\bminos 13\.0\b/u);
 
       const second = await runInstaller(target);
       expect(second.code).toBe(0);
       expect(second.stderr).toBe("");
+
+      const hostileToolchainEnvironment = await runInstaller(target, false, {
+        DEVELOPER_DIR: "/private/tmp/untrusted-developer-directory",
+        SDKROOT: "/private/tmp/untrusted-sdk",
+      });
+      expect(hostileToolchainEnvironment.code).toBe(0);
+      expect(hostileToolchainEnvironment.stderr).toBe("");
 
       const explicitHackerOne = await runInstaller(target, true, {
         BUGBOUNTY_EVENT_KEY_MIN_VERSION: "1",
@@ -394,13 +518,82 @@ describe("macOS app launcher", () => {
       );
 
       const infoPlist = join(app, "Contents/Info.plist");
-      await writeFile(infoPlist, "unrelated local app\n", { mode: 0o600 });
+      const foreignPlist = `<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>example.foreign.app</string><key>Comment</key><string>dev.local.bugbounty-copilot.launcher</string></dict></plist>\n`;
+      await writeFile(infoPlist, foreignPlist, { mode: 0o600 });
       const blockedOverwrite = await runInstaller(target);
       expect(blockedOverwrite.code).toBe(1);
       expect(blockedOverwrite.stderr).toContain(
         "MACOS_LAUNCHER_INSTALL_EXISTING_APP_BLOCKED",
       );
-      expect(await readFile(infoPlist, "utf8")).toBe("unrelated local app\n");
+      expect(await readFile(infoPlist, "utf8")).toBe(foreignPlist);
+    },
+  );
+
+  it.runIf(process.platform === "darwin")(
+    "preserves an existing app and removes staging after native compilation fails",
+    async () => {
+      const fixture = await realpath(
+        await mkdtemp(join(tmpdir(), "bugbounty-broken-installer-")),
+      );
+      await mkdir(join(fixture, "apps/macos-launcher/native"), {
+        recursive: true,
+      });
+      await mkdir(join(fixture, "apps/macos-launcher/bundle"), {
+        recursive: true,
+      });
+      await mkdir(join(fixture, "apps/dashboard"), { recursive: true });
+      await mkdir(join(fixture, "node_modules/tsx/dist"), { recursive: true });
+      await copyFile(
+        join(ROOT, "apps/macos-launcher/install.sh"),
+        join(fixture, "apps/macos-launcher/install.sh"),
+      );
+      await copyFile(
+        join(ROOT, "apps/macos-launcher/bundle/Info.plist"),
+        join(fixture, "apps/macos-launcher/bundle/Info.plist"),
+      );
+      await writeFile(join(fixture, "package.json"), "{}\n");
+      await writeFile(join(fixture, "apps/dashboard/index.ts"), "fixture\n");
+      await writeFile(
+        join(fixture, "apps/macos-launcher/index.ts"),
+        "fixture\n",
+      );
+      await writeFile(
+        join(fixture, "node_modules/tsx/dist/cli.mjs"),
+        "fixture\n",
+      );
+      await writeFile(
+        join(fixture, "apps/macos-launcher/native/BugBountyCopilotLauncher.m"),
+        "this is deliberately not Objective-C\n",
+        { mode: 0o600 },
+      );
+
+      const target = await realpath(
+        await mkdtemp(join(tmpdir(), "bugbounty-existing-app-")),
+      );
+      const app = join(target, "Bug Bounty Copilot.app");
+      await mkdir(join(app, "Contents"), { recursive: true, mode: 0o700 });
+      await chmod(app, 0o700);
+      await chmod(join(app, "Contents"), 0o700);
+      await copyFile(
+        join(ROOT, "apps/macos-launcher/bundle/Info.plist"),
+        join(app, "Contents/Info.plist"),
+      );
+      await chmod(join(app, "Contents/Info.plist"), 0o600);
+      await mkdir(join(app, "Contents/MacOS"), { mode: 0o700 });
+      await writeFile(
+        join(app, "Contents/MacOS/BugBountyCopilotLauncher"),
+        "existing fixture executable\n",
+        { mode: 0o700 },
+      );
+      await writeFile(join(app, "sentinel"), "preserve me\n", { mode: 0o600 });
+
+      const result = await runInstaller(target, false, {}, fixture);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("MACOS_LAUNCHER_INSTALL_COMPILE_FAILED");
+      expect(await readFile(join(app, "sentinel"), "utf8")).toBe(
+        "preserve me\n",
+      );
+      expect(await readdir(target)).toEqual(["Bug Bounty Copilot.app"]);
     },
   );
 });
@@ -450,6 +643,7 @@ function runInstaller(
   target: string,
   enableHackerOne = false,
   coreMetadata: Readonly<Record<string, string>> = {},
+  repositoryRoot = ROOT,
 ): Promise<{
   readonly code: number | null;
   readonly stdout: string;
@@ -474,11 +668,41 @@ function runInstaller(
         target,
       ],
       {
-        cwd: ROOT,
+        cwd: repositoryRoot,
         env: environment,
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    child.once("error", rejectPromise);
+    child.once("close", (code) => {
+      resolvePromise({ code, stdout, stderr });
+    });
+  });
+}
+
+function runCommand(
+  command: string,
+  arguments_: readonly string[],
+): Promise<{
+  readonly code: number | null;
+  readonly stdout: string;
+  readonly stderr: string;
+}> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(command, arguments_, {
+      env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");

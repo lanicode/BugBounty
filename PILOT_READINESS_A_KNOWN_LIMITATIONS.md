@@ -127,24 +127,32 @@ separat manuell gestarteten `pnpm app`- oder TTY-Adminprozess. Ein fremder
 lokaler Prozess kann den festen Lease-Port belegen; der Launcher blockiert
 dann absichtlich fail-closed.
 
-Der Alpha-Launcher ist eine unsichtbare lokale App-Hülle ohne eigenen
-Menüleisten-, Reopen- oder Quit-Controller. Das Schließen des Browserfensters
-beendet den Dashboardprozess nicht. Er muss über die macOS-Aktivitätsanzeige
-oder beim Abmelden beendet werden; ein erneuter Doppelklick öffnet eine bereits
-laufende Instanz nicht zuverlässig erneut. Falls LaunchServices tatsächlich
-einen zweiten Launcher-Prozess startet und dieser die bestehende Lease erkennt,
-zeigt er einen eindeutigen `läuft bereits`-Hinweis. Eine vermutete
-Dashboard-URL wird dabei bewusst nicht geöffnet, weil der Port fallbacken kann
-und ein fremder lokaler Listener nicht als bestehende App-Instanz vertraut
-werden darf.
+Der Alpha-Launcher ist eine lokal kompilierte, ad hoc signierte native
+AppKit-Hülle ohne eigenes Dashboardfenster oder Menüleistenoberfläche. Seine
+Ereignisschleife beantwortet Reopen und kontrolliertes Quit; das Schließen des
+Browserfensters beendet den Dashboardprozess jedoch weiterhin nicht. Ein
+erneuter Doppelklick zeigt deshalb einen eindeutigen `läuft bereits`-Hinweis,
+öffnet aber keine vermutete Dashboard-URL: Der Port kann fallbacken und ein
+fremder lokaler Listener darf nicht als bestehende App-Instanz vertraut werden.
+Zum erneuten Öffnen eines geschlossenen Browserfensters muss die App über die
+Aktivitätsanzeige normal beendet und danach neu geöffnet werden. `Sofort
+beenden` umgeht die kontrollierte Prozessgruppenbereinigung.
+
+Der native Host wird bei jeder Installation für die aktuelle Mac-Architektur
+gebaut und ist nicht notarisiert. Nach Rechner- oder Architekturwechsel ist
+eine Neuinstallation erforderlich. Fehlende Command Line Tools, Compiler-,
+SDK- oder Signaturfehler blockieren den Installer fail-closed.
 
 Der native synthetische macOS-Test liest einen ausschließlich für den Test
 erzeugten Keychain-Eintrag mit `/usr/bin/security` unter derselben minimalen
-`PATH`-Umgebung wie der Launcher. Ein vollständiger LaunchServices-/Finder-
-Smoke bis zur produktiven Core-Readiness ist dennoch nicht automatisiert,
-weil er echte lokale Event- und Operator-Key-Referenzen benötigen würde.
-Fehlt dieser manuelle Alpha-Smoke, bleibt der Launcher fail-closed; es gibt
-keinen Klartext- oder Secret-Fallback.
+`PATH`-Umgebung wie der Launcher. Der App-Wrapper-Vertrag kompiliert und
+verifiziert zusätzlich das native Mach-O-Programm. Ein separater lokaler
+Lifecycle-Test prüft Minimalumgebung und Argumente, POSIX-Beendigung,
+Child-/Grandchild-Reaping sowie echten LaunchServices-Reopen und AppKit-Quit
+mit einem SIGTERM-ignorierenden synthetischen Prozessbaum. Ein vollständig neu
+provisionierter Security-Core bis `secureCoreReady` benötigt aber weiterhin
+lokale Event- und Operator-Key-Referenzen. Fehlen sie, bleibt der Launcher
+fail-closed; es gibt keinen Klartext- oder Secret-Fallback.
 
 Dashboard-`disable`, Dashboard-`store` und Dashboard-`remove` abortieren die
 laufende In-Process-Operation noch vor dem ersten Storezugriff, persistieren
