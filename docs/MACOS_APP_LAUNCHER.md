@@ -101,7 +101,7 @@ BUGBOUNTY_COPILOT_APP_DIR="$HOME/Applications" \
   URL-Erkennung verarbeitet, nicht angezeigt und nicht persistiert. Tokens,
   Credentials oder Eventdaten werden vom Launcher weder gelesen noch
   protokolliert.
-- Meldet das Dashboard nicht innerhalb von zehn Sekunden seine validierte
+- Meldet das Dashboard nicht innerhalb von dreißig Sekunden seine validierte
   Loopback-URL, wird der Prozess beendet. Eine ausschließlich auf
   `127.0.0.1:43917` gehaltene lokale Lease verhindert parallele Starts; ein
   belegter oder nicht bindbarer Lease-Port blockiert fail-closed.
@@ -125,3 +125,18 @@ Aktivitätsanzeige den Prozess **BugBountyCopilotLauncher** auswählen und
 **Beenden** wählen; der Launcher beendet dann Dashboard und Lease kontrolliert.
 Beim Abmelden wird er ebenfalls mit beendet. Ein eigener Menüleisten-/Reopen-
 Controller ist in dieser lokalen Alpha noch nicht implementiert.
+
+Der erste lokale TypeScript-Start kann auf einem kalten System länger dauern.
+Das weiterhin begrenzte Startfenster beträgt deshalb dreißig Sekunden. Läuft
+es ab, werden Dashboard und Lease kontrolliert beendet und die App zeigt einen
+eigenen Hinweis zum erneuten Öffnen; andere Fehler bleiben generisch
+fail-closed.
+
+Ein erkannter paralleler Launcher-Start erzeugt weiterhin keine zweite Instanz
+und öffnet keine vermutete URL. Wird dabei tatsächlich ein zweiter
+Launcher-Prozess gestartet, zeigt er ausdrücklich **Bug Bounty Copilot läuft
+bereits** statt eines irreführenden Repositoryfehlers. Ein normaler
+Finder-Doppelklick kann bei einer von LaunchServices bereits geführten App
+stattdessen ohne neuen Prozess bleiben. Verwende in beiden Fällen das bereits
+geöffnete Browserfenster. Ist es geschlossen, beende die laufende App wie oben
+beschrieben und öffne sie erneut.

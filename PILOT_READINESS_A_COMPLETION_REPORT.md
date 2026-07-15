@@ -149,7 +149,10 @@ nicht erreichbar.
   getrennt.
 - Lokaler macOS-App-Launcher mit privater Konfiguration, explizitem
   `local-only`-Standard, optionalem H1-Read-only-Modus, Minimalumgebung,
-  Startup-/Shutdown-Grenzen und Single-Instance-Lease.
+  Startup-/Shutdown-Grenzen und Single-Instance-Lease. Das weiterhin
+  begrenzte Kaltstartfenster beträgt dreißig Sekunden; Timeout und ein
+  erkannter paralleler Launcher-Start erhalten eigene lokale Hinweise,
+  während alle anderen Fehler generisch fail-closed bleiben.
 
 ### Ausdrückliche Security-Core-Änderungen
 

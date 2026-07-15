@@ -19,6 +19,11 @@ import {
   acquireMacOSLauncherLease,
   buildMacOSDashboardEnvironment,
   loadMacOSLaunchConfiguration,
+  MACOS_LAUNCHER_ALREADY_RUNNING_EXIT_CODE,
+  MACOS_LAUNCHER_STARTUP_TIMEOUT_EXIT_CODE,
+  MACOS_LAUNCHER_STARTUP_TIMEOUT_MS,
+  MacOSLauncherError,
+  macOSLauncherProcessExitCode,
   terminateMacOSDashboardChild,
   validateLocalDashboardOrigin,
   waitForLocalDashboardOrigin,
@@ -221,6 +226,24 @@ describe("macOS app launcher", () => {
       await expect(acquireMacOSLauncherLease(first.port)).rejects.toMatchObject(
         { code: "MACOS_LAUNCHER_ALREADY_RUNNING" },
       );
+      expect(
+        macOSLauncherProcessExitCode(
+          new MacOSLauncherError("MACOS_LAUNCHER_ALREADY_RUNNING"),
+        ),
+      ).toBe(MACOS_LAUNCHER_ALREADY_RUNNING_EXIT_CODE);
+      expect(
+        macOSLauncherProcessExitCode(
+          new MacOSLauncherError("MACOS_LAUNCHER_LEASE_FAILED"),
+        ),
+      ).toBe(1);
+      expect(
+        macOSLauncherProcessExitCode(
+          new MacOSLauncherError("MACOS_LAUNCHER_STARTUP_TIMEOUT"),
+        ),
+      ).toBe(MACOS_LAUNCHER_STARTUP_TIMEOUT_EXIT_CODE);
+      expect(MACOS_LAUNCHER_ALREADY_RUNNING_EXIT_CODE).toBe(73);
+      expect(MACOS_LAUNCHER_STARTUP_TIMEOUT_EXIT_CODE).toBe(74);
+      expect(MACOS_LAUNCHER_STARTUP_TIMEOUT_MS).toBe(30_000);
     } finally {
       await first.close();
     }
@@ -313,6 +336,11 @@ describe("macOS app launcher", () => {
         '/usr/bin/env -i PATH="/usr/bin:/bin:/usr/sbin:/sbin"',
       );
       expect(executable).toContain('[ ! -L "$NODE_EXECUTABLE" ]');
+      expect(executable).toContain('if [ "$STATUS" -eq 73 ]');
+      expect(executable).toContain('elif [ "$STATUS" -eq 74 ]');
+      expect(executable).toContain("Bug Bounty Copilot läuft bereits");
+      expect(executable).toContain("Der erste lokale Start hat zu lange");
+      expect(executable).toContain("show_blocked_message");
 
       const second = await runInstaller(target);
       expect(second.code).toBe(0);

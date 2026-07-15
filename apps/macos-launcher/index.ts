@@ -14,7 +14,7 @@ const CONFIG_FILE_MODE_MASK = 0o077;
 const MAX_CONFIG_BYTES = 4_096;
 const MAX_STARTUP_OUTPUT_BYTES = 16_384;
 const MINIMUM_DASHBOARD_PORT = 1_024;
-const DEFAULT_STARTUP_TIMEOUT_MS = 10_000;
+export const MACOS_LAUNCHER_STARTUP_TIMEOUT_MS = 30_000;
 const MAX_STARTUP_TIMEOUT_MS = 60_000;
 const DEFAULT_TERMINATION_GRACE_MS = 2_000;
 const MAX_TERMINATION_GRACE_MS = 10_000;
@@ -26,6 +26,8 @@ const KEYCHAIN_REFERENCE =
   /^keychain:\/\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._/-]+)$/u;
 const MAX_EVENT_KEY_VERSION = 10_000;
 export const MACOS_LAUNCHER_LEASE_PORT = 43_917;
+export const MACOS_LAUNCHER_ALREADY_RUNNING_EXIT_CODE = 73;
+export const MACOS_LAUNCHER_STARTUP_TIMEOUT_EXIT_CODE = 74;
 
 export type MacOSLauncherErrorCode =
   | "MACOS_LAUNCHER_CONFIG_INVALID"
@@ -43,6 +45,15 @@ export class MacOSLauncherError extends Error {
     super(code);
     this.name = "MacOSLauncherError";
   }
+}
+
+export function macOSLauncherProcessExitCode(error: unknown): number {
+  if (!(error instanceof MacOSLauncherError)) return 1;
+  if (error.code === "MACOS_LAUNCHER_ALREADY_RUNNING")
+    return MACOS_LAUNCHER_ALREADY_RUNNING_EXIT_CODE;
+  if (error.code === "MACOS_LAUNCHER_STARTUP_TIMEOUT")
+    return MACOS_LAUNCHER_STARTUP_TIMEOUT_EXIT_CODE;
+  return 1;
 }
 
 export interface MacOSLaunchConfiguration {
@@ -152,7 +163,7 @@ export function validateLocalDashboardOrigin(value: string): string {
 
 export function waitForLocalDashboardOrigin(
   stream: Readable,
-  timeoutMs = DEFAULT_STARTUP_TIMEOUT_MS,
+  timeoutMs = MACOS_LAUNCHER_STARTUP_TIMEOUT_MS,
 ): Promise<string> {
   if (
     !Number.isSafeInteger(timeoutMs) ||
@@ -693,7 +704,7 @@ if (
   resolve(invokedPath) === resolve(fileURLToPath(import.meta.url))
 )
   void main().catch((error: unknown) => {
-    process.exitCode = 1;
+    process.exitCode = macOSLauncherProcessExitCode(error);
     if (error instanceof MacOSLauncherError)
       process.stderr.write(`${error.code}\n`);
     else process.stderr.write("MACOS_LAUNCHER_DASHBOARD_EXITED\n");

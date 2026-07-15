@@ -131,7 +131,12 @@ Der Alpha-Launcher ist eine unsichtbare lokale App-Hülle ohne eigenen
 Menüleisten-, Reopen- oder Quit-Controller. Das Schließen des Browserfensters
 beendet den Dashboardprozess nicht. Er muss über die macOS-Aktivitätsanzeige
 oder beim Abmelden beendet werden; ein erneuter Doppelklick öffnet eine bereits
-laufende Instanz nicht zuverlässig erneut.
+laufende Instanz nicht zuverlässig erneut. Falls LaunchServices tatsächlich
+einen zweiten Launcher-Prozess startet und dieser die bestehende Lease erkennt,
+zeigt er einen eindeutigen `läuft bereits`-Hinweis. Eine vermutete
+Dashboard-URL wird dabei bewusst nicht geöffnet, weil der Port fallbacken kann
+und ein fremder lokaler Listener nicht als bestehende App-Instanz vertraut
+werden darf.
 
 Der native synthetische macOS-Test liest einen ausschließlich für den Test
 erzeugten Keychain-Eintrag mit `/usr/bin/security` unter derselben minimalen
