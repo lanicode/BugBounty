@@ -27,11 +27,15 @@ deaktiviere die Integration und engagiere den globalen Kill Switch.
   [PHASE5_EVENT_KEY_LIFECYCLE.md](PHASE5_EVENT_KEY_LIFECYCLE.md);
 - eingerichteter lokaler Ed25519-Operator nach
   [PHASE4_SIGNED_OPERATOR_APPROVALS.md](PHASE4_SIGNED_OPERATOR_APPROVALS.md);
-- persönlicher HackerOne-API-Identifier und Token nur für echte API-Nutzung.
+- persönlicher HackerOne-API-Identifier und Token nur für echte API-Nutzung;
+  ein Token-only-Credential ist im aktuellen Basic-Auth-Adapter nicht
+  kompatibel und darf nicht mit einem geratenen Identifier ergänzt werden.
 
 Ohne sicheren Core kann nur die lokale Setup-Oberfläche starten. Jede
-HackerOne-Mutation – auch Import, Auswahl, Deaktivierung oder
-Credential-Löschung über HTTP – bleibt serverseitig fail-closed blockiert.
+HackerOne-Aktion mit externer oder signierter Wirkung bleibt serverseitig
+fail-closed blockiert. Nur Credential-Speicherung, Credential-Löschung und
+Integrations-Deaktivierung bleiben als lokale Sicherheitsaktionen verfügbar;
+sie aktivieren und kontaktieren nichts.
 
 ## Credentials lokal verwalten
 
@@ -53,7 +57,10 @@ pnpm hackerone:credentials store
 Identifier und Token werden verborgen eingelesen. Sie erscheinen weder im
 Terminal noch in argv oder Environment. Beide Speicherwege deaktivieren den
 Adapter, erzeugen ein generation-gebundenes kanonisches Keychain-Paar und
-zeigen nur den kurzen Token-Fingerprint.
+verifizieren es durch sofortiges Zurücklesen. Erst danach zeigen sie den
+kurzen Token-Fingerprint. Der lokal kompilierte native macOS-Helfer erhält die
+Werte ausschließlich über stdin; der frühere interaktive
+`/usr/bin/security -w`-Promptpfad wird nicht verwendet.
 
 Beende das Dashboard vollständig, bevor du `store` oder `remove` ausführst.
 Der separate TTY-Adminprozess kann keinen bereits laufenden Transport in
@@ -78,6 +85,33 @@ Ausführliche Rotation, Paarhüllen und Fehlerbehandlung stehen in
 [HACKERONE_KEYCHAIN_SETUP.md](../HACKERONE_KEYCHAIN_SETUP.md).
 
 ## Anwendung starten
+
+Für den normalen lokalen Start ohne Terminal kann einmalig die macOS-App
+installiert werden:
+
+```sh
+npx --yes pnpm@11.7.0 app:install-macos
+```
+
+Danach startet `~/Applications/Bug Bounty Copilot.app` das Dashboard und
+öffnet ausschließlich die validierte Loopback-URL. Der Launcher lädt nichts
+nach. Der Standardmodus erzwingt beide Integrationsschalter als `false`. Für
+die bewusst konfigurierte H1-Read-only-Sitzung installiere den Launcher
+stattdessen einmalig mit:
+
+```sh
+npx --yes pnpm@11.7.0 app:install-macos -- --enable-hackerone-readonly
+```
+
+Das konfiguriert nur die beiden Startup-Schalter. Wenn die getrennte lokale
+Event-/Operator-Einrichtung bereits abgeschlossen ist, müssen beim einmaligen
+Installerlauf außerdem deren vier **nicht geheimen** Referenz- und
+Versionswerte gesetzt werden; der Finder erbt keine Terminalvariablen. Der
+Installer validiert und speichert ausschließlich diese Metadaten privat. Er
+speichert keinen Event- oder Operator-Schlüssel. Adapteraktivierung,
+Kill-Switch-Freigabe und jeder Request bleiben getrennte Frontendaktionen.
+Der vollständige einmalige Beispielbefehl und die Fail-closed-Regeln stehen in
+[MACOS_APP_LAUNCHER.md](MACOS_APP_LAUNCHER.md).
 
 Beide separaten externen Schalter sind standardmäßig aus. Für eine bewusst
 manuell gestartete API-Sitzung müssen sie exakt `true` sein:
@@ -124,12 +158,15 @@ Dashboardaktionen einen laufenden Request abbrechen.
 ## Read-only-Integration signiert aktivieren
 
 1. Öffne **Einstellungen → Integrationen → HackerOne**.
-2. Prüfe Präsenzanzeige und kurzen Fingerprint. Vollständige Secretwerte
+2. Prüfe die sichtbare Liste aller fünf Aktivierungsvoraussetzungen:
+   Security-Core, globaler External-Schalter, H1-Read-only-Schalter,
+   vollständiges Credential-Paar und freigegebener Kill Switch.
+3. Prüfe Präsenzanzeige und kurzen Fingerprint. Vollständige Secretwerte
    dürfen nirgendwo erscheinen.
-3. Prüfe, dass **Globale externe Integrationen** und **Adapter konfiguriert**
+4. Prüfe, dass **Globale externe Integrationen** und **Adapter konfiguriert**
    angezeigt werden und der Kill Switch freigegeben ist.
-4. Wähle **Read-only-Integration aktivieren**.
-5. Prüfe **EXTERNE METADATENINTEGRATION AKTIV**.
+5. Wähle **Read-only-Integration aktivieren**.
+6. Prüfe **EXTERNE METADATENINTEGRATION AKTIV**.
 
 Der Klick erzeugt eine frische lokale Approval, die den vollständigen
 64-stelligen SHA-256-Token-Digest, Runtime einschließlich Requestbudgets,

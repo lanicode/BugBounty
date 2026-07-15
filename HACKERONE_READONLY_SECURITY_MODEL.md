@@ -178,8 +178,24 @@ zufällige 16-Byte-Generation und das Secret sind strikt kanonisch Base64url-
 kodiert; Padding und nicht kanonische Restbits blockieren. Nur Identifier und
 Token derselben Generation gelten als Paar. Partielle oder durch parallele
 Prozesse gemischte Writes werden beim Probe/Load nicht als Credentials
-akzeptiert. Bei einem Schreibfehler versucht der Vault beide Einträge zu
-löschen.
+akzeptiert. Nach jedem Write werden beide Hüllen zurückgelesen und gegen die
+neue Generation sowie die vollständigen Identifier- und Token-Digests
+geprüft. Erst dieser persistierte Readback darf Erfolg und Fingerprint
+melden. Bei einem Schreib- oder Verifikationsfehler versucht der Vault beide
+Einträge zu löschen.
+
+Der produktive macOS-Pfad verwendet einen kleinen, lokal aus versioniertem C-
+Quelltext kompilierten Security.framework-Helfer. Er akzeptiert ausschließlich
+`read|store|delete` für `identifier|token`; Service und Accounts sind
+Compile-Time-Konstanten. Secrets passieren nur begrenzte stdin-/stdout-Pipes,
+nie argv, Environment oder Dateien. Core Dumps und Keychain-UI sind
+deaktiviert, Secretbuffer werden gelockt und genullt. Die private Binärdatei
+wird vor jeder Verwendung an Quell- und tatsächlichen Binärdigest, Besitzer,
+Hardlinkzahl und Dateimodus gebunden. Der Compiler erhält eine private Kopie
+der zuvor gehashten Quelle und eine minimale Umgebung. Bestehende Einträge
+erhalten vor jeder Inhaltsänderung die explizite Ein-Helfer-ACL; kann dies
+nicht ohne Interaktion erfolgen, wird nicht geschrieben. Es gibt keinen
+`/usr/bin/security -w`- oder Klartextfallback.
 
 Intern bindet SHA-256 den Token mit allen 64 Hexzeichen an Aktivierung,
 Proposal, Reservation, den einmaligen Transportplan und die einmalige
@@ -190,7 +206,7 @@ kein Authentisierungsnachweis.
 
 Basic Auth entsteht unmittelbar vor Node HTTPS aus zwei `Uint8Array`-Werten.
 Temporäre Kombination, geladene Keychain-Hüllen, Identifier-/Token-Buffer und
-Ausgabe-/Fehlerbuffer der `security`-CLI werden anschließend genullt.
+stdin-/stdout-Buffer des nativen Helfers werden anschließend genullt.
 Authorization wird nie auditiert.
 
 Details stehen in `HACKERONE_KEYCHAIN_SETUP.md`.
@@ -288,6 +304,16 @@ Beide Änderungen besitzen direkte Regressionstests. Bestehende
 Signatur-, Replay-, Keychain- und Fail-closed-Prüfungen wurden nicht
 gelockert.
 
+Die nach Pilot-A-Abnahme notwendige Credential-Korrektur verändert nicht den
+Phase-1-Sicherheitskern. Sie ersetzt innerhalb des isolierten H1-
+Credentialadapters den TTY-gebundenen `/usr/bin/security -w`-Writer durch den
+festen nativen Helfer und ergänzt persistierten Readback. Regressionstests
+decken Operation-Allowlist, argv-/Environment-Freiheit, Buffer-Zeroing,
+kanonische Helper-Hüllen, Quell-/Binärdigest-Revalidierung,
+Readback-Mismatch, Nicht-macOS-Fail-closed sowie einen reproduzierbaren
+synthetischen echten macOS-Keychain-Zyklus einschließlich ACL-Migration oder
+unverändertem Fail-closed-Verhalten ab.
+
 ## Snapshots, Drift und signierte Annahme
 
 Der Policy-Digest bindet Policytext, Programmstatus, Submission State,
@@ -340,13 +366,17 @@ und keine Freigabe für Ziel- oder Reportaktionen.
 
 ## Dashboard-Grenze
 
-Der Dashboardserver bindet ausschließlich an `127.0.0.1`. Alle H1-Mutationen
-benötigen einen sicheren Core, exakten Origin, CSRF-Token und eine kanonische
-Route. Fachmutationen verlangen `application/json` und ein exaktes
-Body-Schema. Die einzige Credential-Store-Route verlangt stattdessen exakt
+Der Dashboardserver bindet ausschließlich an `127.0.0.1`. Alle H1-Routen
+benötigen exakten Origin, CSRF-Token und eine kanonische Route.
+External-capable und signierte Fachmutationen benötigen zusätzlich einen
+sicheren Core, `application/json` und ein exaktes Body-Schema. Die einzige
+Credential-Store-Route verlangt stattdessen exakt
 `application/octet-stream`, den versionierten Binärrahmen und die strengere
-verpflichtende `Content-Length`. Die Setup-Shell blockiert jede H1-Mutation
-vor dem ersten Effekt.
+verpflichtende `Content-Length`. Credential-Speicherung, Credential-Löschung
+und Integrations-Deaktivierung bleiben in der Setup-Shell als ausschließlich
+lokale Sicherheitsaktionen verfügbar; alle Aktivierungs-, Netzwerk-,
+Synchronisierungs-, Auswahl-, Bindungs- und Acceptance-Routen blockieren vor
+dem ersten Effekt.
 
 `POST /api/hackerone/credentials/store` ist ausschließlich dieser lokale,
 einmalige und begrenzte Secretpfad. Sicherheitsheader blockieren fremde
@@ -373,7 +403,8 @@ Copy-Aktion dargestellt. Es entstehen keine Links und keine Navigation.
 ## Test- und Entwicklungsgrenze
 
 Automatisierte Tests verwenden ausschließlich In-Process-Fakes,
-synthetische Credentials und Loopback-Mockserver. Sie rufen weder
+synthetische Credentials, den lokalen macOS-Schlüsselbund mit isolierten
+synthetischen Einträgen und Loopback-Mockserver. Sie rufen weder
 `api.hackerone.com` noch einen Plattform- oder Zielhost auf. Der
 Produktions-Transport wird durch Policy-, Fälschungs-, Timeout-, Header-,
 Größen-, Schema-, Egress- und lokale Integrationstests qualifiziert.

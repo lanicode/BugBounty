@@ -11,9 +11,12 @@ Scope bleibt Datenbestand und erzeugt niemals Egress-Autorisierung.
 
 ### Kein automatisierter Live-Nachweis
 
-Automatisierte Tests verwenden nur In-Process-Fakes, synthetische
-Credentials und lokale Loopback-Mockserver. Sie prüfen weder Erreichbarkeit
-noch aktuelles Produktionsschema von `api.hackerone.com`.
+Automatisierte Netzwerk-Tests verwenden nur In-Process-Fakes, synthetische
+Credentials und lokale Loopback-Mockserver. Eine getrennte native
+macOS-Integration verwendet ausschließlich isolierte synthetische Einträge
+im lokalen Schlüsselbund und entfernt sie wieder. Keine dieser Prüfungen
+testet Erreichbarkeit oder aktuelles Produktionsschema von
+`api.hackerone.com`.
 
 Der TTY-gebundene Ein-Request-Smoke ist bewusst getrennt und wurde während
 Entwicklung und automatisierten Tests nicht ausgeführt. Transport- und
@@ -39,12 +42,18 @@ abweichenden Namespace automatisch.
 
 ### macOS-gebundener Credentialpfad
 
-Der produktive Vault verwendet `/usr/bin/security` und den
-macOS-Schlüsselbund. Andere Plattformen bleiben deaktiviert. Die lokale
-Dashboardroute kann das Paar einmalig als fest begrenztes Binärframe
-speichern; alternativ benötigen die CLI-Unterbefehle `store`, `status` und
-`remove` ein interaktives Terminal. Es gibt keinen Produktionsfallback auf
-Datei, Environment, SQLite oder In-Memory-Secrets.
+Der produktive Vault verwendet einen lokal kompilierten, festen
+Security.framework-Helfer und den macOS-Schlüsselbund. Andere Plattformen
+bleiben deaktiviert. Apple Command Line Tools werden für die lokale
+Kompilierung benötigt; fehlende Toolchain, falsche private Dateirechte,
+Symlinks, Hardlinks, Quell-/Binärdigestabweichungen oder ein Helperfehler
+blockieren. Alte Keychain-Einträge müssen vor einer Inhaltsänderung auf die
+explizite Helfer-ACL gehärtet werden; verweigert macOS dies ohne Interaktion,
+schlägt die Rotation geschlossen fehl. Die lokale Dashboardroute kann das
+Paar einmalig als fest begrenztes Binärframe speichern; alternativ benötigen
+die CLI-Unterbefehle `store`, `status` und `remove` ein interaktives Terminal.
+Es gibt keinen Produktionsfallback auf `/usr/bin/security -w`, Datei,
+Environment, SQLite oder In-Memory-Secrets.
 
 Die Keychain-Einträge enthalten kanonische, printable Base64url-Hüllen mit
 Rolle und gemeinsamer Generation. Manuelles Anlegen roher Passwortwerte über
@@ -110,6 +119,27 @@ prozessübergreifend ab. Dashboard und Bedienmodell sind trotzdem nicht als
 Multi-User-, Remote- oder verteiltes System qualifiziert. Der lokale
 Dashboardtransport ist Loopback-HTTP mit Host-/Origin-/CSRF-Schutz, nicht
 TLS.
+
+Der macOS-App-Launcher hält für seine gesamte Laufzeit eine feste
+Loopback-Lease und blockiert einen zweiten Launcherstart. Das verhindert
+parallele Doppelklick-Instanzen, ist aber keine systemweite Sperre gegen einen
+separat manuell gestarteten `pnpm app`- oder TTY-Adminprozess. Ein fremder
+lokaler Prozess kann den festen Lease-Port belegen; der Launcher blockiert
+dann absichtlich fail-closed.
+
+Der Alpha-Launcher ist eine unsichtbare lokale App-Hülle ohne eigenen
+Menüleisten-, Reopen- oder Quit-Controller. Das Schließen des Browserfensters
+beendet den Dashboardprozess nicht. Er muss über die macOS-Aktivitätsanzeige
+oder beim Abmelden beendet werden; ein erneuter Doppelklick öffnet eine bereits
+laufende Instanz nicht zuverlässig erneut.
+
+Der native synthetische macOS-Test liest einen ausschließlich für den Test
+erzeugten Keychain-Eintrag mit `/usr/bin/security` unter derselben minimalen
+`PATH`-Umgebung wie der Launcher. Ein vollständiger LaunchServices-/Finder-
+Smoke bis zur produktiven Core-Readiness ist dennoch nicht automatisiert,
+weil er echte lokale Event- und Operator-Key-Referenzen benötigen würde.
+Fehlt dieser manuelle Alpha-Smoke, bleibt der Launcher fail-closed; es gibt
+keinen Klartext- oder Secret-Fallback.
 
 Dashboard-`disable`, Dashboard-`store` und Dashboard-`remove` abortieren die
 laufende In-Process-Operation noch vor dem ersten Storezugriff, persistieren
@@ -224,6 +254,21 @@ Nicht vorhanden sind unter anderem:
 
 Diese Punkte sind nicht nur UI-versteckt, sondern außerhalb der Registry und
 der gebrandeten Requestoperationen.
+
+### Token-only-Accounts sind nicht kompatibel
+
+Der implementierte Read-only-Transport erzeugt ausschließlich Basic Auth aus
+einem vollständigen API-Identifier-/API-Token-Paar. Das lokale Formular und
+der Keychain-Store verlangen deshalb bewusst beide Werte atomar. Wenn ein
+HackerOne-Konto nur ein einzelnes Token ohne separaten Identifier ausgibt,
+darf kein Benutzername geraten, abgeleitet oder durch einen Platzhalter
+ersetzt werden: Speichern und Aktivieren bleiben fail-closed.
+
+Die tatsächliche Authentisierung dieses Tokenformats wurde in dieser Arbeit
+absichtlich nicht gegen HackerOne geprüft. Unterstützung erfordert eine
+separate, dokumentationsgestützte Auth-Kompatibilitätsphase mit einem eigenen
+fest verdrahteten Adapter; sie darf den bestehenden Basic-Auth-Pfad nicht
+stillschweigend umdeuten.
 
 ## Betriebsregel
 

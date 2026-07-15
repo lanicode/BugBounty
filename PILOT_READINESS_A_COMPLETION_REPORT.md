@@ -46,8 +46,11 @@ Der neue Pfad ist geschlossen und fail-closed aufgebaut:
    validiert und normalisiert. Rohe API-Antworten werden nie persistiert.
 8. Credentials werden als generation-gebundenes Paar in kanonischen,
    druckbaren Base64url-Hüllen unter zwei festen macOS-Keychain-Referenzen
-   gehalten. Der Transport konsumiert sowohl einen gebrandeten Plan als auch
-   die Credential-Lease genau einmal. Es gibt keinen Environment-, Datei-,
+   gehalten. Ein kleiner nativer Security.framework-Helfer validiert feste
+   Operationen und kanonische Hüllen, härtet bestehende ACLs vor Änderungen
+   und wird vor jeder Verwendung über Quell- und Binärdigest verifiziert. Der
+   Transport konsumiert sowohl einen gebrandeten Plan als auch die
+   Credential-Lease genau einmal. Es gibt keinen Environment-, Datei-,
    SQLite- oder Klartextfallback.
 9. API- und manuelle Daten liegen in getrennten `STRICT`-Tabellen. Die
    tatsächliche SQLite-DDL einschließlich Tabellen, Indizes und Trigger wird
@@ -64,8 +67,17 @@ Der neue Pfad ist geschlossen und fail-closed aufgebaut:
 12. Das Loopback-Dashboard bietet eine eng begrenzte, einmalige lokale
     Credential-Eingabe. Die Werte werden ausschließlich als festes binäres
     `application/octet-stream`-Frame an denselben Loopbackprozess übertragen,
-    nie als JSON, Browser-Storage oder Log. Alle übrigen Mutationen verwenden
-    feste Same-Origin-JSON-Routen.
+    nie als JSON, Browser-Storage oder Log. Lokale Credential-Ablage,
+    -Löschung und Integrations-Deaktivierung bleiben im Setup-Modus verfügbar;
+    alle Security-Core-abhängigen Frontendcontrols bleiben dort sichtbar
+    blockiert. Alle übrigen Mutationen verwenden feste
+    Same-Origin-JSON-Routen.
+13. Ein lokal installierbarer macOS-App-Launcher startet die Anwendung ohne
+    sichtbares Terminal. Er verwendet eine Minimalumgebung, validiert nur
+    `127.0.0.1`, besitzt Startup- und Termination-Deadlines und hält eine
+    Loopback-Single-Instance-Lease. Externe Schalter sind standardmäßig aus;
+    nicht geheime Event-/Operator-Metadaten werden nur bei einem ausdrücklichen
+    Installerlauf übernommen.
 
 ## Implementierter externer API-Umfang
 
@@ -125,6 +137,19 @@ nicht erreichbar.
 - Direkte Unit-, Property-, Security-, Store-, Dashboard- und lokale
   Integrationstests mit ausschließlich synthetischen Daten und
   Loopback-Mocks.
+- Nachträgliche Korrektur des defekten macOS-Writers: fester nativer
+  Keychain-Helfer statt TTY-gebundenem `/usr/bin/security -w`, verifizierter
+  persistierter Readback, kanonische Rollen-/Generationshüllen, explizite ACL,
+  Quell-/Binärintegrität und minimale Prozessumgebung.
+- Ausführende TTY-Regressionen für zwei nacheinander abgeschlossene versteckte
+  Eingaben und `Ctrl-C` mit Exitstatus 130; stdin wird nach jeder Eingabe
+  pausiert.
+- Sichtbare fünfteilige Aktivierungsreadiness und fail-closed Frontend-Gates;
+  lokale Credential-Sicherheitsaktionen sind von einer externen Aktivierung
+  getrennt.
+- Lokaler macOS-App-Launcher mit privater Konfiguration, explizitem
+  `local-only`-Standard, optionalem H1-Read-only-Modus, Minimalumgebung,
+  Startup-/Shutdown-Grenzen und Single-Instance-Lease.
 
 ### Ausdrückliche Security-Core-Änderungen
 
@@ -145,6 +170,12 @@ nicht erreichbar.
 `packages/shared/sqlite-schema.ts` ist der neue gemeinsame, streng
 fail-closed DDL-Verifier. Keine dieser Änderungen lockert eine bestehende
 Sicherheitsprüfung.
+
+Die nach der ursprünglichen Pilot-A-Abnahme ausgeführte Credential-,
+Frontend- und Launcher-Korrektur verändert keinen Phase-1-Security-Core. Sie
+bleibt auf `packages/hackerone-readonly`, die H1-Dashboardprojektion, die
+beiden H1-Adminapps, den neuen lokalen Launcher, Dokumentation und direkte
+Regressionstests begrenzt.
 
 ## Lokal gespeicherte Daten
 
@@ -224,20 +255,22 @@ Netzwerkrequest und kennzeichnet jeden Datensatz als `manual_unverified`.
 
 Alle folgenden Prüfungen wurden auf dem finalen Arbeitsstand ausgeführt.
 
-| Prüfung                   | Tatsächlich ausgeführter Befehl                                                       | Finales Ergebnis                        |
-| ------------------------- | ------------------------------------------------------------------------------------- | --------------------------------------- |
-| Typecheck                 | `pnpm typecheck`                                                                      | bestanden                               |
-| Lint                      | `pnpm lint`                                                                           | bestanden, 0 Warnungen                  |
-| Format                    | `pnpm format:check`                                                                   | bestanden                               |
-| Vollständige Suite        | `pnpm exec vitest run --maxWorkers=1`                                                 | 105 Dateien, 856/856 Tests              |
-| Property-Tests            | `pnpm exec vitest run tests/property --maxWorkers=1`                                  | 17 Dateien, 45/45 Tests                 |
-| Browser-Harness           | `PLAYWRIGHT_NO_COPY_PROMPT=1 pnpm exec playwright test --config playwright.config.ts` | 2/2 Tests                               |
-| Egress-Regressionen       | `pnpm test:egress`                                                                    | 6 Dateien, 33/33 Tests                  |
-| H1-Loopback/API/Dashboard | gezielter Vitest-Lauf                                                                 | 18 Dateien, 333/333 Tests               |
-| Secret-Leak-Prüfung       | `pnpm exec vitest run tests/security --maxWorkers=1`                                  | 1 Datei, 5/5 Tests                      |
-| Build                     | `pnpm build`                                                                          | bestanden                               |
-| Coverage                  | `pnpm test:coverage`                                                                  | 87,19 % Statements; 88,30 % Lines       |
-| Dependency-Audit          | `pnpm audit --audit-level high`                                                       | keine bekannten Schwachstellen gefunden |
+| Prüfung                   | Tatsächlich ausgeführter Befehl                                                                             | Finales Ergebnis                                                        |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| Typecheck                 | `./node_modules/.bin/tsc --noEmit`                                                                          | bestanden                                                               |
+| Lint                      | `./node_modules/.bin/eslint . --max-warnings 0`                                                             | bestanden, 0 Warnungen                                                  |
+| Format                    | `./node_modules/.bin/prettier --check .`                                                                    | bestanden                                                               |
+| Vollständige Suite        | `./node_modules/.bin/vitest run --maxWorkers=1`                                                             | 107 Dateien, 876/876 Tests                                              |
+| Property-Tests            | `./node_modules/.bin/vitest run tests/property --maxWorkers=1`                                              | 17 Dateien, 45/45 Tests                                                 |
+| Browser-Harness           | `PLAYWRIGHT_NO_COPY_PROMPT=1 ./node_modules/.bin/playwright test --config playwright.config.ts`             | 2/2 Tests                                                               |
+| Egress-Regressionen       | `./node_modules/.bin/vitest run tests/unit/egress tests/integration/*loopback.test.ts --maxWorkers=1`       | 6 Dateien, 33/33 Tests                                                  |
+| H1-Loopback/API/Dashboard | gezielter Vitest-Lauf der H1-Unit-, Property-, Security- und Loopbacktests                                  | 19 Dateien, 346/346 Tests                                               |
+| Secret-Leak-Prüfung       | `./node_modules/.bin/vitest run tests/security --maxWorkers=1`                                              | 1 Datei, 5/5 Tests                                                      |
+| Native Keychain           | `sh tests/native/macos-keychain-helper-contract.sh && sh tests/native/macos-keychain-helper-integration.sh` | Contract und synthetischer lokaler Keychain-Zyklus bestanden            |
+| macOS-App-Launcher        | `./node_modules/.bin/vitest run tests/unit/macos-app-launcher.test.ts --maxWorkers=1`                       | 1 Datei, 7/7 Tests                                                      |
+| Build                     | `./node_modules/.bin/tsc -p tsconfig.build.json`                                                            | bestanden                                                               |
+| Coverage                  | `./node_modules/.bin/vitest run --coverage --maxWorkers=1`                                                  | 87,12 % Statements; 83,21 % Branches; 94,67 % Funktionen; 88,24 % Lines |
+| Dependency-Audit          | `npx --yes pnpm@11.7.0 audit --audit-level high`                                                            | keine bekannten Schwachstellen gefunden                                 |
 
 Der fest auf `api.hackerone.com:443` verdrahtete Produktions-Transport wird
 in automatisierten Tests nicht live ausgeführt. Alle automatisierten
@@ -259,6 +292,12 @@ Die vollständige Liste steht in
 - begrenzte Dashboard-Projektionen und kategorischer statt zeilenweiser
   Policy-Diff;
 - Suitability bleibt eine konservative Heuristik ohne rechtliche Wirkung.
+- Der Adapter akzeptiert ausschließlich ein vollständiges
+  API-Identifier-/Token-Paar; ein vom Plattformkonto nur als einzelner Token
+  ausgegebenes Credential bleibt bis zu einer separat geprüften
+  Auth-Kompatibilität fail-closed.
+- Der Finder-Launcher ist noch nicht mit vollständig synthetisch
+  provisioniertem Security-Core bis `secureCoreReady` end-to-end qualifiziert.
 
 ## Erklärung zu externen Kontakten
 

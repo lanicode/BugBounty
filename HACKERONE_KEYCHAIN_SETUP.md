@@ -2,9 +2,12 @@
 
 ## Zweck und feste Referenzen
 
-Die persönliche HackerOne Hacker API verwendet einen API-Identifier und
-einen API-Token. Bug Bounty Copilot verwaltet beide ausschließlich im
-macOS-Schlüsselbund.
+Der aktuell implementierte HackerOne-Read-only-Adapter verwendet ein
+API-Identifier-/API-Token-Paar für Basic Auth. Bug Bounty Copilot verwaltet
+beide ausschließlich im macOS-Schlüsselbund. Gibt das Plattformkonto nur ein
+einzelnes Token ohne separaten Identifier aus, ist dieses Credentialformat
+mit dem aktuellen Adapter nicht kompatibel und bleibt fail-closed; niemals
+einen Identifier raten oder einen Platzhalter speichern.
 
 | Wert           | Referenz                                                | Keychain Service    | Account                    |
 | -------------- | ------------------------------------------------------- | ------------------- | -------------------------- |
@@ -24,7 +27,7 @@ Logpersistenz sind dafür verboten.
 
 ## Voraussetzungen
 
-- macOS mit `/usr/bin/security`;
+- macOS mit Apple Command Line Tools (`/usr/bin/xcrun` und `clang`);
 - Repository-Abhängigkeiten installiert;
 - private lokale Control-Plane unter
   `.local/dashboard/control-plane.sqlite` eingerichtet;
@@ -40,6 +43,17 @@ TTY-gebunden.
 Weiterleitung aus einer Datei, Pipe, CI, Hintergrundjob oder nicht
 interaktivem Codex-Prozess wird mit `HACKERONE_MANUAL_TTY_REQUIRED`
 abgewiesen.
+
+Der feste native Keychain-Helfer wird beim ersten Credentialzugriff aus der
+versionierten C-Quelldatei lokal kompiliert. Das Binärprogramm und sein
+Quell- und Binärdigest liegen nur im privaten Verzeichnis `.local/native`
+(Modus `0700`/`0600`). Vor jeder Operation werden Eigentümer, Modus,
+Hardlinkzahl, Quelldigest und tatsächlicher Binärdigest erneut geprüft. Die
+Kompilierung verwendet eine private Kopie der zuvor gehashten Quelle und eine
+minimale Umgebung. Es gibt keinen Download und keinen
+`/usr/bin/security -w`-Promptfallback. Fehlende Toolchain, falsche
+Dateirechte, Symlinks, Digestabweichungen, Kompilierfehler oder eine nicht
+interaktiv erlaubte Keychainoperation blockieren fail-closed.
 
 ## Credentials über das lokale Dashboard speichern
 
@@ -74,6 +88,12 @@ deaktiviert einen aktiven Adapter danach persistent und wartet auf Quieszenz,
 bevor der Keychain-Write beginnt. Speichern aktiviert die Integration nie
 automatisch.
 
+Die rein lokale Credential-Ablage und -Löschung sind auch in der
+`local_setup_shell` verfügbar. Das richtet noch keine externe Capability ein:
+Aktivierung, Verbindungstest, Synchronisierung, Auswahl, Bindung und
+Policy-Annahme bleiben bis zu einem vollständig bereiten Security-Core
+serverseitig blockiert.
+
 ## Alternative: Credentials im TTY speichern
 
 Starte im Repository:
@@ -102,11 +122,17 @@ deaktiviert; dieser Übergang erhöht seine Generation. Anschließend:
 3. jede Secretseite erhält die kanonische, vollständig druckbare Hülle
    `BBC-H1-CRED-V1.<Rolle>.<Generation>.<Secret>`; Rolle `i`/`t`, 16-Byte-
    Generation und Secret sind ungepaddet Base64url-kodiert;
-4. `/usr/bin/security` erhält die Hülle über stdin, niemals als
-   Prozessargument;
-5. temporäre TTY-, Hüllen-, stdin-, stdout- und stderr-Buffer werden genullt;
-6. ausgegeben wird nur ein zwölfstelliges SHA-256-Fingerprint-Präfix des
-   Tokens.
+4. der feste native Helfer erhält die Hülle einmal über eine begrenzte
+   stdin-Pipe, niemals als Prozessargument oder Environmentwert;
+5. der Helfer deaktiviert Core Dumps und Keychain-UI, sperrt Secretbuffer im
+   Speicher und akzeptiert nur `read|store|delete` für die zwei festen Rollen
+   sowie bei `store` ausschließlich eine kanonische rollenpassende Hülle;
+6. der Vault liest beide gespeicherten Hüllen über denselben Helfer zurück und
+   prüft Rolle, gemeinsame neue Generation sowie die vollständigen Identifier-
+   und Token-Digests;
+7. temporäre TTY-, Hüllen-, stdin-, stdout- und Keychainbuffer werden genullt;
+8. erst nach erfolgreichem Readback wird das zwölfstellige SHA-256-
+   Fingerprint-Präfix des persistierten Tokens ausgegeben.
 
 Schlägt ein Schreibvorgang fehl, versucht der Vault beide festen Einträge zu
 löschen und meldet nur `HACKERONE_KEYCHAIN_WRITE_FAILED`. Es gibt keinen
@@ -179,10 +205,47 @@ offiziellen API und niemals Zielrequests oder Report-Einreichungen.
 7. Widerrufe den alten Token über HackerOne erst nach deiner eigenen
    Betriebsprüfung.
 
-Die festen Keychain-Einträge werden mit `security add-generic-password -U`
-aktualisiert. Es gibt keine lokale Liste alter Tokens und keine automatische
-Rückkehr zum vorherigen Secret. Ein fehlgeschlagener Write kann beide
-Einträge entfernen.
+Die festen Keychain-Einträge werden ausschließlich über den lokal kompilierten
+Helfer aktualisiert. Es gibt keine lokale Liste alter Tokens und keine
+automatische Rückkehr zum vorherigen Secret. Ein fehlgeschlagener Write oder
+Readback kann beide Einträge entfernen.
+
+Bei einem bereits vorhandenen alten Eintrag setzt der Helfer vor jeder
+Inhaltsänderung seine explizite Ein-Helfer-ACL. Kann macOS diese ACL ohne
+Interaktion nicht sicher setzen, bleibt der neue Inhalt ungeschrieben und der
+Vorgang schlägt fail-closed fehl. Alte, manuell oder mit anderen Werkzeugen
+angelegte rohe Einträge sind kein unterstützter Fallback; entferne sie über
+den festen `remove`-Pfad und speichere das Paar anschließend neu.
+
+Kann auch `remove` den fremden Alt-ACL-Eintrag nicht ohne macOS-Interaktion
+löschen, beende zuerst Dashboard und Credential-CLI. Lösche dann in der
+lokalen **Schlüsselbundverwaltung** ausschließlich die beiden Einträge des
+Dienstes `bugbounty-copilot` mit den Accounts `hackerone-api-identifier` und
+`hackerone-api-token`. Alternativ ist dieser feste Delete-only-Recoveryweg
+möglich:
+
+```sh
+/usr/bin/security delete-generic-password \
+  -s bugbounty-copilot -a hackerone-api-identifier
+/usr/bin/security delete-generic-password \
+  -s bugbounty-copilot -a hackerone-api-token
+```
+
+Die Befehle enthalten bewusst weder `-w` noch einen Read-Schritt: Werte werden
+nicht gelesen, kopiert oder ausgegeben. Bestätige gegebenenfalls nur den
+lokalen macOS-Löschdialog und speichere anschließend das vollständige Paar
+neu. Verwende diesen Recoveryweg nicht für Event- oder Operator-Key-Einträge.
+
+Die lokale native Regression lässt sich ohne Plattform- oder Zielkontakt mit
+ausschließlich zufällig benannten synthetischen Keychain-Einträgen ausführen:
+
+```sh
+pnpm test:native
+```
+
+Sie prüft Contractgrenzen sowie Store, Read, Delete, ACL-Migration oder
+unverändertes Fail-closed-Verhalten und die Grenzen 4.095/4.096 Bytes. Die
+synthetischen Einträge werden am Ende wieder entfernt.
 
 ## Credentials entfernen
 
@@ -232,7 +295,8 @@ lesbar. Pilot Readiness A besitzt bewusst keinen Purge-/Retentionworkflow.
 | `HACKERONE_SECRET_STORE_UNAVAILABLE`   | macOS-Keychain fehlt, ist unlesbar oder das Paar ist ungültig/gemischt      |
 | `HACKERONE_KEYCHAIN_WRITE_FAILED`      | mindestens ein Write fehlgeschlagen; Cleanup beider Einträge wurde versucht |
 | `HACKERONE_KEYCHAIN_DELETE_FAILED`     | mindestens ein Delete fehlgeschlagen; Paar bleibt unbrauchbar               |
-| `HACKERONE_KEYCHAIN_CLI_TIMEOUT`       | `/usr/bin/security` antwortete nicht innerhalb von fünf Sekunden            |
+| `HACKERONE_KEYCHAIN_HELPER_FAILED`     | nativer Helfer fehlt, ist untrusted oder lehnt die feste Operation ab       |
+| `HACKERONE_KEYCHAIN_HELPER_TIMEOUT`    | nativer Helfer antwortete nicht innerhalb der festen Deadline               |
 
 ## Plattformgrenze
 
