@@ -143,7 +143,12 @@ export class HackerOneMetadataService {
   }
 
   public engageKillSwitch(): void {
-    this.#controller.abort(new Error("HACKERONE_KILL_SWITCH"));
+    // The process-local abort and the durable adapter state must move
+    // together. Otherwise clearing the global kill switch can leave the
+    // database claiming that the adapter is enabled while its AbortController
+    // remains permanently aborted. Requiring a fresh signed activation after
+    // every kill-switch engagement is the conservative fail-closed state.
+    this.disableInternal();
   }
 
   private disableInternal(): void {

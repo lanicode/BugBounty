@@ -403,6 +403,29 @@ describe("HackerOneMetadataService", () => {
     });
   });
 
+  it("durably disables the adapter when the global kill switch is engaged", async () => {
+    await activate();
+    expect(store.getIntegrationState().adapterEnabled).toBe(true);
+
+    service.engageKillSwitch();
+
+    expect(store.getIntegrationState().adapterEnabled).toBe(false);
+    await expect(service.status()).resolves.toMatchObject({
+      status: "deactivated",
+      adapterEnabled: false,
+    });
+    await expect(service.testConnection()).rejects.toThrow(
+      "HACKERONE_ADAPTER_DISABLED",
+    );
+    expect(client.connectionSignals).toEqual([]);
+
+    now = SECOND_TIME;
+    await activate();
+    await expect(service.testConnection()).resolves.toMatchObject({
+      result: "connected",
+    });
+  });
+
   it("reports an enabled adapter with an unreadable secret store as error", async () => {
     await activate();
     credentials.probeError = new Error("SYNTHETIC_SECRET_STORE_FAILURE");
