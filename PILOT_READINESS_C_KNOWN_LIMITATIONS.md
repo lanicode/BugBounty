@@ -301,3 +301,12 @@ Planung muss das ausgewählte Programm samt Policy, Structured Scopes und
 Scope Exclusions separat synchronisiert und menschlich geprüft werden. Bleibt
 ein sicherheitsrelevantes Detail auch dort unbekannt, kann kein aktiver Plan
 freigegeben werden.
+
+### Pagination bleibt absichtlich eng
+
+Akzeptiert werden ausschließlich absolute HackerOne-API-Links mit den beiden
+bekannten Seitenparametern. Andere zukünftige Paginationverfahren wie Cursor,
+relative Links oder zusätzliche Filter bleiben fail-closed blockiert und
+benötigen eine eigene Sicherheitsprüfung. Die Anwendung folgt dem gelieferten
+Link nicht direkt, sondern rekonstruiert nach erfolgreicher Validierung ihren
+festen kanonischen Requestplan.

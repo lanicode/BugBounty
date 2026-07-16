@@ -241,3 +241,33 @@ Der kombinierte letzte Befehl war zugleich der einzige vollständige
 Regressionstest- und Coverage-Lauf dieses Nachtrags. Alle Netzwerkanteile
 liefen ausschließlich gegen lokale Loopback-Mocks. Codex kontaktierte weder
 HackerOne noch einen Plattform- oder Bug-Bounty-Zielhost.
+
+======================================================================
+PAGINATION-REGRESSION 2026-07-16
+======================================================================
+
+$ ./node_modules/.bin/vitest run --maxWorkers=1 tests/unit/hackerone-readonly/request-policy.test.ts tests/property/hackerone-readonly-request-policy.property.test.ts
+PASS
+Test Files  2 passed (2)
+Tests       84 passed (84)
+Duration    334ms
+
+$ ./node_modules/.bin/vitest run --maxWorkers=1 tests/integration/hackerone-loopback.test.ts
+PASS
+Test Files  1 passed (1)
+Tests       20 passed (20)
+Duration    1.06s
+
+$ ./node_modules/.bin/vitest run --coverage --maxWorkers=1
+PASS
+Test Files  128 passed (128)
+Tests       1106 passed (1106)
+Duration    87.50s
+Statements  85.05% (9204/10821)
+Branches    82.45% (6638/8050)
+Functions   92.27% (1757/1904)
+Lines       86.07% (8889/10327)
+
+Der letzte Befehl war der einzige vollständige Regressionstest- und
+Coverage-Lauf dieses Nachtrags. Alle Netzwerkanteile verwendeten lokale
+Loopback-Mocks. Codex kontaktierte keinen externen Host.

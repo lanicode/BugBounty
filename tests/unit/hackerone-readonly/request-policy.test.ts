@@ -394,6 +394,8 @@ describe("HackerOne pagination continuation", () => {
   it.each([
     "https://api.hackerone.com/v1/hackers/programs/synthetic-program/structured_scopes?page[number]=2&page[size]=10",
     "https://api.hackerone.com:443/v1/hackers/programs/synthetic-program/structured_scopes?page[number]=2&page[size]=10",
+    "https://api.hackerone.com/v1/hackers/programs/synthetic-program/structured_scopes?page%5Bnumber%5D=2&page%5Bsize%5D=10",
+    "https://api.hackerone.com/v1/hackers/programs/synthetic-program/structured_scopes?page[size]=10&page[number]=2",
   ])("accepts only the exact next page URL %s", (nextUrl) => {
     const plan = createNextHackerOneMetadataRequestPlan(
       firstPage(),
@@ -468,10 +470,6 @@ describe("HackerOne pagination continuation", () => {
     [
       "changed size",
       "https://api.hackerone.com/v1/hackers/programs/synthetic-program/structured_scopes?page[number]=2&page[size]=100",
-    ],
-    [
-      "reordered query",
-      "https://api.hackerone.com/v1/hackers/programs/synthetic-program/structured_scopes?page[size]=10&page[number]=2",
     ],
     [
       "extra query",

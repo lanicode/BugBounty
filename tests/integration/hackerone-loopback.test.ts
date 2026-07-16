@@ -679,7 +679,7 @@ describe("HackerOne read-only client over test-only loopback transport", () => {
     primary.enqueueJson(200, {
       data: [programResource("synthetic-id-1", "synthetic-one")],
       links: {
-        next: "https://api.hackerone.com/v1/hackers/programs?page[number]=2&page[size]=100",
+        next: "https://api.hackerone.com/v1/hackers/programs?page%5Bsize%5D=100&page%5Bnumber%5D=2",
       },
     });
     primary.enqueueJson(200, {

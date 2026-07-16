@@ -179,8 +179,7 @@ export function createNextHackerOneMetadataRequestPlan(
   const nextNumber = plan.page.number + 1;
   if (!Number.isSafeInteger(nextNumber))
     throw new SecurityError("HACKERONE_PAGINATION_BLOCKED");
-  const expectedQuery = canonicalPageQuery(nextNumber, plan.page.size);
-  assertCanonicalNextLink(next, plan.path, expectedQuery);
+  assertCanonicalNextLink(next, plan.path, nextNumber, plan.page.size);
   assertRuntimeEnabled(runtime);
   assertBudget(runtime, budget);
   return createPlan({
@@ -382,7 +381,8 @@ function canonicalPageQuery(number: number, size: number): string {
 function assertCanonicalNextLink(
   value: string,
   expectedPath: string,
-  expectedQuery: string,
+  expectedPageNumber: number,
+  expectedPageSize: number,
 ): void {
   if (/[^\x00-\x7f]/u.test(value))
     throw new SecurityError("HACKERONE_PAGINATION_BLOCKED");
@@ -405,8 +405,31 @@ function assertCanonicalNextLink(
     parsed.username !== "" ||
     parsed.password !== "" ||
     parsed.hash !== "" ||
-    parsed.pathname !== expectedPath ||
-    parsed.search !== expectedQuery
+    parsed.pathname !== expectedPath
+  )
+    throw new SecurityError("HACKERONE_PAGINATION_BLOCKED");
+  assertCanonicalPageParameters(
+    parsed.searchParams,
+    expectedPageNumber,
+    expectedPageSize,
+  );
+}
+
+function assertCanonicalPageParameters(
+  parameters: URLSearchParams,
+  expectedPageNumber: number,
+  expectedPageSize: number,
+): void {
+  const entries = [...parameters.entries()];
+  const numbers = parameters.getAll("page[number]");
+  const sizes = parameters.getAll("page[size]");
+  if (
+    entries.length !== 2 ||
+    numbers.length !== 1 ||
+    sizes.length !== 1 ||
+    entries.some(([key]) => key !== "page[number]" && key !== "page[size]") ||
+    numbers[0] !== String(expectedPageNumber) ||
+    sizes[0] !== String(expectedPageSize)
   )
     throw new SecurityError("HACKERONE_PAGINATION_BLOCKED");
 }

@@ -337,3 +337,26 @@ Dateien und 1104/1104 Tests waren erfolgreich. Coverage: 85,04 % Statements,
 Implementierung und Tests wurde kein realer HackerOne-, Plattform- oder
 Zielhost kontaktiert; alle Netzwerkprüfungen verwendeten lokale
 Loopback-Mocks.
+
+## Nachtrag 2026-07-16: Semantisch kanonische Pagination
+
+Nach erfolgreicher Schema-Validierung blockierte der nächste ausdrücklich vom
+Benutzer ausgelöste Katalog-Sync den von HackerOne gelieferten Next-Link mit
+`HACKERONE_PAGINATION_BLOCKED`. Die API kann die beiden fest erlaubten
+JSON:API-Seitenparameter percent-encodiert oder in anderer Reihenfolge
+serialisieren.
+
+Die Pagination validiert nun semantisch genau ein `page[number]` und genau ein
+`page[size]`. Seitennummer muss exakt um eins steigen und Seitengröße
+unverändert bleiben. HTTPS, fester Host, Port 443, identischer Pfad, leere
+Userinfo, kein Fragment sowie die Obergrenzen bleiben zwingend. Relative
+Links, fremde Hosts, zusätzliche oder doppelte Parameter und Seitensprünge
+blockieren weiterhin. Der gelieferte Link wird nie direkt ausgeführt; nach
+erfolgreicher Prüfung erzeugt die Anwendung selbst wieder den kanonischen
+festen Requestplan.
+
+Gezielt waren 84/84 Policy-/Property-Tests und 20/20 Loopbacktests
+erfolgreich. Der einzige kombinierte Vollsuite-/Coverage-Lauf bestand 128/128
+Dateien und 1106/1106 Tests. Coverage: 85,05 % Statements, 82,45 % Branches,
+92,27 % Funktionen und 86,07 % Zeilen. Codex kontaktierte keinen externen
+Host; alle Netzwerkprüfungen liefen ausschließlich gegen Loopback-Mocks.

@@ -319,3 +319,19 @@ werden können, ohne Policy-, Submission-, Bounty-, Scope-, Safe-Harbor- oder
 Automationsfreigaben zu erzeugen. Ein vollständiger aktueller Detailsnapshot,
 Scope-Sync, menschliche Annahme und alle bestehenden Active-Testing-Gates
 bleiben erforderlich.
+
+### Semantische Pagination ohne Egress-Erweiterung
+
+Der Pagination-Folgefix verändert den Phase-1-Sicherheitskern nicht und
+erweitert weder Host, Pfad noch HTTP-Methode. Die Read-only-Request-Policy
+akzeptiert ausschließlich zwei semantisch identische Darstellungen der schon
+vorher erlaubten Parameter: percent-encodierte Klammern und vertauschte
+Reihenfolge. Nach Dekodierung müssen genau ein `page[number]` und ein
+`page[size]` vorhanden sein. Werte, nächste Seitennummer, Seitengröße, Host,
+Port und Pfad werden gegen den bestehenden gebrandeten Plan gebunden.
+
+Der untrusted Next-Link wird niemals als Requestziel übernommen. Bei Erfolg
+wird ein neuer kanonischer Plan aus festen Produktwerten erzeugt. Direkte
+Unit-, Property- und Loopbacktests belegen weiterhin die Blockade von
+Duplikaten, Zusatzparametern, fremden Authorities, relativen Links,
+Seitensprüngen und geänderten Seitengrößen.

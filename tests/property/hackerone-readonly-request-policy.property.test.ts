@@ -120,6 +120,44 @@ describe("HackerOne request-policy properties", () => {
     );
   });
 
+  it("accepts only equivalent encoded or reordered page parameter pairs", () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 100 }),
+        fc.integer({ min: 2, max: 25 }),
+        fc.boolean(),
+        (size, page, encoded) => {
+          const first = createInitialHackerOneMetadataRequestPlan(
+            programsIntent(size),
+            runtime(),
+            budget,
+          );
+          let current = first;
+          for (let number = 2; number <= page; number += 1) {
+            const numberKey = encoded ? "page%5Bnumber%5D" : "page[number]";
+            const sizeKey = encoded ? "page%5Bsize%5D" : "page[size]";
+            const query =
+              number % 2 === 0
+                ? `${sizeKey}=${String(size)}&${numberKey}=${String(number)}`
+                : `${numberKey}=${String(number)}&${sizeKey}=${String(size)}`;
+            const next = createNextHackerOneMetadataRequestPlan(
+              current,
+              `https://api.hackerone.com/v1/hackers/programs?${query}`,
+              runtime(),
+              budget,
+            );
+            expect(next).not.toBeNull();
+            if (next === null) throw new Error("PROPERTY_NEXT_MISSING");
+            expect(next.query).toBe(
+              `?page[number]=${String(number)}&page[size]=${String(size)}`,
+            );
+            current = next;
+          }
+        },
+      ),
+    );
+  });
+
   it("rejects any additional query key on an otherwise valid next link", () => {
     fc.assert(
       fc.property(
