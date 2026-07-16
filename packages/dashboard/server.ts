@@ -447,9 +447,14 @@ export async function startDashboardServer(
       case "/api/hackerone/program/synchronize": {
         assertSecureCoreReady(dependencies);
         const input = parseHackerOneProgramReference(body);
-        const result = await requireHackerOne(
-          dependencies,
-        ).synchronizeSelectedProgram(input.programRef);
+        const service = requireHackerOne(dependencies);
+        if (service.selectedProgramRef() !== input.programRef)
+          throw new SecurityError(
+            "HACKERONE_DASHBOARD_SELECTED_PROGRAM_CONFLICT",
+          );
+        const result = await service.synchronizeSelectedProgram(
+          input.programRef,
+        );
         sendJson(response, 200, result);
         return;
       }

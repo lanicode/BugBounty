@@ -310,3 +310,15 @@ relative Links oder zusätzliche Filter bleiben fail-closed blockiert und
 benötigen eine eigene Sicherheitsprüfung. Die Anwendung folgt dem gelieferten
 Link nicht direkt, sondern rekonstruiert nach erfolgreicher Validierung ihren
 festen kanonischen Requestplan.
+
+### Mehrere offene Dashboard-Tabs
+
+Jeder Browser-Tab besitzt weiterhin einen eigenen, flüchtigen Auswahl-Draft.
+Der Draft wird nicht als Autorisierung verwendet und springt bei
+Hintergrundaktualisierungen nicht mehr auf den ersten Katalogeintrag. Eine in
+einem anderen Tab ausdrücklich übernommene Auswahl ersetzt jedoch die
+serverseitig persistierte Auswahl und wird beim nächsten Refresh sichtbar.
+Vor einer Detailsynchronisierung muss deshalb der im Metadatenbereich
+angezeigte persistierte Handle geprüft werden. Alte Tabs sollten geschlossen
+werden, um Bedienfehler zu vermeiden; die serverseitige Exaktprüfung bleibt
+unabhängig davon fail-closed.

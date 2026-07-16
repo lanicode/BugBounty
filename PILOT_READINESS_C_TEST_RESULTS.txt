@@ -271,3 +271,45 @@ Lines       86.07% (8889/10327)
 Der letzte Befehl war der einzige vollständige Regressionstest- und
 Coverage-Lauf dieses Nachtrags. Alle Netzwerkanteile verwendeten lokale
 Loopback-Mocks. Codex kontaktierte keinen externen Host.
+
+======================================================================
+PROGRAMMAUSWAHL-REGRESSION 2026-07-16
+======================================================================
+
+$ ./node_modules/.bin/tsc --noEmit
+PASS
+
+$ ./node_modules/.bin/eslint . --max-warnings 0
+PASS (keine Warnungen)
+
+$ ./node_modules/.bin/vitest run tests/unit/hackerone-dashboard-assets.test.ts tests/integration/hackerone-dashboard.test.ts --maxWorkers=1
+PASS
+Test Files  2 passed (2)
+Tests       23 passed (23)
+Duration    1.18s
+
+$ ./node_modules/.bin/vitest run --coverage --maxWorkers=1
+PASS
+Test Files  128 passed (128)
+Tests       1108 passed (1108)
+Duration    67.76s
+Statements  85.04% (9205/10824)
+Branches    82.43% (6638/8052)
+Functions   92.27% (1757/1904)
+Lines       86.06% (8890/10330)
+
+Der abschließende Befehl ist der maßgebliche vollständige Regressionstest-
+und Coverage-Lauf nach der letzten Produktänderung. Ein vorheriger gezielter
+Lauf fand eine veraltete statische Test-Erwartung für die verschärfte
+Button-Sperre; die Integrationstests waren dabei grün. Die Erwartung wurde an
+die neue fail-closed Bedingung angepasst und anschließend gezielt sowie
+vollständig grün verifiziert. Zwei frühere Aufrufversuche waren keine
+Produktfehler: `npx` konnte das gesperrte Paketregister nicht erreichen und
+die nicht eskalierte Sandbox durfte keinen Loopback-Port binden. Danach
+wurden ausschließlich vorhandene lokale Werkzeuge und lokale Loopback-Mocks
+verwendet.
+
+Codex kontaktierte während Implementierung und Tests weder HackerOne noch
+einen Plattform- oder Bug-Bounty-Zielhost. Der zuvor vom Benutzer ausgelöste
+Read-only-Detailsync kontaktierte ausschließlich die HackerOne-Metadaten-API,
+keinen Programmzielhost, und blockierte vor jeder aktiven Testaktion.

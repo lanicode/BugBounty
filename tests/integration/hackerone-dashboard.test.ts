@@ -1320,6 +1320,26 @@ describe("HackerOne dashboard HTTP boundary", () => {
     expect(transport.plans).toHaveLength(0);
   });
 
+  it("blocks detail synchronization unless the request matches the persisted program selection", async () => {
+    const { server } = await startHarness({
+      hackerOneOverride: projectionOnlyService(2, 1),
+    });
+    const projected = (await state(server)).hackerOne;
+    expect(projected.selectedProgramRef).toMatch(/^h1m_[0-9a-f]{64}$/u);
+
+    const response = await postJson(
+      server,
+      "/api/hackerone/program/synchronize",
+      (await state(server)).csrfToken,
+      { programRef: `h1m_${"f".repeat(64)}` },
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: "HACKERONE_DASHBOARD_SELECTED_PROGRAM_CONFLICT",
+    });
+  });
+
   it("imports and accepts a selected local snapshot only through exact explicit bodies", async () => {
     const { server, transport } = await startHarness({
       killSwitchActive: false,

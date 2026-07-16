@@ -58,13 +58,13 @@ describe("HackerOne dashboard assets", () => {
         `postJson(ROUTES.${operation}, {})`,
       );
     expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(
-      "postJson(ROUTES.selectProgram, { programRef: selectedLocalRef() })",
+      "postJson(ROUTES.selectProgram, { programRef: draftProgramLocalRef() })",
     );
     expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(
-      "postJson(ROUTES.synchronizeProgram, { programRef: selectedLocalRef() })",
+      "postJson(ROUTES.synchronizeProgram, { programRef: persistedProgramLocalRef() })",
     );
     expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(
-      "programRef: selectedLocalRef(),",
+      "programRef: persistedProgramLocalRef(),",
     );
     expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(
       "campaignId: selectedCampaignId()",
@@ -74,7 +74,7 @@ describe("HackerOne dashboard assets", () => {
     );
     expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain("confirmed: true");
     expect(HACKERONE_DASHBOARD_JAVASCRIPT).not.toContain(
-      "programLocalRef: selectedLocalRef()",
+      "programLocalRef: draftProgramLocalRef()",
     );
     expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(
       '"content-type": "application/octet-stream"',
@@ -91,6 +91,33 @@ describe("HackerOne dashboard assets", () => {
     expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain("frame.fill(0)");
     expect(HACKERONE_DASHBOARD_JAVASCRIPT).not.toContain("text/plain");
     expect(HACKERONE_DASHBOARD_JAVASCRIPT).not.toContain("https://");
+  });
+
+  it("preserves an explicit program draft without implicitly selecting the first catalog entry", () => {
+    expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(
+      'placeholder.textContent = "Programm ausdrücklich auswählen"',
+    );
+    expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(
+      "if (persistedRef !== lastPersistedProgramRef)",
+    );
+    expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(
+      "select.value = pendingProgramRef",
+    );
+    expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(
+      "var selectionAligned = selected && pendingProgramRef === projection.selectedProgramRef",
+    );
+    expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(
+      "killed || !selectionAligned",
+    );
+    expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(
+      "!selectionAligned || !campaignsAvailable",
+    );
+    expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(
+      'element("hackerone-program-select").addEventListener("change"',
+    );
+    expect(HACKERONE_DASHBOARD_JAVASCRIPT).not.toContain(
+      "option.selected = stored.localRef === selectedRef",
+    );
   });
 
   it("keeps credential transport binary and browser persistence APIs out of the client", () => {
@@ -150,7 +177,7 @@ describe("HackerOne dashboard assets", () => {
       'element("hackerone-sync-catalog").disabled = operationRunning || !activation.secureCoreReady || !enabled || killed;',
     );
     expect(HACKERONE_DASHBOARD_JAVASCRIPT).toContain(
-      'element("hackerone-sync-program").disabled = operationRunning || !activation.secureCoreReady || !enabled || killed || !selected;',
+      'element("hackerone-sync-program").disabled = operationRunning || !activation.secureCoreReady || !enabled || killed || !selectionAligned;',
     );
   });
 

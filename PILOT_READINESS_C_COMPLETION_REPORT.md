@@ -360,3 +360,30 @@ erfolgreich. Der einzige kombinierte Vollsuite-/Coverage-Lauf bestand 128/128
 Dateien und 1106/1106 Tests. Coverage: 85,05 % Statements, 82,45 % Branches,
 92,27 % Funktionen und 86,07 % Zeilen. Codex kontaktierte keinen externen
 Host; alle Netzwerkprüfungen liefen ausschließlich gegen Loopback-Mocks.
+
+## Nachtrag 2026-07-16: Explizite Programmauswahl
+
+Das HackerOne-Programm-Dropdown behält eine noch nicht übernommene Auswahl
+über lokale Zustandsaktualisierungen hinweg. Ohne gültigen Draft wird kein
+Katalogeintrag implizit ausgewählt; stattdessen erscheint ein ausdrücklicher
+Platzhalter. Nur `Auswahl übernehmen` darf den Draft persistieren.
+
+Detailsynchronisierung und Kampagnenbindung verwenden ausschließlich die
+persistierte Auswahl und bleiben deaktiviert, solange sie nicht exakt mit der
+sichtbaren Auswahl übereinstimmt. Die Detailsynchronisierungsroute erzwingt
+diese Übereinstimmung zusätzlich serverseitig vor einem Adapter- oder
+Transportaufruf. Damit kann weder ein Hintergrundrefresh noch ein alter oder
+zweiter Browser-Tab unbemerkt den ersten Katalogeintrag autorisieren.
+
+Die gezielte Regression bestand 23/23 Tests. Der abschließende kombinierte
+Vollsuite-/Coverage-Lauf bestand 128/128 Dateien und 1108/1108 Tests.
+Coverage: 85,04 % Statements, 82,43 % Branches, 92,27 % Funktionen und
+86,06 % Zeilen. Der Phase-1-Sicherheitskern wurde nicht verändert.
+
+Codex und alle automatisierten Tests kontaktierten keinen HackerOne-,
+Plattform- oder Bug-Bounty-Zielhost; alle Netzwerkanteile liefen gegen lokale
+Loopback-Mocks. Vor diesem Fix hatte der Benutzer im Dashboard ausdrücklich
+einen HackerOne-Read-only-Detailsync ausgelöst, der aufgrund der fehlerhaft
+persistierten Auswahl nur die HackerOne-Metadaten-API für `1password`
+ansprach und mit Schemafehler blockierte. Es wurde dabei kein 1Password- oder
+anderer Programmzielhost kontaktiert und keine aktive Testaktion ausgeführt.

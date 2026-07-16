@@ -335,3 +335,24 @@ wird ein neuer kanonischer Plan aus festen Produktwerten erzeugt. Direkte
 Unit-, Property- und Loopbacktests belegen weiterhin die Blockade von
 Duplikaten, Zusatzparametern, fremden Authorities, relativen Links,
 Seitensprüngen und geänderten Seitengrößen.
+
+### Explizite Programmauswahl ohne Draft-Autorität
+
+Der Auswahl-Folgefix verändert den Phase-1-Sicherheitskern nicht. Er härtet
+die lokale HackerOne-Dashboardgrenze: Eine noch nicht übernommene
+Dropdown-Auswahl bleibt bei Hintergrundaktualisierungen erhalten und ein
+leerer Auswahlzustand zeigt einen ausdrücklichen Platzhalter, statt implizit
+den ersten Katalogeintrag zu verwenden. Nur die Aktion `Auswahl übernehmen`
+darf den validierten lokalen Draft senden.
+
+Detailsynchronisierung und Kampagnenbindung lesen ausschließlich die bereits
+serverseitig persistierte Programmreferenz. Zusätzlich vergleicht die
+Detailsynchronisierungsroute die angeforderte Referenz vor jedem Adapter- oder
+Transportaufruf exakt mit der persistierten Auswahl und blockiert Abweichungen
+mit `HACKERONE_DASHBOARD_SELECTED_PROGRAM_CONFLICT`. Browserzustand, mehrere
+Tabs oder ein veralteter Draft können damit keine externe Metadatenaktion für
+ein anderes Programm autorisieren. Solange sichtbarer Draft und persistierte
+Auswahl nicht übereinstimmen, bleiben Detailsynchronisierung und
+Kampagnenbindung im Browser gesperrt. Direkte Asset- und
+Loopback-Regressionen prüfen den Platzhalter, die Draft-/Persistenztrennung
+und die serverseitige Konfliktsperre.

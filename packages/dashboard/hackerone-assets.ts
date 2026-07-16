@@ -167,6 +167,8 @@ export const HACKERONE_DASHBOARD_JAVASCRIPT = `
   var currentProjection = null;
   var operationRunning = false;
   var refreshRunning = false;
+  var pendingProgramRef = "";
+  var lastPersistedProgramRef = null;
   var CREDENTIAL_FRAME_HEADER_BYTES = 9;
   var MAX_CREDENTIAL_BYTES = 3000;
   var CONTROL_IDS = Object.freeze([
@@ -384,17 +386,28 @@ export const HACKERONE_DASHBOARD_JAVASCRIPT = `
   function renderProgramSelector(projection) {
     var select = element("hackerone-program-select");
     var programs = array(projection.programs);
-    var selectedRef =
+    var persistedRef =
       typeof projection.selectedProgramRef === "string"
         ? projection.selectedProgramRef
         : "";
+    if (persistedRef !== lastPersistedProgramRef) {
+      pendingProgramRef = persistedRef;
+      lastPersistedProgramRef = persistedRef;
+    }
     var options = [];
     if (programs.length === 0) {
       var unavailable = document.createElement("option");
       unavailable.value = "";
       unavailable.textContent = "Kein Programm verfügbar";
+      unavailable.selected = true;
       options.push(unavailable);
+      pendingProgramRef = "";
     } else {
+      var placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = "Programm ausdrücklich auswählen";
+      placeholder.disabled = true;
+      options.push(placeholder);
       programs.forEach(function (candidate) {
         var stored = record(candidate);
         var program = stored && record(stored.program);
@@ -406,7 +419,6 @@ export const HACKERONE_DASHBOARD_JAVASCRIPT = `
           ? " · Score " + String(suitability.score)
           : " · Score nach Detail-Sync";
         option.textContent = plain(program.name) + " · " + plain(program.handle) + score + " · " + translated(program.source);
-        option.selected = stored.localRef === selectedRef;
         options.push(option);
       });
       if (projection.programsTruncated === true) {
@@ -417,9 +429,10 @@ export const HACKERONE_DASHBOARD_JAVASCRIPT = `
         options.push(truncated);
       }
     }
+    if (!options.some(function (option) { return option.value === pendingProgramRef && pendingProgramRef !== ""; }))
+      pendingProgramRef = "";
     select.replaceChildren.apply(select, options);
-    if (selectedRef !== "" && options.some(function (option) { return option.value === selectedRef; }))
-      select.value = selectedRef;
+    select.value = pendingProgramRef;
   }
 
   function renderProgram(projection) {
@@ -769,7 +782,9 @@ export const HACKERONE_DASHBOARD_JAVASCRIPT = `
     var killed = status.killSwitchActive !== false;
     var programsAvailable = array(projection.programs).length > 0;
     var campaignsAvailable = array(projection.campaigns).length > 0;
-    var selected = typeof projection.selectedProgramRef === "string" && projection.selectedProgramRef !== "";
+    var selected = isProgramReference(projection.selectedProgramRef);
+    var draftSelected = isProgramReference(pendingProgramRef);
+    var selectionAligned = selected && pendingProgramRef === projection.selectedProgramRef;
     element("hackerone-identifier").disabled = operationRunning || !available;
     element("hackerone-token").disabled = operationRunning || !available;
     element("hackerone-save-credentials").disabled = operationRunning || !available;
@@ -784,10 +799,10 @@ export const HACKERONE_DASHBOARD_JAVASCRIPT = `
     element("hackerone-test").disabled = operationRunning || !activation.secureCoreReady || !enabled || killed;
     element("hackerone-sync-catalog").disabled = operationRunning || !activation.secureCoreReady || !enabled || killed;
     element("hackerone-program-select").disabled = operationRunning || !activation.secureCoreReady || !programsAvailable;
-    element("hackerone-select-program").disabled = operationRunning || !activation.secureCoreReady || !programsAvailable;
-    element("hackerone-sync-program").disabled = operationRunning || !activation.secureCoreReady || !enabled || killed || !selected;
+    element("hackerone-select-program").disabled = operationRunning || !activation.secureCoreReady || !programsAvailable || !draftSelected;
+    element("hackerone-sync-program").disabled = operationRunning || !activation.secureCoreReady || !enabled || killed || !selectionAligned;
     element("hackerone-campaign-select").disabled = operationRunning || !activation.secureCoreReady || !campaignsAvailable;
-    element("hackerone-bind-campaign").disabled = operationRunning || !activation.secureCoreReady || !selected || !campaignsAvailable;
+    element("hackerone-bind-campaign").disabled = operationRunning || !activation.secureCoreReady || !selectionAligned || !campaignsAvailable;
     element("hackerone-manual-json").disabled = operationRunning || !activation.secureCoreReady || !available;
     element("hackerone-manual-import").disabled = operationRunning || !activation.secureCoreReady || !available;
     renderPolicyAcceptance(projection);
@@ -942,10 +957,21 @@ export const HACKERONE_DASHBOARD_JAVASCRIPT = `
     }
   }
 
-  function selectedLocalRef() {
+  function isProgramReference(value) {
+    return typeof value === "string" && /^(?:h1a|h1m)_[a-f0-9]{64}$/.test(value);
+  }
+
+  function draftProgramLocalRef() {
     var value = element("hackerone-program-select").value;
-    if (!/^(?:h1a|h1m)_[a-f0-9]{64}$/.test(value))
+    if (!isProgramReference(value) || value !== pendingProgramRef)
       throw new Error("HACKERONE_PROGRAM_REFERENCE_INVALID");
+    return value;
+  }
+
+  function persistedProgramLocalRef() {
+    var value = currentProjection && currentProjection.selectedProgramRef;
+    if (!isProgramReference(value))
+      throw new Error("HACKERONE_PROGRAM_SELECTION_REQUIRED");
     return value;
   }
 
@@ -1021,20 +1047,25 @@ export const HACKERONE_DASHBOARD_JAVASCRIPT = `
         return postJson(ROUTES.synchronizePrograms, {});
       });
     });
+    element("hackerone-program-select").addEventListener("change", function () {
+      var value = element("hackerone-program-select").value;
+      pendingProgramRef = isProgramReference(value) ? value : "";
+      if (currentProjection) renderControls(currentProjection);
+    });
     element("hackerone-select-program").addEventListener("click", function () {
       void runOperation("Programm auswählen", function () {
-        return postJson(ROUTES.selectProgram, { programRef: selectedLocalRef() });
+        return postJson(ROUTES.selectProgram, { programRef: draftProgramLocalRef() });
       });
     });
     element("hackerone-sync-program").addEventListener("click", function () {
       void runOperation("Programmdetails synchronisieren", function () {
-        return postJson(ROUTES.synchronizeProgram, { programRef: selectedLocalRef() });
+        return postJson(ROUTES.synchronizeProgram, { programRef: persistedProgramLocalRef() });
       });
     });
     element("hackerone-bind-campaign").addEventListener("click", function () {
       void runOperation("Abhängige Kampagne binden", function () {
         return postJson(ROUTES.bindCampaign, {
-          programRef: selectedLocalRef(),
+          programRef: persistedProgramLocalRef(),
           campaignId: selectedCampaignId()
         });
       });
