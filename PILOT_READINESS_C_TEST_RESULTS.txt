@@ -129,3 +129,72 @@ HackerOne-, Plattform-, Programm- oder Bug-Bounty-Zielhost kontaktiert.
 Automatisierte Netzwerk- und Browsertests liefen ausschließlich gegen lokale
 Mock-Server auf Loopback-Adressen. Die einzige externe Prüfverbindung war der
 ausdrücklich erlaubte Dependency-Audit zur offiziellen npm-Paketquelle.
+
+======================================================================
+LIVE-KOMPATIBILITÄTS-REGRESSION 2026-07-16
+======================================================================
+
+$ ./node_modules/.bin/tsc --noEmit
+PASS
+
+$ ./node_modules/.bin/eslint . --max-warnings 0
+PASS (keine Warnungen)
+
+$ ./node_modules/.bin/prettier --check .
+PASS
+All matched files use Prettier code style!
+
+$ ./node_modules/.bin/tsc -p tsconfig.build.json
+PASS
+
+$ ./node_modules/.bin/vitest run --maxWorkers=1 tests/unit/hackerone-readonly/validation.test.ts tests/unit/hackerone-readonly/client.test.ts tests/property/hackerone-readonly-validation.property.test.ts tests/unit/hackerone-dashboard-assets.test.ts
+PASS
+Test Files  4 passed (4)
+Tests       68 passed (68)
+Duration    1.73s
+
+$ ./node_modules/.bin/vitest run --maxWorkers=1 tests/integration/hackerone-dashboard.test.ts tests/integration/hackerone-loopback.test.ts
+PASS
+Test Files  2 passed (2)
+Tests       30 passed (30)
+Duration    1.87s
+
+$ ./node_modules/.bin/vitest run --maxWorkers=1
+PASS
+Test Files  128 passed (128)
+Tests       1101 passed (1101)
+Duration    71.25s
+
+$ ./node_modules/.bin/vitest run tests/property --maxWorkers=1
+PASS
+Test Files  21 passed (21)
+Tests       58 passed (58)
+Duration    17.13s
+
+$ ./node_modules/.bin/vitest run --maxWorkers=1 tests/security
+PASS
+Test Files  1 passed (1)
+Tests       5 passed (5)
+Duration    623ms
+
+$ PLAYWRIGHT_NO_COPY_PROMPT=1 ./node_modules/.bin/playwright test --config playwright.config.ts
+PASS
+Tests       2 passed (2)
+Duration    3.2s
+
+$ ./node_modules/.bin/vitest run --coverage --maxWorkers=1
+PASS
+Test Files  128 passed (128)
+Tests       1101 passed (1101)
+Duration    75.43s
+Statements  85.03% (9194/10812)
+Branches    82.38% (6607/8020)
+Functions   92.27% (1755/1902)
+Lines       86.05% (8880/10319)
+
+Alle automatisierten Netzwerk- und Browsertests dieses Nachtrags liefen
+ausschließlich gegen lokale Mock-Server auf Loopback-Adressen. Codex löste
+keinen realen Plattform- oder Zielrequest aus. Vor diesem Nachtrag hatte der
+Benutzer im Dashboard ausdrücklich genau einen HackerOne-Read-only-
+Verbindungstest ausgelöst; dieser Kontakt ist kein automatisierter Testlauf
+und wird hier zur vollständigen Nachvollziehbarkeit offengelegt.

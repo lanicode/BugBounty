@@ -274,3 +274,19 @@ Restrisiko für produktionsspezifische DNS-, TLS-, WAF- und Schemaunterschiede.
 Ein späterer realer Ein-Request-Smoke darf nur nach vollständiger technischer
 Abnahme, organisatorischer Freigabe und manueller Policy-/Scope-Prüfung
 erfolgen.
+
+## Additive API-Felder und Live-Abnahme
+
+Der Read-only-Adapter verwirft additive JSON:API-Felder innerhalb fester
+Struktur- und Größengrenzen, sofern alle konsumierten bekannten Felder das
+strikte Schema erfüllen. Damit bleiben kompatible API-Erweiterungen ohne
+stille Persistenz möglich. Das Verfahren kann jedoch nicht erkennen, ob ein
+zukünftig neues Feld die Semantik eines bekannten Feldes grundlegend ändert.
+Solche Änderungen erfordern weiterhin eine neue Code- und Policyprüfung.
+
+Ein echter Verbindungstest darf nicht automatisiert durch Entwicklung oder
+Tests wiederholt werden. Nach Installation dieses Fixes muss der Benutzer den
+Read-only-Verbindungstest genau einmal bewusst auslösen und das Ergebnis im
+Dashboard prüfen. Ein Fehlschlag erscheint nun als lokaler HTTP-Fehler statt
+als grüne Erfolgsmeldung. Programm-Synchronisierung, aktive Tests und andere
+externe Aktionen werden dadurch nicht automatisch gestartet.

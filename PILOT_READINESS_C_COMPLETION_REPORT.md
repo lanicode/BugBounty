@@ -282,3 +282,30 @@ Cacheverlust oder Recompile kann deshalb eine neue macOS-Codeidentität
 erzeugen, deren Keychain-Zugriff bis zu einem manuellen Upgrade-Schritt
 fail-closed abgelehnt wird. Es gibt dafür bewusst keinen weniger sicheren
 Secret-Fallback.
+
+## Nachtrag 2026-07-16: Live-Kompatibilität des Read-only-Adapters
+
+Ein ausdrücklich vom Benutzer ausgelöster HackerOne-Read-only-
+Verbindungstest erhielt eine HTTP-Antwort, wurde aber wegen additiver
+JSON:API-Felder als `malformed_response` abgelehnt. Gleichzeitig behandelte
+die lokale Dashboardroute jedes fachliche Testergebnis als HTTP 200, wodurch
+das Frontend fälschlich eine grüne Erfolgsmeldung zeigte.
+
+Der Adapter projiziert Antworten nun vor der weiterhin strikten
+Schema-Validierung auf die explizit konsumierten Felder. Additive Felder
+werden weder normalisiert noch persistiert. Bekannte Pflichtfelder, Typen,
+Längen, Zeitstempel, Seitenlimits und Resource-Typen bleiben unverändert
+fail-closed. Proxies, Accessors, unsichere Namen, ungewöhnliche Prototypen,
+Sparse Arrays und übergroße Objekte werden vor der Projektion blockiert. Die
+lokale Verbindungstestroute liefert nur für `connected` plus
+`schemaValid=true` HTTP 200; alle fachlichen Fehlschläge liefern HTTP 502 mit
+dem bereits redigierten Fehlercode.
+
+Der Nachtrag wurde mit 128/128 Vitest-Dateien und 1101/1101 Tests, 21/21
+Property-Dateien mit 58/58 Property-Tests, 5/5 Security-Tests sowie 2/2 lokalen
+Browser-Tests verifiziert. Die vollständige Coverage beträgt 85,03 %
+Statements, 82,38 % Branches, 92,27 % Funktionen und 86,05 % Zeilen. Während
+Implementierung und automatisierten Tests dieses Nachtrags wurde kein
+HackerOne-, Plattform- oder Bug-Bounty-Zielhost kontaktiert. Der oben genannte
+einmalige reale Read-only-Kontakt wurde zuvor ausschließlich durch den
+Benutzer im Dashboard ausgelöst; Codex löste keinen weiteren Live-Test aus.

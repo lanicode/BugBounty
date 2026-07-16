@@ -280,3 +280,26 @@ Erweiterung von Autorität. Fehlende Tabellen, fehlende Receipts, fehlerhafte
 Konfiguration, inkonsistente Persistenz oder nicht verfügbare Keychain-Dienste
 erzeugen keine positive Capability. Der konservative Fehlerzustand bleibt
 jeweils blockiert.
+
+## Nachtrag 2026-07-16: Read-only-Antwortprojektion
+
+Dieser Nachtrag verändert den Phase-1-Sicherheitskern nicht. Geändert wird
+ausschließlich die Eingabegrenze des separat deaktivierbaren HackerOne-
+Read-only-Adapters sowie die lokale Darstellung seines Verbindungstests.
+
+Die bestehende AJV-Validierung mit `additionalProperties: false` bleibt auf
+der vertrauenswürdigen Projektion aktiv. Vor ihr verwirft eine geschlossene
+Feldliste additive, vom Produkt nicht konsumierte JSON:API-Felder. Diese
+Werte gelangen nicht in normalisierte Modelle, Stores, Events, Logs oder
+Browserantworten. Die Projektion selbst ist begrenzt und blockiert Proxies,
+Accessors, Symbole, unsichere Namen, ungewöhnliche Prototypen, Sparse Arrays,
+mehr als 128 Objekteigenschaften und mehr als 100 Datensätze. Bekannte
+Pflichtfelder und deren Semantik werden nicht toleranter behandelt.
+
+Die Dashboardroute gibt bei einem fachlich fehlgeschlagenen Verbindungstest
+nicht mehr HTTP 200 aus. Nur `connected` und `schemaValid=true` bilden einen
+Erfolg; andernfalls wird der bereits redigierte Fehlercode mit HTTP 502
+zurückgegeben. Direkte Unit-, Property- und Loopback-Regressionstests prüfen
+Extension-Verwerfen ohne Persistenz, Accessor-/Proxy-Abwehr, weiterhin
+ungültige bekannte Felder, genau einen Request und die korrekte lokale
+Fehlerdarstellung.
