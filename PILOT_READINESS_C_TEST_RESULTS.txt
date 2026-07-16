@@ -351,3 +351,32 @@ Coverage-Lauf dieses Nachtrags. Alle automatisierten Netzwerkanteile liefen
 ausschließlich gegen lokale Loopback-Mocks. Codex führte keinen
 authentifizierten HackerOne-Request aus und kontaktierte keinen Plattform-
 oder Bug-Bounty-Zielhost.
+
+======================================================================
+DIREKTE-PROGRAMMRESSOURCE-REGRESSION 2026-07-16
+======================================================================
+
+$ ./node_modules/.bin/vitest run tests/unit/hackerone-readonly/validation.test.ts tests/unit/hackerone-readonly/client.test.ts tests/integration/hackerone-loopback.test.ts tests/property/hackerone-readonly-validation.property.test.ts --maxWorkers=1
+PASS
+Test Files  4 passed (4)
+Tests       84 passed (84)
+Duration    2.63s
+
+$ ./node_modules/.bin/tsc --noEmit
+PASS
+
+$ ./node_modules/.bin/vitest run --coverage --maxWorkers=1
+PASS
+Test Files  128 passed (128)
+Tests       1112 passed (1112)
+Duration    81.55s
+Statements  85.05% (9215/10834)
+Branches    82.42% (6647/8064)
+Functions   92.28% (1758/1905)
+Lines       86.07% (8900/10340)
+
+Der letzte Befehl war der einzige vollständige Regressionstest- und
+Coverage-Lauf dieses Nachtrags. Alle automatisierten Netzwerkanteile liefen
+ausschließlich gegen lokale Loopback-Mocks. Codex führte keinen
+authentifizierten HackerOne-Request aus und kontaktierte keinen Plattform-
+oder Bug-Bounty-Zielhost.

@@ -414,3 +414,29 @@ Codex führte keinen authentifizierten HackerOne-Request aus und kontaktierte
 keinen Plattform- oder Bug-Bounty-Zielhost. Der Benutzerrequest vor dem Fix
 kontaktierte ausschließlich den HackerOne-Programmdetail-Metadatenendpunkt;
 kein `1win_com`-Asset und keine aktive Testfunktion wurden angefragt.
+
+## Nachtrag 2026-07-16: Direkte Programmdetail-Ressource
+
+Der erste Folgefix für numerische IDs reichte nicht aus. Ein weiterer
+ausdrücklich vom Benutzer ausgelöster Read-only-Detailsync erzeugte den neuen
+secretfreien Diagnosecode `HACKERONE_PROGRAM_FIELD_DOCUMENT_INVALID`. Das
+append-only Audit bestätigte erneut HTTP 200 am Programmdetail-Endpunkt und
+keinen Aufruf der Scope- oder Ausschlussendpunkte. Die Live-Antwort verwendete
+damit die direkte Programmressource statt des erwarteten `data`-Wrappers.
+
+Der Parser akzeptiert nun genau die direkte Programmressource oder eine
+einzelne `data`-Programmressource. Beide Formen durchlaufen dieselbe strikte
+Projektion und Validierung. Additive Werte und Beziehungen werden verworfen;
+Arrays, Teilressourcen und andere Wrapper blockieren. Feste Diagnosecodes
+enthalten nur Feldnamen und niemals Antwortwerte.
+
+Gezielt bestanden 84/84 Parser-, Property- und Loopbacktests. Der einzige
+vollständige kombinierte Regressionstest-/Coverage-Lauf bestand 128/128
+Dateien und 1112/1112 Tests. Coverage: 85,05 % Statements, 82,42 % Branches,
+92,28 % Funktionen und 86,07 % Zeilen. Der Phase-1-Sicherheitskern und alle
+externen Aktionsgates blieben unverändert.
+
+Codex führte keinen authentifizierten HackerOne-Request aus. Alle
+automatisierten Netzwerkprüfungen liefen gegen Loopback-Mocks; kein
+Bug-Bounty-Zielhost wurde kontaktiert. Der Benutzerrequest erreichte nur den
+HackerOne-Programmdetail-Metadatenendpunkt und keine Programmassets.

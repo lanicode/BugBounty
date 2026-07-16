@@ -751,9 +751,7 @@ describe("HackerOne read-only client over test-only loopback transport", () => {
 
   it("treats scope asset identifiers as metadata and uses GET only", async () => {
     const assetIdentifier = `${secondary.origin}/must-never-be-requested`;
-    primary.enqueueJson(200, {
-      data: programResource(9, "synthetic-one"),
-    });
+    primary.enqueueJson(200, programResource(9, "synthetic-one"));
     primary.enqueueJson(200, {
       data: [
         {

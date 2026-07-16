@@ -398,7 +398,9 @@ function projectProgramPageResponse(value: unknown): unknown {
 function projectProgramDocumentResponse(value: unknown): unknown {
   const source = responseRecord(value);
   const projected = emptyResponseRecord();
-  copyProjected(source, projected, "data", projectProgramResource);
+  if (Object.hasOwn(source, "data"))
+    copyProjected(source, projected, "data", projectProgramResource);
+  else projected["data"] = projectProgramResource(source);
   return Object.freeze(projected);
 }
 
@@ -584,8 +586,58 @@ export function validateProgramDocument(
 ): HackerOneProgram {
   const projected = projectProgramDocumentResponse(value);
   if (!validateProgramDocumentSchema(projected))
-    throw new SecurityError("HACKERONE_RESPONSE_SCHEMA_INVALID");
+    throw new SecurityError(
+      programDocumentValidationErrorCode(validateProgramDocumentSchema.errors),
+    );
   return normalizeProgram(projected.data, synchronizedAt, source);
+}
+
+const PROGRAM_DOCUMENT_ERROR_FIELDS = new Map<string, string>([
+  ["/data", "DOCUMENT"],
+  ["/data/id", "ID"],
+  ["/data/type", "TYPE"],
+  ["/data/attributes", "ATTRIBUTES"],
+  ["/data/attributes/handle", "HANDLE"],
+  ["/data/attributes/name", "NAME"],
+  ["/data/attributes/currency", "CURRENCY"],
+  ["/data/attributes/policy", "POLICY"],
+  ["/data/attributes/submission_state", "SUBMISSION_STATE"],
+  ["/data/attributes/state", "STATE"],
+  ["/data/attributes/offers_bounties", "OFFERS_BOUNTIES"],
+  ["/data/attributes/open_scope", "OPEN_SCOPE"],
+  ["/data/attributes/gold_standard_safe_harbor", "SAFE_HARBOR"],
+  ["/data/attributes/bookmarked", "BOOKMARKED"],
+  ["/data/attributes/number_of_reports_for_user", "REPORT_COUNT"],
+  ["/data/attributes/number_of_valid_reports_for_user", "VALID_REPORT_COUNT"],
+  ["/data/attributes/started_accepting_at", "STARTED_ACCEPTING_AT"],
+  ["/data/attributes/created_at", "CREATED_AT"],
+  ["/data/attributes/updated_at", "UPDATED_AT"],
+]);
+
+function programDocumentValidationErrorCode(
+  errors:
+    | readonly {
+        readonly instancePath: string;
+        readonly keyword: string;
+        readonly params: Record<string, unknown>;
+      }[]
+    | null
+    | undefined,
+): string {
+  for (const error of errors ?? []) {
+    const missingProperty =
+      error.keyword === "required" &&
+      typeof error.params["missingProperty"] === "string"
+        ? error.params["missingProperty"]
+        : null;
+    const path =
+      missingProperty === null
+        ? error.instancePath
+        : `${error.instancePath}/${missingProperty}`;
+    const field = PROGRAM_DOCUMENT_ERROR_FIELDS.get(path);
+    if (field !== undefined) return `HACKERONE_PROGRAM_FIELD_${field}_INVALID`;
+  }
+  return "HACKERONE_RESPONSE_SCHEMA_INVALID";
 }
 
 export function validateStructuredScopePage(

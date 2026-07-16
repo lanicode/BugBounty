@@ -128,6 +128,26 @@ describe("HackerOne program response validation", () => {
     expect(Object.isFrozen(program)).toBe(true);
   });
 
+  it("normalizes a direct JSON:API program resource through the same strict projection", () => {
+    const resource = programResource();
+    const direct = validateProgramDocument(
+      {
+        ...resource,
+        relationships: {
+          structured_scopes: { data: [] },
+        },
+      },
+      SYNCHRONIZED_AT,
+    );
+    const wrapped = validateProgramDocument(
+      { data: resource },
+      SYNCHRONIZED_AT,
+    );
+
+    expect(direct).toEqual(wrapped);
+    expect(JSON.stringify(direct)).not.toContain("relationships");
+  });
+
   it("canonicalizes documented positive integer program IDs without coercing other numeric values", () => {
     const resource = programResource();
     const program = validateProgramDocument(
@@ -139,7 +159,31 @@ describe("HackerOne program response validation", () => {
     for (const id of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])
       expect(() =>
         validateProgramDocument({ data: { ...resource, id } }, SYNCHRONIZED_AT),
-      ).toThrow("HACKERONE_RESPONSE_SCHEMA_INVALID");
+      ).toThrow("HACKERONE_PROGRAM_FIELD_ID_INVALID");
+  });
+
+  it("reports only a fixed field code for invalid detail values", () => {
+    const resource = programResource();
+    const canary = "SECRET_RESPONSE_VALUE_MUST_NOT_APPEAR";
+    let message = "";
+    try {
+      validateProgramDocument(
+        {
+          data: {
+            ...resource,
+            attributes: {
+              ...(resource["attributes"] as Record<string, unknown>),
+              policy: { canary },
+            },
+          },
+        },
+        SYNCHRONIZED_AT,
+      );
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toBe("HACKERONE_PROGRAM_FIELD_POLICY_INVALID");
+    expect(message).not.toContain(canary);
   });
 
   it("discards bounded additive API extensions without persisting their values", () => {

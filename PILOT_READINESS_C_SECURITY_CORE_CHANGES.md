@@ -374,3 +374,20 @@ bleiben blockiert. Additive Attribute und `relationships` werden weiterhin
 verworfen; Host-, Pfad-, Methoden-, Pagination-, Scope-, Policy- und
 Aktivierungsgates ändern sich nicht. Unit-, Property- und Loopbacktests prüfen
 den gesamten erlaubten Zahlenbereich sowie die blockierten Randfälle.
+
+### Direkte oder umhüllte Programmdetail-Ressource
+
+Der zweite Detailantwort-Folgefix verändert den Phase-1-Sicherheitskern
+ebenfalls nicht. Das lokale append-only Audit und eine secretfreie
+Felddiagnose belegten, dass die erfolgreiche HTTP-200-Antwort des aktuellen
+Programmdetail-Endpunkts keinen `data`-Wrapper besaß. Die Eingabegrenze
+akzeptiert deshalb genau zwei Darstellungen: ein Dokument mit `data`-
+Programmressource oder die Programmressource direkt auf Dokumentebene.
+
+Beide Darstellungen laufen anschließend durch dieselbe getterfreie,
+prototypsichere Projektion und dasselbe strikte Programmressourcen-Schema.
+Additive Felder und `relationships` werden weiterhin verworfen. Eine
+mehrdeutige, anders typisierte oder unvollständige Ressource blockiert. Die
+Felddiagnose gibt ausschließlich feste Feldcodes ohne Antwortwerte zurück.
+Unit-, Property- und Loopbacktests prüfen die Äquivalenz beider Darstellungen,
+das Verwerfen von Beziehungen und weiterhin blockierte Fehlformen.

@@ -332,3 +332,13 @@ blockieren. Diese Kompatibilität sagt nichts über Policy, Scope, Eignung oder
 Testfreigabe aus. Erst ein vollständig synchronisierter Snapshot mit
 strukturierten Scopes und menschlicher Policy-Annahme kann die nachgelagerten
 Gates erfüllen.
+
+### Programmdetail-Dokumentform
+
+Der Read-only-Parser akzeptiert Programmdetails entweder als direkte
+JSON:API-Programmressource oder innerhalb eines einzelnen `data`-Wrappers.
+Andere Wrapper, Arrays oder Teilressourcen bleiben blockiert. Diese
+Kompatibilität gilt ausschließlich für Programmdetails; Seiten-, Scope- und
+Ausschlussantworten behalten ihre getrennten strikten Schemata. Ein
+erfolgreich geparstes Programm allein erzeugt noch keinen Snapshot, solange
+Scope- oder Ausschlussseiten fehlen beziehungsweise blockieren.
