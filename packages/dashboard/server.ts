@@ -50,6 +50,17 @@ import {
 } from "./assets.js";
 import { DASHBOARD_PHASE8_JAVASCRIPT } from "./phase8-assets.js";
 import { HACKERONE_DASHBOARD_JAVASCRIPT } from "./hackerone-assets.js";
+import { ACTIVE_TESTING_DASHBOARD_JAVASCRIPT } from "./active-testing-assets.js";
+import {
+  isTrustedLocalActiveTestingController,
+  unavailableActiveTestingProjection,
+  type LocalActiveTestingController,
+} from "./active-testing.js";
+import {
+  isTrustedCoreProvisioningController,
+  unavailableCoreProvisioningProjection,
+  type LocalCoreProvisioningController,
+} from "./core-provisioning.js";
 
 const LOOPBACK_HOST = "127.0.0.1";
 const MAX_BODY_BYTES = 65_536;
@@ -98,6 +109,8 @@ export interface DashboardDependencies {
   readonly localProduct?: LocalProductWorkflow;
   readonly simulation?: SimulationOrchestrator;
   readonly operatorSigner?: OperatorSigner;
+  readonly coreProvisioning?: LocalCoreProvisioningController;
+  readonly activeTesting?: LocalActiveTestingController;
   readonly readiness: RuntimeReadiness;
   readonly hackerOne?: HackerOneMetadataService;
   readonly now?: () => Date;
@@ -131,6 +144,16 @@ export async function startDashboardServer(
     !isTrustedOperatorSigner(dependencies.operatorSigner)
   )
     throw new SecurityError("OPERATOR_SIGNER_UNTRUSTED");
+  if (
+    dependencies.coreProvisioning !== undefined &&
+    !isTrustedCoreProvisioningController(dependencies.coreProvisioning)
+  )
+    throw new SecurityError("CORE_PROVISIONING_CONTROLLER_UNTRUSTED");
+  if (
+    dependencies.activeTesting !== undefined &&
+    !isTrustedLocalActiveTestingController(dependencies.activeTesting)
+  )
+    throw new SecurityError("ACTIVE_TESTING_CONTROLLER_UNTRUSTED");
   const binding: { expectedHost?: string; origin?: string } = {};
   let lastSimulation: SimulationSummary | undefined;
   let simulationRunning = false;
@@ -222,6 +245,109 @@ export async function startDashboardServer(
     const body = await readJsonBody(request, maximumBodyBytes);
 
     switch (pathname) {
+      case "/api/core/provision": {
+        const coreProvisioning = requireCoreProvisioning(dependencies);
+        sendJson(response, 200, {
+          coreProvisioning: await coreProvisioning.provision(body),
+        });
+        return;
+      }
+      case "/api/active-testing/plan/prepare": {
+        assertSecureCoreReady(dependencies);
+        const controller = requireActiveTesting(dependencies);
+        const input = parseActiveTestingPlanPreparation(body);
+        const at = timestamp(now);
+        const signer = requireOperatorSigner(dependencies);
+        ensureOperatorEnrolled(
+          dependencies.store,
+          signer,
+          operatorSessionId,
+          at,
+        );
+        const prepared = controller.preparePlanApproval({
+          planId: `active-plan-${randomBytes(16).toString("hex")}`,
+          approvalId: `active-approval-${randomBytes(16).toString("hex")}`,
+          operatorId: signer.credential.operator_id,
+          programRef: input.programRef,
+          snapshotDigest: input.snapshotDigest,
+          scopeId: input.scopeId,
+          assetIdentifierDigest: input.assetIdentifierDigest,
+          testClass: input.testClass,
+          createdAt: at,
+          confirmations: input.confirmations,
+        });
+        sendJson(response, 201, {
+          planId: prepared.plan.plan_id,
+          planDigest: sha256(canonicalJson(prepared.plan)),
+          approvalId: prepared.approval.id,
+          requestPerformed: false,
+        });
+        return;
+      }
+      case "/api/active-testing/plan/approve": {
+        assertSecureCoreReady(dependencies);
+        if (dependencies.store.isKillSwitchActive())
+          throw new SecurityError("ACTIVE_TEST_KILL_SWITCH");
+        const controller = requireActiveTesting(dependencies);
+        controller.assertRuntimeEnabled();
+        const input = parseActiveTestingPlanAction(body);
+        controller.assertApprovalState(input.planId, input.approvalId, "open");
+        const at = timestamp(now);
+        const signer = requireOperatorSigner(dependencies);
+        ensureOperatorEnrolled(
+          dependencies.store,
+          signer,
+          operatorSessionId,
+          at,
+        );
+        const decided = decideDashboardApproval(
+          dependencies.store,
+          signer,
+          operatorSessionId,
+          input.approvalId,
+          "accepted",
+          `explicit_active_test_plan_approval:${input.planId}`,
+          at,
+        );
+        controller.assertApprovalState(
+          input.planId,
+          input.approvalId,
+          "accepted",
+        );
+        sendJson(response, 200, {
+          planId: input.planId,
+          approvalId: decided.id,
+          approved: true,
+          requestPerformed: false,
+        });
+        return;
+      }
+      case "/api/active-testing/execution/start": {
+        assertSecureCoreReady(dependencies);
+        const controller = requireActiveTesting(dependencies);
+        controller.assertRuntimeEnabled();
+        const input = parseActiveTestingPlanAction(body);
+        controller.assertApprovalState(
+          input.planId,
+          input.approvalId,
+          "accepted",
+        );
+        const completed = await controller.executeConfirmed({
+          proposalId: `active-proposal-${randomBytes(16).toString("hex")}`,
+          approvalId: input.approvalId,
+          planId: input.planId,
+          confirmed: true,
+        });
+        sendJson(response, 200, {
+          completed: true,
+          planId: input.planId,
+          observationDigest: completed.report.observationDigest,
+          reportId: completed.report.reportId,
+          reviewStatus: "local_draft_unsubmitted",
+          externalSubmissionPerformed: false,
+        });
+        return;
+      }
       case "/api/local-product/action": {
         try {
           assertLocalProductRuntimePreconditions(
@@ -667,6 +793,14 @@ async function serveGet(
         HACKERONE_DASHBOARD_JAVASCRIPT,
       );
       return;
+    case "/active-testing.js":
+      sendText(
+        response,
+        200,
+        "text/javascript; charset=utf-8",
+        ACTIVE_TESTING_DASHBOARD_JAVASCRIPT,
+      );
+      return;
     case "/styles.css":
       sendText(response, 200, "text/css; charset=utf-8", DASHBOARD_CSS);
       return;
@@ -722,6 +856,25 @@ async function buildDashboardState(
     campaigns,
     dependencies.readiness,
   );
+  const coreProvisioning =
+    dependencies.coreProvisioning === undefined
+      ? unavailableCoreProvisioningProjection()
+      : await dependencies.coreProvisioning.project();
+  const activeTesting = isTrustedLocalActiveTestingController(
+    dependencies.activeTesting,
+  )
+    ? dependencies.activeTesting.project({
+        secureCoreReady: dependencies.readiness.ready,
+        operatorSignerAvailable: isTrustedOperatorSigner(
+          dependencies.operatorSigner,
+        ),
+        killSwitchActive,
+        now: generatedAt,
+      })
+    : unavailableActiveTestingProjection(
+        dependencies.readiness.ready,
+        killSwitchActive,
+      );
 
   return {
     version: 1,
@@ -732,6 +885,8 @@ async function buildDashboardState(
     externalIntegrationsEnabled: false,
     aiProviderStatus: "disabled_not_implemented",
     runtimeReadiness: dependencies.readiness,
+    coreProvisioning,
+    activeTesting,
     localProduct: localProductSnapshot,
     localProductIntegrity: {
       status: demoBindingValid ? "bound" : "blocked_demo_drift",
@@ -1362,6 +1517,10 @@ function parseCanonicalPath(rawUrl: string | undefined, host: string): string {
 
 function isPostRoute(pathname: string): boolean {
   return (
+    pathname === "/api/core/provision" ||
+    pathname === "/api/active-testing/plan/prepare" ||
+    pathname === "/api/active-testing/plan/approve" ||
+    pathname === "/api/active-testing/execution/start" ||
     pathname === "/api/local-product/action" ||
     pathname === "/api/hackerone/credentials/store" ||
     pathname === "/api/hackerone/credentials/remove" ||
@@ -1380,6 +1539,121 @@ function isPostRoute(pathname: string): boolean {
     pathname === "/api/kill-switch/engage" ||
     pathname === "/api/kill-switch/clear"
   );
+}
+
+function requireActiveTesting(
+  dependencies: DashboardDependencies,
+): LocalActiveTestingController {
+  if (!isTrustedLocalActiveTestingController(dependencies.activeTesting))
+    throw new SecurityError("ACTIVE_TESTING_CONTROLLER_UNAVAILABLE");
+  return dependencies.activeTesting;
+}
+
+function parseActiveTestingPlanPreparation(value: unknown): {
+  readonly programRef: string;
+  readonly snapshotDigest: string;
+  readonly scopeId: string;
+  readonly assetIdentifierDigest: string;
+  readonly testClass: "cors_preflight" | "http_headers" | "security_txt";
+  readonly confirmations: {
+    readonly automationPermissionReviewed: true;
+    readonly scopeInstructionReviewed: true;
+    readonly scopeExclusionsReviewed: true;
+    readonly noSideEffectsConfirmed: true;
+  };
+} {
+  assertExactObject(
+    value,
+    [
+      "assetIdentifierDigest",
+      "confirmations",
+      "programRef",
+      "scopeId",
+      "snapshotDigest",
+      "testClass",
+    ],
+    "ACTIVE_TESTING_DASHBOARD_PLAN_INVALID",
+  );
+  const confirmations = value["confirmations"];
+  assertExactObject(
+    confirmations,
+    [
+      "automationPermissionReviewed",
+      "noSideEffectsConfirmed",
+      "scopeExclusionsReviewed",
+      "scopeInstructionReviewed",
+    ],
+    "ACTIVE_TESTING_DASHBOARD_PLAN_INVALID",
+  );
+  const programRef = value["programRef"];
+  const snapshotDigest = value["snapshotDigest"];
+  const scopeId = value["scopeId"];
+  const assetIdentifierDigest = value["assetIdentifierDigest"];
+  const testClass = value["testClass"];
+  if (
+    typeof programRef !== "string" ||
+    !/^h1a_[a-f0-9]{64}$/u.test(programRef) ||
+    typeof snapshotDigest !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(snapshotDigest) ||
+    typeof scopeId !== "string" ||
+    !/^[A-Za-z0-9._-]{1,128}$/u.test(scopeId) ||
+    typeof assetIdentifierDigest !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(assetIdentifierDigest) ||
+    !(
+      testClass === "cors_preflight" ||
+      testClass === "http_headers" ||
+      testClass === "security_txt"
+    ) ||
+    confirmations["automationPermissionReviewed"] !== true ||
+    confirmations["scopeInstructionReviewed"] !== true ||
+    confirmations["scopeExclusionsReviewed"] !== true ||
+    confirmations["noSideEffectsConfirmed"] !== true
+  )
+    throw new SecurityError("ACTIVE_TESTING_DASHBOARD_PLAN_INVALID");
+  return Object.freeze({
+    programRef,
+    snapshotDigest,
+    scopeId,
+    assetIdentifierDigest,
+    testClass,
+    confirmations: Object.freeze({
+      automationPermissionReviewed: true as const,
+      scopeInstructionReviewed: true as const,
+      scopeExclusionsReviewed: true as const,
+      noSideEffectsConfirmed: true as const,
+    }),
+  });
+}
+
+function parseActiveTestingPlanAction(value: unknown): {
+  readonly approvalId: string;
+  readonly planId: string;
+  readonly confirmed: true;
+} {
+  assertExactObject(
+    value,
+    ["approvalId", "confirmed", "planId"],
+    "ACTIVE_TESTING_DASHBOARD_ACTION_INVALID",
+  );
+  const approvalId = value["approvalId"];
+  const planId = value["planId"];
+  if (
+    value["confirmed"] !== true ||
+    typeof approvalId !== "string" ||
+    !/^[A-Za-z0-9._-]{1,128}$/u.test(approvalId) ||
+    typeof planId !== "string" ||
+    !/^[A-Za-z0-9._-]{1,128}$/u.test(planId)
+  )
+    throw new SecurityError("ACTIVE_TESTING_DASHBOARD_ACTION_INVALID");
+  return Object.freeze({ approvalId, planId, confirmed: true as const });
+}
+
+function requireCoreProvisioning(
+  dependencies: DashboardDependencies,
+): LocalCoreProvisioningController {
+  if (!isTrustedCoreProvisioningController(dependencies.coreProvisioning))
+    throw new SecurityError("CORE_PROVISIONING_UNAVAILABLE");
+  return dependencies.coreProvisioning;
 }
 
 function requireHackerOne(

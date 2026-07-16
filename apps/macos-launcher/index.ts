@@ -62,6 +62,7 @@ export interface MacOSLaunchConfiguration {
   readonly tsxEntry: string;
   readonly dashboardEntry: string;
   readonly hackerOneReadonlyEnabled: boolean;
+  readonly activeTestingEnabled: boolean;
   readonly eventKeyMinimumVersion?: string;
   readonly operatorKeyReference?: string;
   readonly operatorId?: string;
@@ -89,7 +90,8 @@ export async function loadMacOSLaunchConfiguration(
   );
   if (
     integrationMode !== "local-only" &&
-    integrationMode !== "hackerone-readonly"
+    integrationMode !== "hackerone-readonly" &&
+    integrationMode !== "hackerone-active-testing"
   )
     fail("MACOS_LAUNCHER_CONFIG_INVALID");
   const eventKeyMinimumVersion = await readOptionalPrivateSetting(
@@ -127,7 +129,8 @@ export async function loadMacOSLaunchConfiguration(
     nodeExecutable,
     tsxEntry,
     dashboardEntry,
-    hackerOneReadonlyEnabled: integrationMode === "hackerone-readonly",
+    hackerOneReadonlyEnabled: integrationMode !== "local-only",
+    activeTestingEnabled: integrationMode === "hackerone-active-testing",
     ...(eventKeyMinimumVersion === undefined ? {} : { eventKeyMinimumVersion }),
     ...(operatorKeyReference === undefined ? {} : { operatorKeyReference }),
     ...(operatorId === undefined ? {} : { operatorId }),
@@ -328,7 +331,12 @@ export async function terminateMacOSDashboardChild(
 export function buildMacOSDashboardEnvironment(
   configuration: MacOSLaunchConfiguration,
 ): NodeJS.ProcessEnv {
-  if (typeof configuration.hackerOneReadonlyEnabled !== "boolean")
+  if (
+    typeof configuration.hackerOneReadonlyEnabled !== "boolean" ||
+    typeof configuration.activeTestingEnabled !== "boolean" ||
+    (configuration.activeTestingEnabled &&
+      !configuration.hackerOneReadonlyEnabled)
+  )
     fail("MACOS_LAUNCHER_CONFIG_INVALID");
   validateCoreMetadata(configuration);
   return Object.freeze({
@@ -338,6 +346,9 @@ export function buildMacOSDashboardEnvironment(
     BUGBOUNTY_HACKERONE_READONLY_ENABLED: configuration.hackerOneReadonlyEnabled
       ? "true"
       : "false",
+    BUGBOUNTY_ACTIVE_TESTING_ENABLED: configuration.activeTestingEnabled
+      ? "1"
+      : "0",
     ...(configuration.eventKeyMinimumVersion === undefined
       ? {}
       : {

@@ -1134,6 +1134,7 @@ export class ControlPlaneDatabase {
   private configure(journalMode: "delete" | "memory"): void {
     this.exec("PRAGMA foreign_keys=ON");
     this.exec("PRAGMA trusted_schema=OFF");
+    this.exec("PRAGMA recursive_triggers=ON");
     this.exec(`PRAGMA journal_mode=${journalMode.toUpperCase()}`);
     this.exec("PRAGMA synchronous=FULL");
     this.exec("PRAGMA fullfsync=ON");
@@ -1142,6 +1143,7 @@ export class ControlPlaneDatabase {
     this.exec("PRAGMA temp_store=MEMORY");
     this.assertPragma("PRAGMA foreign_keys", 1);
     this.assertPragma("PRAGMA trusted_schema", 0);
+    this.assertPragma("PRAGMA recursive_triggers", 1);
     this.assertPragma("PRAGMA journal_mode", journalMode);
     this.assertPragma("PRAGMA synchronous", 2);
     this.assertPragma("PRAGMA fullfsync", 1);

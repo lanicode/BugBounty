@@ -136,6 +136,15 @@ export class ControlPlaneStore {
     );
   }
 
+  /**
+   * Returns time from the exact trusted store clock and enforces the durable
+   * operator-statement high-water mark. Adjacent external-action gates must
+   * not consult a separate process-global clock after signed authorization.
+   */
+  public observeExternalActionTime(): string {
+    return this.observeOperatorTime();
+  }
+
   public describeExternalActionContext(
     input: DescribeExternalActionContextInput,
   ): ExternalActionProposalContext {
@@ -423,7 +432,7 @@ export class ControlPlaneStore {
       throw new SecurityError("APPROVAL_ALREADY_PROCESSED");
     const contextDigest =
       approval.kind === "external_action"
-        ? this.externalActions.approvalContextDigest(approval.id)
+        ? this.externalApprovalContextDigest(approval.id)
         : approval.payloadHash;
     return Object.freeze({
       controlPlaneId: this.getControlPlaneId(),
@@ -433,6 +442,22 @@ export class ControlPlaneStore {
       expectedRevision: approval.revision,
       contextDigestSha256: contextDigest,
     });
+  }
+
+  private externalApprovalContextDigest(approvalId: string): string {
+    if (this.hasTable("active_test_approval_bindings")) {
+      const row = this.database.get(
+        `SELECT binding_digest FROM active_test_approval_bindings
+         WHERE approval_id=?`,
+        approvalId,
+      );
+      if (row !== undefined)
+        return strictDigestValue(
+          row["binding_digest"],
+          "ACTIVE_TEST_APPROVAL_EVIDENCE_INVALID",
+        );
+    }
+    return this.externalActions.approvalContextDigest(approvalId);
   }
 
   private insertOperatorStatement(
@@ -1114,8 +1139,54 @@ export class ControlPlaneStore {
         decisionAuditId,
         observedAt,
       );
+      this.applyActiveTestingApprovalDecision(
+        decided,
+        verified,
+        decisionAuditId,
+        observedAt,
+      );
       return decided;
     });
+  }
+
+  private applyActiveTestingApprovalDecision(
+    approval: ApprovalRecord,
+    verified: SignedApprovalDecision,
+    decisionAuditId: string,
+    observedAt: string,
+  ): void {
+    if (!this.hasTable("active_test_approval_bindings")) return;
+    const binding = this.database.get(
+      "SELECT * FROM active_test_approval_bindings WHERE approval_id=?",
+      approval.id,
+    );
+    if (binding === undefined) return;
+    if (
+      approval.kind !== "external_action" ||
+      binding["operator_id"] !== verified.operator_id ||
+      binding["approval_payload_hash"] !== approval.payloadHash ||
+      verified.context_digest_sha256 !== binding["binding_digest"] ||
+      binding["decision_audit_id"] !== null
+    )
+      throw new SecurityError("ACTIVE_TEST_APPROVAL_EVIDENCE_INVALID");
+    if (verified.decision === "accepted") {
+      const expiresAt = binding["expires_at"];
+      if (
+        typeof expiresAt !== "string" ||
+        !Number.isFinite(Date.parse(expiresAt)) ||
+        verified.issued_at >= expiresAt ||
+        observedAt >= expiresAt
+      )
+        throw new SecurityError("ACTIVE_TEST_APPROVAL_EXPIRED");
+    }
+    const linked = this.database.run(
+      `UPDATE active_test_approval_bindings SET decision_audit_id=?
+       WHERE approval_id=? AND decision_audit_id IS NULL`,
+      decisionAuditId,
+      approval.id,
+    );
+    if (linked.changes !== 1)
+      throw new SecurityError("ACTIVE_TEST_APPROVAL_CONFLICT");
   }
 
   private applyHackerOneApprovalDecision(
@@ -1166,7 +1237,16 @@ export class ControlPlaneStore {
         );
         const enabled = this.database.run(
           `UPDATE hackerone_integration_state
-           SET adapter_enabled=1,adapter_generation=?,revision=revision+1
+           SET adapter_enabled=1,adapter_generation=?,
+               last_connection_test_at=NULL,
+               last_successful_connection_at=NULL,
+               last_connection_result=NULL,
+               last_synchronization_at=NULL,
+               last_synchronization_result=NULL,
+               last_error_code=NULL,
+               selected_program_ref=NULL,
+               selected_program_source=NULL,
+               revision=revision+1
            WHERE singleton=1 AND adapter_enabled=0 AND adapter_generation=?`,
           nextGeneration,
           generation,

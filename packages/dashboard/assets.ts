@@ -1,3 +1,4 @@
+import { ACTIVE_TESTING_DASHBOARD_HTML } from "./active-testing-assets.js";
 import { HACKERONE_DASHBOARD_HTML } from "./hackerone-assets.js";
 
 export const DASHBOARD_HTML = `<!doctype html>
@@ -10,6 +11,7 @@ export const DASHBOARD_HTML = `<!doctype html>
   <script src="/app.js" defer></script>
   <script src="/phase8.js" defer></script>
   <script src="/hackerone.js" defer></script>
+  <script src="/active-testing.js" defer></script>
 </head>
 <body>
   <header class="masthead">
@@ -20,7 +22,7 @@ export const DASHBOARD_HTML = `<!doctype html>
       </div>
       <div class="banner-stack" aria-label="Sicherheitsstatus">
         <strong class="banner simulation">SIMULATIONSMODUS</strong>
-        <strong class="banner disabled">EXTERNE INTEGRATIONEN DEAKTIVIERT</strong>
+        <strong class="banner disabled">ALLGEMEINE EXTERNE INTEGRATIONEN DEAKTIVIERT</strong>
         <strong class="banner disabled">KEINE REALE REPORT-EINREICHUNG</strong>
       </div>
     </div>
@@ -37,6 +39,7 @@ export const DASHBOARD_HTML = `<!doctype html>
       <a href="#phase8-candidates">Kandidaten</a>
       <a href="#phase8-evidence">Evidence</a>
       <a href="#hackerone-integration">HackerOne</a>
+      <a href="#active-testing">Aktive Tests</a>
       <a href="#system">System</a>
       <a href="#expert">Expertenansicht</a>
     </nav>
@@ -70,6 +73,17 @@ export const DASHBOARD_HTML = `<!doctype html>
       </div>
       <div class="feature-badges" aria-label="Funktionsgrenzen">
         <span>LOKAL SIMULIERT</span><span>EXTERN DEAKTIVIERT</span><span>KEINE SECRETEINGABE</span>
+      </div>
+      <div class="core-setup-card">
+        <div class="section-heading">
+          <div><p class="eyebrow">OS-Keychain</p><h3>Lokalen Sicherheitskern einrichten</h3></div>
+          <span id="core-provisioning-status" class="capability-badge">Wird geprüft …</span>
+        </div>
+        <p>Event-Key und Ed25519-Operator-Key werden ausschließlich durch den nativen macOS-Helper erzeugt. Das Dashboard nimmt keine Schlüssel, Tokens oder Passwörter entgegen.</p>
+        <p>Gebundene lokale Operator-ID: <strong id="core-provisioning-operator">wird ermittelt</strong></p>
+        <button id="core-provisioning-action" type="button" disabled>Sicherheitskern einmalig im OS-Keychain anlegen</button>
+        <p id="core-provisioning-operation" class="operation-status" aria-live="polite"></p>
+        <p id="core-provisioning-restart" class="review-package">Die Setup-Grenzen werden geprüft. Diese Instanz aktiviert neue Schlüssel niemals ohne Neustart.</p>
       </div>
       <ol id="phase8-onboarding-steps" class="step-list" aria-live="polite"></ol>
       <div id="phase8-onboarding-details" class="product-grid" aria-live="polite"></div>
@@ -189,6 +203,8 @@ export const DASHBOARD_HTML = `<!doctype html>
     </section>
 
     ${HACKERONE_DASHBOARD_HTML}
+
+    ${ACTIVE_TESTING_DASHBOARD_HTML}
 
     <section id="programs" class="panel">
       <div class="section-heading"><div><p class="eyebrow">Registry</p><h2>Programme</h2></div></div>
@@ -389,6 +405,8 @@ button.danger { color: #2d050b; border-color: var(--red); background: var(--red)
 .data-item strong { color: var(--text); }
 .empty { color: var(--muted); font-style: italic; }
 .kill-card, .simulation-card { margin-top: 1rem; padding: 1rem; border: 1px solid var(--line); border-radius: 0.8rem; background: rgba(9, 24, 41, 0.82); }
+.core-setup-card { margin: 1rem 0; padding: 1rem; border: 1px solid rgba(76, 227, 215, 0.35); border-radius: 0.8rem; background: rgba(9, 24, 41, 0.82); }
+.core-setup-card .section-heading { margin-bottom: 0.5rem; }
 .large-status { color: var(--amber); font-size: 1.45rem; }
 .simulation-card { margin-top: 1.2rem; }
 .review-package { margin: 0.8rem 0; padding: 0.8rem; border-left: 3px solid var(--cyan); border-radius: 0.4rem; color: var(--muted); background: rgba(76, 227, 215, 0.06); white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -424,6 +442,7 @@ export const DASHBOARD_JAVASCRIPT = `
   var operatorAvailable = false;
   var secureCoreReady = false;
   var secureSimulationAvailable = false;
+  var coreProvisioningChallenge = null;
   var lastConfirmationMillis = 0;
   var serverGeneratedMillis = 0;
   var confirmationNames = [
@@ -531,6 +550,7 @@ export const DASHBOARD_JAVASCRIPT = `
     operatorAvailable = state.operatorAuthentication.signerConfigured === true;
     secureCoreReady = state.runtimeReadiness.ready === true;
     secureSimulationAvailable = state.simulationAvailable === true;
+    renderCoreProvisioning(state);
     reviewDigest = state.simulationReview.reviewDigest;
     serverGeneratedMillis = Date.parse(state.generatedAt);
     element("simulation-actor").value = state.operatorAuthentication.operatorId || "local-operator";
@@ -696,6 +716,61 @@ export const DASHBOARD_JAVASCRIPT = `
     if (state.simulationStatus === "completed") element("run-simulation").disabled = true;
   }
 
+  function renderCoreProvisioning(state) {
+    var core = state.coreProvisioning;
+    var button = element("core-provisioning-action");
+    coreProvisioningChallenge = null;
+    if (!core || core.version !== 1 || core.secretInputAccepted !== false) {
+      button.disabled = true;
+      setText("core-provisioning-status", "FAIL-CLOSED");
+      setText("core-provisioning-operator", "nicht verfügbar");
+      setText("core-provisioning-restart", "Blockiert: Der lokale Provisionierungsstatus ist ungültig.");
+      return;
+    }
+    setText("core-provisioning-status", core.status.toUpperCase());
+    setText("core-provisioning-operator", core.operatorId || "nicht verfügbar");
+    if (
+      core.canProvision === true &&
+      core.status === "ready" &&
+      core.challenge &&
+      typeof core.challenge.nonce === "string" &&
+      typeof core.challenge.contextDigestSha256 === "string"
+    ) {
+      coreProvisioningChallenge = core.challenge;
+      button.disabled = false;
+      button.textContent = core.proposedMode === "legacy_complete"
+        ? "Vorhandenen Event-Key sicher vervollständigen"
+        : "Sicherheitskern einmalig im OS-Keychain anlegen";
+      setText(
+        "core-provisioning-restart",
+        "Bereit: Ein Klick erzeugt die Schlüssel lokal im OS-Keychain. Es werden keine Secretfelder übertragen. Danach bleibt diese Instanz gesperrt und muss beendet werden."
+      );
+      return;
+    }
+    button.disabled = true;
+    if (core.restartRequired === true || core.status === "restart_required") {
+      setText(
+        "core-provisioning-restart",
+        "Provisionierung abgeschlossen. Diese laufende Instanz bleibt fail-closed. App beenden, BUGBOUNTY_EVENT_KEY_MIN_VERSION=1 konfigurieren und anschließend mit pnpm app neu starten."
+      );
+      return;
+    }
+    if (
+      core.status === "configured" &&
+      state.runtimeReadiness.eventKeyMinimumVersionStatus !== "ready"
+    ) {
+      setText(
+        "core-provisioning-restart",
+        "Schlüssel sind im OS-Keychain vorhanden. BUGBOUNTY_EVENT_KEY_MIN_VERSION muss ausdrücklich gesetzt sein; danach die App mit pnpm app neu starten."
+      );
+      return;
+    }
+    setText(
+      "core-provisioning-restart",
+      "Keine Provisionierung möglich: " + core.reasonCode + ". Der Sicherheitskern bleibt gesperrt."
+    );
+  }
+
   async function readJson(response) {
     var body = await response.json();
     if (!response.ok) throw new Error(body.error || "DASHBOARD_REQUEST_FAILED");
@@ -830,6 +905,30 @@ export const DASHBOARD_JAVASCRIPT = `
       await loadState();
     } catch (error) {
       setText("import-status", "Blockiert: " + (error instanceof Error ? error.message : "UNKNOWN"));
+    }
+  });
+
+  element("core-provisioning-action").addEventListener("click", async function () {
+    var challenge = coreProvisioningChallenge;
+    var button = element("core-provisioning-action");
+    if (!challenge) return;
+    coreProvisioningChallenge = null;
+    button.disabled = true;
+    setText("core-provisioning-operation", "Native lokale Provisionierung wird geprüft …");
+    try {
+      var result = await postJson("/api/core/provision", {
+        version: 1,
+        confirmation: "provision_local_security_core",
+        nonce: challenge.nonce,
+        contextDigestSha256: challenge.contextDigestSha256
+      });
+      if (!result.coreProvisioning || result.coreProvisioning.restartRequired !== true)
+        throw new Error("CORE_PROVISIONING_RESPONSE_INVALID");
+      setText("core-provisioning-operation", "Lokal provisioniert. Vor dem Neustart bleibt alles gesperrt.");
+      await loadState();
+    } catch (error) {
+      setText("core-provisioning-operation", "Fail-closed blockiert: " + (error instanceof Error ? error.message : "UNKNOWN"));
+      await loadState().catch(function () {});
     }
   });
 

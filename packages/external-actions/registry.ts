@@ -1,6 +1,10 @@
+import { canonicalJson, sha256 } from "../shared/canonical.js";
+import { SecurityError } from "../shared/errors.js";
+
 export type ExternalActionId =
   | "browser_journey_start"
   | "email_verification_open"
+  | "hackerone_active_test"
   | "hackerone_metadata_read"
   | "platform_api_read"
   | "report_submit"
@@ -23,6 +27,7 @@ export type ExternalActionSecretKind =
   | "email_verification_capability"
   | "hackerone_api_credentials"
   | "platform_api_token"
+  | "operator_signing_key"
   | "test_identity_credentials"
   | "test_identity_session";
 
@@ -30,6 +35,7 @@ export type ExternalActionHumanCheckpoint =
   | "campaign_approval"
   | "email_verification"
   | "hackerone_metadata_activation"
+  | "signed_active_test_plan"
   | "manual_account_registration"
   | "not_required"
   | "report_collective_approval"
@@ -58,6 +64,28 @@ export interface ExternalActionDefinition {
         readonly host: "api.hackerone.com";
         readonly port: 443;
         readonly method: "GET";
+      }
+    | {
+        readonly kind: "hackerone_active_test_exact_scope";
+        readonly scheme: "https";
+        readonly port: 443;
+        readonly snapshotRequirement: "current_hackerone_api_authenticated";
+        readonly scopeRequirement: "exact_selected_structured_scope";
+        readonly ownershipRequirement: "selected_scope_asset_digest";
+        readonly testClasses: readonly [
+          {
+            readonly id: "http_headers";
+            readonly method: "HEAD";
+          },
+          {
+            readonly id: "cors_preflight";
+            readonly method: "OPTIONS";
+          },
+          {
+            readonly id: "security_txt";
+            readonly method: "GET";
+          },
+        ];
       };
   readonly requiredSecretKind: ExternalActionSecretKind;
   readonly policyDecision: "required";
@@ -98,6 +126,27 @@ const HACKERONE_METADATA_TARGET = Object.freeze({
   method: "GET" as const,
 });
 
+const HACKERONE_ACTIVE_TEST_CLASSES = Object.freeze([
+  Object.freeze({ id: "http_headers" as const, method: "HEAD" as const }),
+  Object.freeze({
+    id: "cors_preflight" as const,
+    method: "OPTIONS" as const,
+  }),
+  Object.freeze({ id: "security_txt" as const, method: "GET" as const }),
+] as const);
+
+const HACKERONE_ACTIVE_TEST_TARGET = Object.freeze({
+  kind: "hackerone_active_test_exact_scope" as const,
+  scheme: "https" as const,
+  port: 443 as const,
+  snapshotRequirement: "current_hackerone_api_authenticated" as const,
+  scopeRequirement: "exact_selected_structured_scope" as const,
+  ownershipRequirement: "selected_scope_asset_digest" as const,
+  testClasses: HACKERONE_ACTIVE_TEST_CLASSES,
+});
+
+const trustedDefinitions = new WeakSet();
+
 function define(
   value: Omit<
     ExternalActionDefinition,
@@ -108,7 +157,7 @@ function define(
     | "scopeCheck"
   >,
 ): ExternalActionDefinition {
-  return Object.freeze({
+  const definition = Object.freeze({
     ...value,
     budget: ACTION_BUDGET,
     defaultState: "blocked",
@@ -116,10 +165,23 @@ function define(
     policyDecision: "required",
     scopeCheck: "required",
   });
+  trustedDefinitions.add(definition);
+  return definition;
 }
 
 const REGISTRY: Readonly<Record<ExternalActionId, ExternalActionDefinition>> =
   Object.freeze({
+    hackerone_active_test: define({
+      actionId: "hackerone_active_test",
+      category: "target",
+      triggerComponent: "pilot_c_active_testing_gate",
+      targetClass: "program_target",
+      fixedTargetPolicy: HACKERONE_ACTIVE_TEST_TARGET,
+      requiredSecretKind: "operator_signing_key",
+      ownershipCheck: "object",
+      humanCheckpoint: "signed_active_test_plan",
+      simulationSupported: false,
+    }),
     hackerone_metadata_read: define({
       actionId: "hackerone_metadata_read",
       category: "platform",
@@ -211,6 +273,7 @@ const REGISTRY: Readonly<Record<ExternalActionId, ExternalActionDefinition>> =
   });
 
 const DEFINITIONS: readonly ExternalActionDefinition[] = Object.freeze([
+  REGISTRY.hackerone_active_test,
   REGISTRY.hackerone_metadata_read,
   REGISTRY.platform_api_read,
   REGISTRY.test_account_register,
@@ -225,6 +288,8 @@ export function getExternalActionDefinition(
   actionId: string,
 ): ExternalActionDefinition | undefined {
   switch (actionId) {
+    case "hackerone_active_test":
+      return REGISTRY.hackerone_active_test;
     case "hackerone_metadata_read":
       return REGISTRY.hackerone_metadata_read;
     case "platform_api_read":
@@ -244,6 +309,83 @@ export function getExternalActionDefinition(
     default:
       return undefined;
   }
+}
+
+export function assertTrustedExternalActionDefinition(
+  value: unknown,
+  expectedActionId: ExternalActionId,
+): asserts value is ExternalActionDefinition {
+  const actionId =
+    typeof value === "object" && value !== null
+      ? Object.getOwnPropertyDescriptor(value, "actionId")
+      : undefined;
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !Object.isFrozen(value) ||
+    !trustedDefinitions.has(value) ||
+    actionId === undefined ||
+    !("value" in actionId) ||
+    actionId.value !== expectedActionId
+  )
+    throw new SecurityError("ACTION_REGISTRY_DEFINITION_UNTRUSTED");
+}
+
+export function trustedExternalActionDefinitionDigest(
+  actionId: ExternalActionId,
+): string {
+  const definition = getExternalActionDefinition(actionId);
+  assertTrustedExternalActionDefinition(definition, actionId);
+  return sha256(canonicalJson(definition));
+}
+
+export function hackerOneActiveTestRegistryDefinitionDigest(): string {
+  const definition = getExternalActionDefinition("hackerone_active_test");
+  assertTrustedExternalActionDefinition(definition, "hackerone_active_test");
+  const digest = trustedExternalActionDefinitionDigest("hackerone_active_test");
+  const expectedDigest = sha256(
+    canonicalJson({
+      actionId: "hackerone_active_test",
+      category: "target",
+      triggerComponent: "pilot_c_active_testing_gate",
+      targetClass: "program_target",
+      fixedTargetPolicy: HACKERONE_ACTIVE_TEST_TARGET,
+      requiredSecretKind: "operator_signing_key",
+      policyDecision: "required",
+      scopeCheck: "required",
+      ownershipCheck: "object",
+      budget: ACTION_BUDGET,
+      humanCheckpoint: "signed_active_test_plan",
+      defaultState: "blocked",
+      killSwitchBehavior: "block_before_and_after_runner",
+      simulationSupported: false,
+    }),
+  );
+  if (digest !== expectedDigest)
+    throw new SecurityError("ACTIVE_TEST_ACTION_REGISTRY_INVALID");
+  return digest;
+}
+
+export function assertHackerOneActiveTestRegistryPlanBinding(
+  testClass: string,
+  method: string,
+  scheme: string,
+  port: number,
+): string {
+  const digest = hackerOneActiveTestRegistryDefinitionDigest();
+  const definition = getExternalActionDefinition("hackerone_active_test");
+  assertTrustedExternalActionDefinition(definition, "hackerone_active_test");
+  const target = definition.fixedTargetPolicy;
+  if (
+    target.kind !== "hackerone_active_test_exact_scope" ||
+    scheme !== target.scheme ||
+    port !== target.port ||
+    !target.testClasses.some(
+      (candidate) => candidate.id === testClass && candidate.method === method,
+    )
+  )
+    throw new SecurityError("ACTIVE_TEST_ACTION_REGISTRY_PLAN_MISMATCH");
+  return digest;
 }
 
 export function listExternalActionDefinitions(): readonly ExternalActionDefinition[] {

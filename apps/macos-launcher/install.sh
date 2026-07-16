@@ -118,13 +118,22 @@ if [ "$(/usr/bin/uname -s)" != "Darwin" ]; then
 fi
 
 INTEGRATION_MODE="local-only"
-if [ "${1:-}" = "--enable-hackerone-readonly" ]; then
-  INTEGRATION_MODE="hackerone-readonly"
-  shift
-fi
+case "${1:-}" in
+  --enable-hackerone-readonly)
+    INTEGRATION_MODE="hackerone-readonly"
+    shift
+    ;;
+  --enable-hackerone-active-testing)
+    INTEGRATION_MODE="hackerone-active-testing"
+    shift
+    ;;
+  --*)
+    fail "Verwendung: pnpm app:install-macos -- [--enable-hackerone-readonly|--enable-hackerone-active-testing] [Zielverzeichnis]"
+    ;;
+esac
 
 if [ "$#" -gt 1 ]; then
-  fail "Verwendung: pnpm app:install-macos -- [--enable-hackerone-readonly] [Zielverzeichnis]"
+  fail "Verwendung: pnpm app:install-macos -- [--enable-hackerone-readonly|--enable-hackerone-active-testing] [Zielverzeichnis]"
 fi
 
 EVENT_KEY_MINIMUM_VERSION="unset"

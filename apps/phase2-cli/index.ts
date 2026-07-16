@@ -14,9 +14,8 @@ import {
   SimulationOrchestrator,
   type HumanSimulationEvidence,
 } from "../../packages/simulation/index.js";
-import { MacOSKeychainSecretStore } from "../../packages/secret-store/index.js";
-import { createKeychainOperatorSigner } from "../../packages/operator-auth/index.js";
 import { errorCode, SecurityError } from "../../packages/shared/errors.js";
+import { createPhase2CoreSecretContext } from "./core-secrets.js";
 
 async function main(): Promise<void> {
   const [command, confirmation, ...rest] = process.argv.slice(2);
@@ -38,8 +37,10 @@ async function main(): Promise<void> {
   const database = ControlPlaneDatabase.memory();
   try {
     const clock = (): Date => new Date();
-    const secretStore = new MacOSKeychainSecretStore();
-    const operatorSigner = await requiredOperatorSigner(secretStore);
+    const minimumActiveKeyVersion = configuredEventKeyMinimumVersion();
+    const coreSecrets = await createPhase2CoreSecretContext(process.env);
+    const secretStore = coreSecrets.secretStore;
+    const operatorSigner = coreSecrets.operatorSigner;
     const orchestrator = new SimulationOrchestrator(
       new ControlPlaneStore(database, clock),
       new DemoSaas(clock),
@@ -48,7 +49,7 @@ async function main(): Promise<void> {
       (version) =>
         `keychain://bugbounty-copilot/event-store-v${String(version)}`,
       clock,
-      configuredEventKeyMinimumVersion(),
+      minimumActiveKeyVersion,
       operatorSigner,
     );
     const review = orchestrator.preview();
@@ -69,27 +70,6 @@ async function main(): Promise<void> {
   } finally {
     database.close();
   }
-}
-
-async function requiredOperatorSigner(secretStore: MacOSKeychainSecretStore) {
-  const keyReference = process.env["BUGBOUNTY_OPERATOR_KEY_REFERENCE"];
-  const operatorId = process.env["BUGBOUNTY_OPERATOR_ID"];
-  const revisionText = process.env["BUGBOUNTY_OPERATOR_KEY_REVISION"];
-  if (
-    keyReference === undefined ||
-    operatorId === undefined ||
-    revisionText === undefined ||
-    !/^[1-9][0-9]*$/u.test(revisionText)
-  )
-    throw new SecurityError("OPERATOR_SIGNER_CONFIG_INVALID");
-  const keyRevision = Number(revisionText);
-  if (!Number.isSafeInteger(keyRevision))
-    throw new SecurityError("OPERATOR_SIGNER_CONFIG_INVALID");
-  return createKeychainOperatorSigner(secretStore, {
-    keyReference,
-    operatorId,
-    keyRevision,
-  });
 }
 
 function configuredEventKeyMinimumVersion(): number {

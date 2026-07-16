@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "plan_id",
+    "program_ref",
+    "program_handle",
+    "snapshot_digest",
+    "policy_digest",
+    "scope_id",
+    "asset_identifier_digest",
+    "test_class",
+    "runner_version",
+    "target",
+    "request",
+    "budget",
+    "confirmations",
+    "created_at",
+    "expires_at"
+  ],
+  "properties": {
+    "version": { "const": 1 },
+    "plan_id": { "$ref": "#/$defs/reference" },
+    "program_ref": { "$ref": "#/$defs/programReference" },
+    "program_handle": { "$ref": "#/$defs/reference" },
+    "snapshot_digest": { "$ref": "#/$defs/digest" },
+    "policy_digest": { "$ref": "#/$defs/digest" },
+    "scope_id": { "$ref": "#/$defs/reference" },
+    "asset_identifier_digest": { "$ref": "#/$defs/digest" },
+    "test_class": {
+      "enum": ["cors_preflight", "http_headers", "security_txt"]
+    },
+    "runner_version": { "const": "pilot-readiness-c-v1" },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scheme", "host", "port", "path"],
+      "properties": {
+        "scheme": { "const": "https" },
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253,
+          "pattern": "^[a-z0-9.-]+$"
+        },
+        "port": { "const": 443 },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048,
+          "pattern": "^/"
+        }
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method",
+        "header_profile",
+        "capture_mode",
+        "follow_redirects",
+        "retries"
+      ],
+      "properties": {
+        "method": { "enum": ["GET", "HEAD", "OPTIONS"] },
+        "header_profile": { "enum": ["cors_probe_v1", "metadata_v1"] },
+        "capture_mode": { "const": "metadata_only" },
+        "follow_redirects": { "const": false },
+        "retries": { "const": 0 }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_requests_total",
+        "requests_per_minute",
+        "max_concurrency"
+      ],
+      "properties": {
+        "max_requests_total": { "const": 1 },
+        "requests_per_minute": { "const": 1 },
+        "max_concurrency": { "const": 1 }
+      }
+    },
+    "confirmations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "automation_permission_reviewed",
+        "scope_instruction_reviewed",
+        "scope_exclusions_reviewed",
+        "no_side_effects_confirmed"
+      ],
+      "properties": {
+        "automation_permission_reviewed": { "const": true },
+        "scope_instruction_reviewed": { "const": true },
+        "scope_exclusions_reviewed": { "const": true },
+        "no_side_effects_confirmed": { "const": true }
+      }
+    },
+    "created_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "reference": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._-]+$"
+    },
+    "programReference": {
+      "type": "string",
+      "pattern": "^h1a_[a-f0-9]{64}$"
+    },
+    "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}
