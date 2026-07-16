@@ -52,6 +52,8 @@ interface HackerOneDashboardProjection {
     readonly identifierPresent: boolean;
     readonly tokenPresent: boolean;
     readonly tokenFingerprint: string | null;
+    readonly lastConnectionResult: string | null;
+    readonly lastErrorCode: string | null;
     readonly targetRequestsEnabled: false;
     readonly reportSubmissionEnabled: false;
   };
@@ -164,12 +166,13 @@ class InProcessCredentials implements HackerOneCredentialAccess {
 
 class InProcessTransport implements HackerOneTransport {
   public readonly plans: HackerOneTransportPlan[] = [];
+  public responseBody: unknown = { data: [] };
 
   public get(
     plan: HackerOneTransportPlan,
   ): Promise<HackerOneTransportResponse> {
     this.plans.push(Object.freeze({ ...plan }));
-    const body = new TextEncoder().encode(JSON.stringify({ data: [] }));
+    const body = new TextEncoder().encode(JSON.stringify(this.responseBody));
     return Promise.resolve(
       Object.freeze({
         statusCode: 200,
@@ -1060,6 +1063,46 @@ describe("HackerOne dashboard HTTP boundary", () => {
       identifierPresent: false,
       tokenPresent: false,
       tokenFingerprint: null,
+    });
+  });
+
+  it("returns a local gateway error when a connection response fails schema validation", async () => {
+    const { server, transport } = await startHarness({
+      killSwitchActive: false,
+    });
+    const initial = await state(server);
+    const frame = credentialFrame(
+      "dashboard-malformed-identifier",
+      "dashboard-malformed-token",
+    );
+    const stored = await postCredentialFrame(server, initial.csrfToken, frame);
+    frame.fill(0);
+    expect(stored.status).toBe(200);
+
+    const enabled = await postJson(
+      server,
+      "/api/hackerone/integration/enable",
+      initial.csrfToken,
+      {},
+    );
+    expect(enabled.status).toBe(200);
+    transport.responseBody = { data: "not-an-array" };
+
+    const connection = await postJson(
+      server,
+      "/api/hackerone/connection-test",
+      initial.csrfToken,
+      {},
+    );
+
+    expect(connection.status).toBe(502);
+    expect(await connection.json()).toEqual({
+      error: "HACKERONE_CONNECTION_MALFORMED_RESPONSE",
+    });
+    expect(transport.plans).toHaveLength(1);
+    expect((await state(server)).hackerOne.status).toMatchObject({
+      lastConnectionResult: "malformed_response",
+      lastErrorCode: "HACKERONE_CONNECTION_MALFORMED_RESPONSE",
     });
   });
 

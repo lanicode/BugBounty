@@ -422,6 +422,10 @@ export async function startDashboardServer(
         assertSecureCoreReady(dependencies);
         assertEmptyObject(body, "HACKERONE_DASHBOARD_REQUEST_INVALID");
         const result = await requireHackerOne(dependencies).testConnection();
+        if (result.result !== "connected" || !result.schemaValid) {
+          sendJson(response, 502, { error: result.redactedStatus });
+          return;
+        }
         sendJson(response, 200, result);
         return;
       }

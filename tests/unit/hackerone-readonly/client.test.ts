@@ -320,7 +320,7 @@ describe("HackerOne connection test", () => {
         body: encoder.encode('{"data":[],"data":[]}'),
       }),
     ],
-    ["invalid schema", response(200, { data: [], unknown: true })],
+    ["invalid schema", response(200, { data: "not-an-array" })],
   ])(
     "maps %s to malformed_response and zeroes the body",
     async (_label, wire) => {
@@ -337,6 +337,31 @@ describe("HackerOne connection test", () => {
       expectCredentialBuffersZeroed(context.credentials);
     },
   );
+
+  it("accepts bounded additive API extensions without retaining response values", async () => {
+    const body = encoder.encode(
+      JSON.stringify({
+        data: [
+          {
+            ...programResource("synthetic-id-extension", "synthetic-extension"),
+            extension_resource: "RESOURCE_EXTENSION_CANARY",
+          },
+        ],
+        extension_top: "TOP_EXTENSION_CANARY",
+      }),
+    );
+    const context = harness([response(200, undefined, { body })]);
+
+    const result = await context.client.connectionTest(
+      new AbortController().signal,
+    );
+
+    expect(result).toMatchObject({ result: "connected", schemaValid: true });
+    expect(context.transport.calls).toHaveLength(1);
+    expect(body.every((byte) => byte === 0)).toBe(true);
+    expect(JSON.stringify(result)).not.toContain("EXTENSION_CANARY");
+    expectCredentialBuffersZeroed(context.credentials);
+  });
 
   it.each([
     ["redirect status", response(302, { data: [] })],

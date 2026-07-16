@@ -127,29 +127,77 @@ describe("HackerOne program response validation", () => {
     expect(Object.isFrozen(program)).toBe(true);
   });
 
-  it.each([
-    ["unknown top-level field", () => ({ ...programPage(), unknown: true })],
-    [
-      "unknown resource field",
-      () => ({ data: [{ ...programResource(), unknown: true }] }),
-    ],
-    [
-      "unknown attribute field",
-      () => {
-        const resource = programResource();
-        return {
-          data: [
-            {
-              ...resource,
-              attributes: {
-                ...(resource["attributes"] as Record<string, unknown>),
-                unknown: true,
-              },
-            },
-          ],
-        };
+  it("discards bounded additive API extensions without persisting their values", () => {
+    const page = programPage();
+    const resource = (page["data"] as Record<string, unknown>[])[0] ?? {};
+    const attributes = resource["attributes"] as Record<string, unknown>;
+    const value = {
+      ...page,
+      extension_top: { canary: "TOP_EXTENSION_CANARY" },
+      data: [
+        {
+          ...resource,
+          extension_resource: "RESOURCE_EXTENSION_CANARY",
+          attributes: {
+            ...attributes,
+            extension_attribute: "ATTRIBUTE_EXTENSION_CANARY",
+          },
+        },
+      ],
+      links: {
+        ...(page["links"] as Record<string, unknown>),
+        extension_link: "LINK_EXTENSION_CANARY",
       },
-    ],
+      meta: {
+        ...(page["meta"] as Record<string, unknown>),
+        extension_meta: "META_EXTENSION_CANARY",
+      },
+    };
+
+    const normalized = validateProgramPage(value, SYNCHRONIZED_AT);
+
+    expect(normalized).toEqual(
+      validateProgramPage(programPage(), SYNCHRONIZED_AT),
+    );
+    expect(JSON.stringify(normalized)).not.toContain("EXTENSION_CANARY");
+  });
+
+  it("rejects hostile response objects without invoking accessors", () => {
+    let getterInvocations = 0;
+    const accessorPage = Object.defineProperty({}, "data", {
+      enumerable: true,
+      get: () => {
+        getterInvocations += 1;
+        return [];
+      },
+    });
+
+    expect(() => validateProgramPage(accessorPage, SYNCHRONIZED_AT)).toThrow(
+      "HACKERONE_RESPONSE_SCHEMA_INVALID",
+    );
+    expect(getterInvocations).toBe(0);
+    expect(() =>
+      validateProgramPage(new Proxy({ data: [] }, {}), SYNCHRONIZED_AT),
+    ).toThrow("HACKERONE_RESPONSE_SCHEMA_INVALID");
+
+    const unsafeName = { data: [] };
+    Object.defineProperty(unsafeName, "constructor", {
+      enumerable: true,
+      value: "synthetic",
+    });
+    expect(() => validateProgramPage(unsafeName, SYNCHRONIZED_AT)).toThrow(
+      "HACKERONE_RESPONSE_SCHEMA_INVALID",
+    );
+
+    const oversized: Record<string, unknown> = { data: [] };
+    for (let index = 0; index < 128; index += 1)
+      oversized[`extension_${index}`] = index;
+    expect(() => validateProgramPage(oversized, SYNCHRONIZED_AT)).toThrow(
+      "HACKERONE_RESPONSE_SCHEMA_INVALID",
+    );
+  });
+
+  it.each([
     [
       "missing required attribute",
       () => {
@@ -211,14 +259,6 @@ describe("HackerOne program response validation", () => {
           ],
         };
       },
-    ],
-    [
-      "unknown pagination link",
-      () => ({ data: [], links: { next: null, alternate: "synthetic" } }),
-    ],
-    [
-      "unknown pagination metadata",
-      () => ({ data: [], meta: { current_page: 1, cursor: "synthetic" } }),
     ],
     [
       "more than one hundred records",
@@ -292,24 +332,29 @@ describe("HackerOne structured-scope response validation", () => {
     ).toThrow("HACKERONE_RESPONSE_SCHEMA_INVALID");
   });
 
+  it("discards bounded scope extensions before normalization", () => {
+    const resource = scopeResource();
+    const page = validateStructuredScopePage({
+      data: [
+        {
+          ...resource,
+          extension_resource: "SCOPE_RESOURCE_CANARY",
+          attributes: {
+            ...(resource["attributes"] as Record<string, unknown>),
+            extension_attribute: "SCOPE_ATTRIBUTE_CANARY",
+          },
+        },
+      ],
+      extension_top: "SCOPE_TOP_CANARY",
+    });
+
+    expect(page).toEqual(
+      validateStructuredScopePage({ data: [scopeResource()] }),
+    );
+    expect(JSON.stringify(page)).not.toContain("CANARY");
+  });
+
   it.each([
-    [
-      "an unknown attribute",
-      () => {
-        const resource = scopeResource();
-        return {
-          data: [
-            {
-              ...resource,
-              attributes: {
-                ...(resource["attributes"] as Record<string, unknown>),
-                unknown: "synthetic",
-              },
-            },
-          ],
-        };
-      },
-    ],
     [
       "a missing asset identifier",
       () => {
@@ -400,21 +445,28 @@ describe("HackerOne scope-exclusion response validation", () => {
         data: [{ ...exclusionResource(), type: "exclusion" }],
       }),
     ).toThrow("HACKERONE_RESPONSE_SCHEMA_INVALID");
+  });
 
+  it("discards bounded exclusion extensions before normalization", () => {
     const resource = exclusionResource();
-    expect(() =>
-      validateScopeExclusionPage({
-        data: [
-          {
-            ...resource,
-            attributes: {
-              ...(resource["attributes"] as Record<string, unknown>),
-              extra: "synthetic",
-            },
+    const page = validateScopeExclusionPage({
+      data: [
+        {
+          ...resource,
+          extension_resource: "EXCLUSION_RESOURCE_CANARY",
+          attributes: {
+            ...(resource["attributes"] as Record<string, unknown>),
+            extension_attribute: "EXCLUSION_ATTRIBUTE_CANARY",
           },
-        ],
-      }),
-    ).toThrow("HACKERONE_RESPONSE_SCHEMA_INVALID");
+        },
+      ],
+      extension_top: "EXCLUSION_TOP_CANARY",
+    });
+
+    expect(page).toEqual(
+      validateScopeExclusionPage({ data: [exclusionResource()] }),
+    );
+    expect(JSON.stringify(page)).not.toContain("CANARY");
   });
 
   it("rejects missing fields, invalid dates, and oversized pages", () => {

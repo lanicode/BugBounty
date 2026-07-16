@@ -587,7 +587,7 @@ describe("HackerOne read-only client over test-only loopback transport", () => {
 
   it.each([
     ["invalid JSON", "{not-json"],
-    ["invalid schema", '{"data":[],"unknown":true}'],
+    ["invalid schema", '{"data":"not-an-array"}'],
   ])("rejects %s without another request", async (_label, body) => {
     primary.enqueue((_incoming, response) => {
       response.writeHead(200, {
@@ -601,6 +601,29 @@ describe("HackerOne read-only client over test-only loopback transport", () => {
     );
     expect(result.result).toBe("malformed_response");
     expect(primary.requests).toHaveLength(1);
+  });
+
+  it("accepts bounded additive API extensions without another request", async () => {
+    primary.enqueueJson(200, {
+      data: [
+        {
+          ...programResource("synthetic-extension-id", "synthetic-extension"),
+          extension_resource: "RESOURCE_EXTENSION_CANARY",
+        },
+      ],
+      links: { next: null, extension_link: "LINK_EXTENSION_CANARY" },
+      meta: { current_page: 1, extension_meta: "META_EXTENSION_CANARY" },
+      extension_top: "TOP_EXTENSION_CANARY",
+    });
+
+    const result = await client(primary).connectionTest(
+      new AbortController().signal,
+    );
+
+    expect(result).toMatchObject({ result: "connected", schemaValid: true });
+    expect(JSON.stringify(result)).not.toContain("EXTENSION_CANARY");
+    expect(primary.requests).toHaveLength(1);
+    expect(secondary.requests).toHaveLength(0);
   });
 
   it("follows only a canonical serial pagination chain", async () => {

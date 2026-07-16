@@ -1,5 +1,6 @@
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
+import { types } from "node:util";
 import { SecurityError } from "../shared/errors.js";
 import { sha256 } from "../shared/canonical.js";
 import type {
@@ -316,20 +317,251 @@ const validateScopePageSchema = ajv.compile<ApiScopePage>(scopePageSchema);
 const validateExclusionPageSchema =
   ajv.compile<ApiExclusionPage>(exclusionPageSchema);
 
+const MAX_RESPONSE_OBJECT_PROPERTIES = 128;
+const SAFE_RESPONSE_PROPERTY_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/u;
+const FORBIDDEN_RESPONSE_PROPERTY_NAMES = new Set([
+  "__proto__",
+  "constructor",
+  "prototype",
+]);
+
+const LINK_FIELDS = Object.freeze(["first", "last", "next", "prev", "self"]);
+const META_FIELDS = Object.freeze([
+  "current_page",
+  "total_count",
+  "total_pages",
+]);
+const PROGRAM_ATTRIBUTE_FIELDS = Object.freeze([
+  "handle",
+  "name",
+  "currency",
+  "policy",
+  "submission_state",
+  "state",
+  "offers_bounties",
+  "open_scope",
+  "gold_standard_safe_harbor",
+  "bookmarked",
+  "number_of_reports_for_user",
+  "number_of_valid_reports_for_user",
+  "started_accepting_at",
+  "created_at",
+  "updated_at",
+]);
+const SCOPE_ATTRIBUTE_FIELDS = Object.freeze([
+  "asset_type",
+  "asset_identifier",
+  "eligible_for_submission",
+  "eligible_for_bounty",
+  "instruction",
+  "max_severity",
+  "created_at",
+  "updated_at",
+  "confidentiality_requirement",
+  "integrity_requirement",
+  "availability_requirement",
+]);
+const EXCLUSION_ATTRIBUTE_FIELDS = Object.freeze([
+  "category",
+  "details",
+  "created_at",
+  "updated_at",
+]);
+
+type ResponseRecord = Readonly<Record<string, unknown>>;
+
+/**
+ * HackerOne's JSON:API documents may add fields that are not consumed by the
+ * product. Those untrusted extensions must not become a reason to weaken the
+ * strict trusted schema or to persist unknown values. We therefore construct
+ * a getter-free, prototype-safe projection containing only the explicit
+ * fields below and apply the existing additionalProperties:false schemas to
+ * that projection. Required fields, types, lengths, counts and timestamps
+ * remain fail-closed.
+ */
+function projectProgramPageResponse(value: unknown): unknown {
+  return projectPage(value, projectProgramResource);
+}
+
+function projectProgramDocumentResponse(value: unknown): unknown {
+  const source = responseRecord(value);
+  const projected = emptyResponseRecord();
+  copyProjected(source, projected, "data", projectProgramResource);
+  return Object.freeze(projected);
+}
+
+function projectScopePageResponse(value: unknown): unknown {
+  return projectPage(value, projectScopeResource);
+}
+
+function projectExclusionPageResponse(value: unknown): unknown {
+  return projectPage(value, projectExclusionResource);
+}
+
+function projectPage(
+  value: unknown,
+  projectResource: (value: unknown) => unknown,
+): unknown {
+  const source = responseRecord(value);
+  const projected = emptyResponseRecord();
+  copyProjected(source, projected, "data", (data) =>
+    responseArray(data, 100, projectResource),
+  );
+  copyProjected(source, projected, "links", (links) =>
+    projectKnownRecord(links, LINK_FIELDS),
+  );
+  copyProjected(source, projected, "meta", (meta) =>
+    projectKnownRecord(meta, META_FIELDS),
+  );
+  return Object.freeze(projected);
+}
+
+function projectProgramResource(value: unknown): unknown {
+  return projectResource(value, PROGRAM_ATTRIBUTE_FIELDS);
+}
+
+function projectScopeResource(value: unknown): unknown {
+  return projectResource(value, SCOPE_ATTRIBUTE_FIELDS);
+}
+
+function projectExclusionResource(value: unknown): unknown {
+  return projectResource(value, EXCLUSION_ATTRIBUTE_FIELDS);
+}
+
+function projectResource(
+  value: unknown,
+  attributeFields: readonly string[],
+): unknown {
+  const source = responseRecord(value);
+  const projected = emptyResponseRecord();
+  copyKnown(source, projected, Object.freeze(["id", "type"]));
+  copyProjected(source, projected, "attributes", (attributes) =>
+    projectKnownRecord(attributes, attributeFields),
+  );
+  return Object.freeze(projected);
+}
+
+function projectKnownRecord(
+  value: unknown,
+  fields: readonly string[],
+): unknown {
+  const source = responseRecord(value);
+  const projected = emptyResponseRecord();
+  copyKnown(source, projected, fields);
+  return Object.freeze(projected);
+}
+
+function responseRecord(value: unknown): ResponseRecord {
+  try {
+    if (
+      value === null ||
+      typeof value !== "object" ||
+      types.isProxy(value) ||
+      Object.getPrototypeOf(value) !== Object.prototype
+    )
+      throw new Error("invalid");
+    const keys = Reflect.ownKeys(value);
+    if (
+      keys.length > MAX_RESPONSE_OBJECT_PROPERTIES ||
+      keys.some(
+        (key) =>
+          typeof key !== "string" ||
+          !SAFE_RESPONSE_PROPERTY_NAME.test(key) ||
+          FORBIDDEN_RESPONSE_PROPERTY_NAMES.has(key),
+      )
+    )
+      throw new Error("invalid");
+    const projected = emptyResponseRecord();
+    for (const key of keys) {
+      if (typeof key !== "string") throw new Error("invalid");
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (
+        descriptor === undefined ||
+        !("value" in descriptor) ||
+        descriptor.enumerable !== true
+      )
+        throw new Error("invalid");
+      projected[key] = descriptor.value;
+    }
+    return Object.freeze(projected);
+  } catch {
+    throw new SecurityError("HACKERONE_RESPONSE_SCHEMA_INVALID");
+  }
+}
+
+function responseArray(
+  value: unknown,
+  maximumItems: number,
+  projectItem: (value: unknown) => unknown,
+): readonly unknown[] {
+  try {
+    if (
+      !Array.isArray(value) ||
+      types.isProxy(value) ||
+      Object.getPrototypeOf(value) !== Array.prototype ||
+      value.length > maximumItems
+    )
+      throw new Error("invalid");
+    const keys = Reflect.ownKeys(value);
+    if (keys.length !== value.length + 1 || !keys.includes("length"))
+      throw new Error("invalid");
+    const projected: unknown[] = [];
+    for (let index = 0; index < value.length; index += 1) {
+      const key = String(index);
+      if (!keys.includes(key)) throw new Error("invalid");
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (
+        descriptor === undefined ||
+        !("value" in descriptor) ||
+        descriptor.enumerable !== true
+      )
+        throw new Error("invalid");
+      projected.push(projectItem(descriptor.value));
+    }
+    return Object.freeze(projected);
+  } catch (error) {
+    if (error instanceof SecurityError) throw error;
+    throw new SecurityError("HACKERONE_RESPONSE_SCHEMA_INVALID");
+  }
+}
+
+function emptyResponseRecord(): Record<string, unknown> {
+  return {};
+}
+
+function copyKnown(
+  source: ResponseRecord,
+  target: Record<string, unknown>,
+  fields: readonly string[],
+): void {
+  for (const field of fields)
+    if (Object.hasOwn(source, field)) target[field] = source[field];
+}
+
+function copyProjected(
+  source: ResponseRecord,
+  target: Record<string, unknown>,
+  field: string,
+  project: (value: unknown) => unknown,
+): void {
+  if (Object.hasOwn(source, field)) target[field] = project(source[field]);
+}
+
 export function validateProgramPage(
   value: unknown,
   synchronizedAt: string,
   source: HackerOneDataSource = "hackerone_api_authenticated",
 ): ValidatedPage<HackerOneProgram> {
-  if (!validateProgramPageSchema(value))
+  const projected = projectProgramPageResponse(value);
+  if (!validateProgramPageSchema(projected))
     throw new SecurityError("HACKERONE_RESPONSE_SCHEMA_INVALID");
   return Object.freeze({
     records: Object.freeze(
-      value.data.map((record) =>
+      projected.data.map((record) =>
         normalizeProgram(record, synchronizedAt, source),
       ),
     ),
-    next: normalizeNext(value.links),
+    next: normalizeNext(projected.links),
   });
 }
 
@@ -338,30 +570,33 @@ export function validateProgramDocument(
   synchronizedAt: string,
   source: HackerOneDataSource = "hackerone_api_authenticated",
 ): HackerOneProgram {
-  if (!validateProgramDocumentSchema(value))
+  const projected = projectProgramDocumentResponse(value);
+  if (!validateProgramDocumentSchema(projected))
     throw new SecurityError("HACKERONE_RESPONSE_SCHEMA_INVALID");
-  return normalizeProgram(value.data, synchronizedAt, source);
+  return normalizeProgram(projected.data, synchronizedAt, source);
 }
 
 export function validateStructuredScopePage(
   value: unknown,
 ): ValidatedPage<HackerOneStructuredScope> {
-  if (!validateScopePageSchema(value))
+  const projected = projectScopePageResponse(value);
+  if (!validateScopePageSchema(projected))
     throw new SecurityError("HACKERONE_RESPONSE_SCHEMA_INVALID");
   return Object.freeze({
-    records: Object.freeze(value.data.map(normalizeScope)),
-    next: normalizeNext(value.links),
+    records: Object.freeze(projected.data.map(normalizeScope)),
+    next: normalizeNext(projected.links),
   });
 }
 
 export function validateScopeExclusionPage(
   value: unknown,
 ): ValidatedPage<HackerOneScopeExclusion> {
-  if (!validateExclusionPageSchema(value))
+  const projected = projectExclusionPageResponse(value);
+  if (!validateExclusionPageSchema(projected))
     throw new SecurityError("HACKERONE_RESPONSE_SCHEMA_INVALID");
   return Object.freeze({
-    records: Object.freeze(value.data.map(normalizeExclusion)),
-    next: normalizeNext(value.links),
+    records: Object.freeze(projected.data.map(normalizeExclusion)),
+    next: normalizeNext(projected.links),
   });
 }
 
