@@ -28,26 +28,34 @@ vollständige Kryptografie-Konfiguration startet `pnpm app` als
 persistierende Core-Routen bleiben gesperrt und der Kill Switch bleibt aktiv.
 
 Nur der getrennte signierte 18-Schritte-Control-Plane-Pfad und die
-Event-Key-Administration verwenden `MacOSKeychainSecretStore`. Dafür muss ein
-exakt 32 Byte langer Schlüssel separat, offline und nach einer geprüften
-Keychain-Betriebsanweisung bereitgestellt werden. Dieses Dokument enthält
-keinen Secret-tragenden Shell-Einzeiler. Schlüsselmaterial darf nicht als
-Prozessargument, Shell-Historie, Skript, Log, Datei, Umgebungsvariable oder
-Repositoryinhalt erscheinen. Danach wird ausschließlich der nicht geheime,
-positive Rollback-Anker gesetzt, zum Beispiel
-`BUGBOUNTY_EVENT_KEY_MIN_VERSION=1`. Fehlende, ungültige oder unter dem
-authentifizierten Head liegende Konfiguration blockiert den sicheren Core
-fail-closed.
+Event-Key-Administration verwenden Keychain-Schlüssel. Für einen frischen
+lokalen Sicherheitskern bietet die macOS-Setup-Shell einen ausdrücklichen
+Button an. Der native Helper erzeugt atomar ein Bundle aus exakt 32 Byte Event-
+Key und Ed25519-PKCS#8-Key. Ist ausschließlich ein lesbarer, exakt 32 Byte
+langer `event-store-v1` vorhanden, darf derselbe Button nur die fehlende
+Operator-Hülle ergänzen; der Event-Key wird dabei erneut gelesen, verglichen
+und niemals verändert oder ausgegeben. Teil- und Konfliktzustände blockieren.
+
+Der HTTP-Request trägt keine Secrets und kann den Modus nicht wählen. Er ist
+an Host, Origin, CSRF-Token, eine einmalige Nonce, Control-Plane-/Kill-Switch-
+Zustand und Kontextdigest gebunden. Danach wird ausschließlich der nicht
+geheime, positive Rollback-Anker gesetzt, zum Beispiel
+`BUGBOUNTY_EVENT_KEY_MIN_VERSION=1`, und die App neu gestartet. Fehlende,
+ungültige oder unter dem authentifizierten Head liegende Konfiguration
+blockiert den sicheren Core fail-closed. Rotation, Adoption und Recovery
+bleiben separate lokale Offline-Adminoperationen ohne Dashboard-Pfad.
 
 ## Lokale Operator-Credential einrichten
 
 Phase 4 verlangt für den signierten Simulator, positive Approval-
 Entscheidungen und Kill-Clear eine Ed25519-PKCS#8-Credential aus demselben
-macOS-Schlüsselbund. Die Bereitstellung ist ein separater, geprüfter lokaler
-Offline-Administrationsschritt und erfolgt niemals durch die Anwendung oder
-über Secret-tragende Kommandozeilenargumente.
+macOS-Schlüsselbund. Beim neuen initialen Core-Setup erzeugt ausschließlich
+der native Helper diese Credential nach dem ausdrücklichen lokalen Klick; es
+gibt weiterhin keine automatische Provisionierung und keine Secret-tragenden
+Kommandozeilenargumente.
 
-Danach ausschließlich die nicht geheimen Metadaten setzen:
+Für separat verwaltete Legacy-Konfigurationen werden weiterhin ausschließlich
+die nicht geheimen Metadaten gesetzt:
 
 ```sh
 export BUGBOUNTY_OPERATOR_KEY_REFERENCE=keychain://bugbounty-copilot/operator-ed25519-v1

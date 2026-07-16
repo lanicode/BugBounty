@@ -1,4 +1,4 @@
-# Bug Bounty Copilot – lokal nutzbares Phase-8-Produkt
+# Bug Bounty Copilot – lokales Produkt mit Pilot-C-Active-Testing
 
 Bug Bounty Copilot ist ein eigenes, lokal betriebenes Produkt für die sichere Vorbereitung künftiger Bug-Bounty-Workflows. Phase 3 bindet die External-Action-Pipeline an atomare, aktuelle und persistierte Policy-, Kampagnen-, Scope-, Ownership-, Budget- und Approval-Evidence.
 
@@ -47,7 +47,23 @@ Browser. Identitäten, kontrolliertes Objekt, Canary-Digest und Demo-Policy
 werden aus einer exakt validierten, digestgebundenen Demo-SaaS-Projektion
 übernommen. Laufzeitdrift entwertet Evidence und Report fail-closed.
 
-Die Anwendung ist weiterhin **kein Live-Scanner**. Sie führt keine aktiven Sicherheitstests aus, erstellt keine realen Konten, besitzt keine funktionsfähige Plattformintegration und reicht keine Reports ein. Sämtliche Demonstrationen laufen deterministisch gegen In-Process-Mocks oder Loopback-Server. Externe Integrationen sind standardmäßig, bei fehlender oder fehlerhafter Konfiguration und bei Laufzeitfehlern deaktiviert.
+Pilot Readiness C ergänzt einen bewusst kleinen Live-Kern: Nach
+authentifizierter HackerOne-Metadatensynchronisierung darf die Anwendung für
+ein exakt ausgewähltes, aktuelles und lokal akzeptiertes In-Scope-HTTPS-Asset
+genau einen `HEAD`-, `OPTIONS`- oder eng begrenzten `GET`-Request ausführen.
+Planvorbereitung, frische signierte Freigabe und Start sind drei getrennte
+Benutzeraktionen. DNS-, TLS-, Scope-, Policy-, Kill-Switch- und persistente
+Budgetprüfungen laufen fail-closed; Redirects und Retries sind verboten.
+Persistiert werden nur redigierte Metadaten, Digests und ein lokaler,
+nicht eingereichter Reportentwurf.
+
+Das ist **kein allgemeiner Scanner und kein autonomer Bug-Bounty-Agent**.
+Reale Konten, Login-/Credential-Tests, Schreibmethoden, Exploitation mit
+Seiteneffekt, CAPTCHA-/Anti-Bot-Umgehung, LLM-gesteuerte HTTP-Requests und
+Report-Einreichung sind nicht implementiert. Beide externen Capabilities sind
+standardmäßig deaktiviert und bleiben bei fehlender oder fehlerhafter
+Konfiguration deaktiviert. Entwicklung und automatisierte Tests verwenden
+ausschließlich In-Process-Fixtures und Loopback-Mock-Server.
 
 ## Lokal starten
 
@@ -74,13 +90,15 @@ oder Klartext-Secret-Fallback.
 ### Optional: signierten 18-Schritte-Control-Plane-Lauf freischalten
 
 Voraussetzungen sind macOS, Node.js 24 oder neuer und pnpm 11. Dieser
-fortgeschrittene Pfad ist nicht für den Phase-8-Guided-Flow erforderlich. Er
-benötigt einen separat und offline bereitgestellten, exakt 32 Byte langen
-Event-Schlüssel im macOS-Schlüsselbund. Dieses Repository dokumentiert
-bewusst keinen Secret-tragenden Shell-Einzeiler: Schlüsselmaterial darf weder
-als expandiertes Prozessargument noch in Shell-Historie, Skript, Log,
-Umgebungsvariable oder Repository erscheinen. Die Provisionierung muss einer
-separat geprüften lokalen Keychain-Betriebsanweisung folgen.
+fortgeschrittene Pfad ist nicht für den Phase-8-Guided-Flow erforderlich. Für
+den initialen Sicherheitskern bietet die lokale Setup-Shell eine ausdrückliche
+Keychain-Aktion ohne Secretfelder an. Ein nativer Helper erzeugt ein atomar
+gespeichertes Fresh-Bundle; bei einem konservativ validierten `legacy_ready`-
+Zustand ergänzt er ausschließlich die fehlende Operator-Hülle und verändert
+den bestehenden Event-Key nicht. Teil- und Konfliktzustände bleiben
+fail-closed. Schlüsselmaterial erscheint weder als Prozessargument noch in
+Browserantwort, Shell-Historie, Skript, Log, Datei, Umgebungsvariable oder
+Repository.
 
 `BUGBOUNTY_EVENT_KEY_MIN_VERSION` ist ein verpflichtender, store-spezifischer
 Rollback-Anker ohne Default für verschlüsselte Eventaktionen. Fehlende oder
@@ -89,10 +107,14 @@ Event-Key-Admin fail-closed; die read-only Oberfläche und der flüchtige
 Phase-8-Demoablauf bleiben verfügbar. Ein frischer Store beginnt mit `1`.
 
 Zusätzlich wird einmalig eine Ed25519-PKCS#8-Credential direkt im
-macOS-Schlüsselbund bereitgestellt. Auch hierfür gilt die separat geprüfte
-Offline-Provisionierung ohne Secret-tragende Kommandozeilenargumente.
+macOS-Schlüsselbund bereitgestellt. Nach dem Setup bleibt die aktuelle Instanz
+gesperrt; erst ein Neustart mit ausdrücklich gesetzter Mindestversion darf die
+validierten logischen Referenzen und Receipt-Metadaten verwenden. Rotation,
+Adoption und Recovery bleiben separate lokale Offline-Adminoperationen.
 
-Nur nicht geheime Metadaten werden der Anwendung übergeben:
+Bei einem validierten Core-Bundle werden Operatorreferenz, ID und Revision aus
+dem Receipt aufgelöst. Für separat verwaltete Legacy-Konfigurationen werden
+weiterhin nur nicht geheime Metadaten übergeben:
 
 ```sh
 export BUGBOUNTY_EVENT_KEY_MIN_VERSION=1
@@ -152,6 +174,33 @@ mit breiteren Rechten wird nicht automatisch repariert, sondern blockiert bis
 zur lokalen Offline-Prüfung. Die Phase-6-Recovery- und Betriebssemantik steht
 in `docs/PHASE6_CONTROL_PLANE_RECOVERY.md`.
 
+### Optional: Active Testing ausdrücklich freischalten
+
+Der vollständige Bedienablauf und alle Stopkriterien stehen in
+`docs/ACTIVE_TESTING_USER_GUIDE.md`. Für die macOS-App wird der getrennte
+Modus einmalig installiert:
+
+```sh
+npx --yes pnpm@11.7.0 app:install-macos -- --enable-hackerone-active-testing
+```
+
+Danach lässt sich **Bug Bounty Copilot.app** wie bisher im Finder oder Dock
+öffnen. Der Installationsmodus setzt nur die erforderlichen Runtime-Schalter.
+Er aktiviert keinen Adapter, akzeptiert keine Programmregel, gibt den Kill
+Switch nicht frei und sendet keinen Request. Diese Schritte bleiben einzeln
+im lokalen Frontend erforderlich. Ein erneuter Installerlauf ohne Schalter
+setzt den Launcher wieder auf `local-only`.
+
+Vor jedem echten Request muss der Operator die aktuell synchronisierte Policy,
+Automationsregeln, Ausschlüsse und das exakte Asset selbst prüfen. Der
+serverseitig erzeugte Plan ist zehn Minuten gültig und erlaubt genau einen
+Request. Der Startbutton erscheint erst nach einer frischen, plan- und
+snapshotgebundenen Signaturentscheidung. Der globale Kill Switch sperrt die
+Fortsetzung eines laufenden DNS-/Transportpfads und verhindert jeden noch
+nicht begonnenen HTTP-Request. Eine bereits an den Systemresolver übergebene
+DNS-Auflösung kann technisch im Hintergrund enden; ihr Ergebnis darf danach
+keinen Request mehr auslösen.
+
 ## Sicherheitsmodell
 
 Jede künftig extern wirksame Aktion muss die folgende technisch erzwungene Kette durchlaufen:
@@ -169,7 +218,15 @@ strukturierter Vorschlag
 
 Vorschläge können weder Zielhost noch Secret-Art oder Runner bestimmen. Die zentrale Registry setzt diese Werte. Proposal v2 bindet zusätzlich Kampagnenrevision und -digest, Policy, Scope, Accountrolle, Objekt, Approval und Operator. Positive Entscheidungen entstehen ausschließlich in einer `BEGIN IMMEDIATE`-Transaktion aus aktueller Store-Evidence und einer gültigen signierten Operatorentscheidung. Nonces, Credential, Signatur-Evidence, Proposal-IDs, Budgets und aktive Reservationen bleiben über Neustarts erhalten. Caller-Booleans, freie Actor-Strings, Callback-Gates, Proxies und Prototype-Spoofs können keinen Runner freigeben.
 
-Externe Runner sind nicht implementiert; `external_integrations_enabled` ist immer effektiv `false`. Der gebrandete Kill Switch und der Store blockieren vor, während und nach Runner-Aufrufen sowie bei unlesbarem oder inkonsistentem Zustand. Der einzige ausführbare Runner ist ein deterministischer In-Process-Mock ohne HTTP- oder Browsertransport. Der Event-Key-Admin ist ebenfalls rein lokal und weder aus dem Dashboard noch aus einem Modell- oder External-Action-Pfad erreichbar.
+Produktive externe Runner bleiben bis auf zwei geschlossene Capabilities
+unimplementiert: authentifizierte HackerOne-Metadaten-`GET`s und der
+Pilot-C-HTTPS-Runner für exakt einen autorisierten `GET`-/`HEAD`-/`OPTIONS`-
+Request. Beide benötigen eigene explizite Runtime-Schalter und lokale
+Kontrollpunkte. Der gebrandete Kill Switch und der Store blockieren vor,
+während und nach Runner-Aufrufen sowie bei unlesbarem oder inkonsistentem
+Zustand. Alle anderen Registry-Runner bleiben deterministische In-Process-
+Mocks ohne HTTP- oder Browsertransport. Der Event-Key-Admin ist rein lokal
+und weder aus einem Modell- noch aus einem External-Action-Pfad erreichbar.
 
 ## Hauptkomponenten
 
@@ -189,6 +246,9 @@ Externe Runner sind nicht implementiert; `external_integrations_enabled` ist imm
   Präsentationsworkflow ohne Netzwerk-, Browser- oder Secretzugriff.
 - `packages/local-journey-catalog`: produktneutrale, I/O-freie Quelle des
   gepinnten Journey-Profils für Produktprojektion und Phase-7-Testharness.
+- `packages/active-testing`: geschlossener Pilot-C-Katalog, API-Snapshot-
+  Bindung, signierte Planfreigabe, persistente Budgets, DNS-/TLS-gepinnter
+  Runner, redigierte Evidence und ausschließlich lokale Reportentwürfe.
 - `tests/browser`: ausschließlich testseitiger Playwright-Testharness mit
   geschlossenem Rollen-/Routengraph, exakter Loopback-Policy und minimierter
   Digest-Evidence; kein Produkt- oder External-Action-Runner.

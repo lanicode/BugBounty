@@ -1,15 +1,36 @@
-# Phase 8 – Pilot Readiness
+# Pilot Readiness
 
-## Entscheidung
+## Aktuelle Entscheidung: Pilot Readiness C
 
-**Technisches GO für einen internen, lokalen Fixture-only-Usability-Pilot.**
+**Technisches GO für einen eng begrenzten, menschlich kontrollierten
+Active-Testing-Pilot – kein GO für allgemeines oder autonomes Scanning.**
 
-Dieses GO ist keine organisatorische, rechtliche oder Security-Freigabe für
-reale Bug-Bounty-Arbeit. Jede reale Ziel-, Plattform-, Account-, Scanner-, AI-
-oder Submission-Nutzung bleibt **NO-GO**. Eine verantwortliche Person muss den
-internen Pilot separat freigeben.
+Die einzige neue Zielrequest-Capability besteht aus den drei fest verdrahteten
+Klassen `http_headers` (`HEAD`), `cors_preflight` (`OPTIONS`) und
+`security_txt` (`GET /.well-known/security.txt`). Sie ist standardmäßig aus,
+verwendet nur exakte HTTPS-URL-Assets aus einem aktuellen authentifizierten
+HackerOne-API-Snapshot und benötigt lokale Snapshotannahme, vier manuelle
+Regelbestätigungen, einen serverseitigen Plan, eine frische signierte
+Planfreigabe und einen separaten Startklick. Jeder Plan erlaubt einen Request,
+keinen Redirect und keinen Retry. DNS, TLS, Scope, Policy, Budget und Kill
+Switch werden fail-closed geprüft. Evidence bleibt redigiert; Reports bleiben
+lokale Entwürfe.
 
-## Qualifizierter Umfang
+Dieses technische GO ersetzt keine Programmregeln oder rechtliche Prüfung.
+Der Operator darf es nur für ein Programm und ein Asset verwenden, für das er
+selbst die aktuelle Automationsberechtigung geprüft hat. Account-, Login-,
+Credential-, Schreib-, Exploit-, CAPTCHA-/Anti-Bot-, LLM- und Submission-
+Automation bleiben **NO-GO**. Details und Stopkriterien stehen in
+`docs/ACTIVE_TESTING_USER_GUIDE.md`.
+
+## Historische Entscheidung: Phase-8-Fixture-Pilot
+
+Der folgende Abschnitt dokumentiert weiterhin das frühere technische GO für
+den rein lokalen Fixture-only-Usability-Pilot. Aussagen über fehlende
+Zielrequests beziehen sich auf diesen Phase-8-Ablauf, nicht auf die getrennte
+Pilot-C-Capability.
+
+### Qualifizierter Phase-8-Umfang
 
 Der Pilot darf ausschließlich:
 
@@ -24,7 +45,7 @@ Der Pilot darf ausschließlich:
 Es dürfen keine echten Secrets, Accounts, Sessions, URLs, Objekt-IDs,
 Policies, Reports oder Zielinformationen eingegeben werden.
 
-## Nachgewiesene Gates
+### Nachgewiesene Phase-8-Gates
 
 | Gate                                     | Status             |
 | ---------------------------------------- | ------------------ |
@@ -41,7 +62,7 @@ Policies, Reports oder Zielinformationen eingegeben werden.
 | Phase-1-Security-Core-Diff leer          | GO                 |
 | Unabhängiges Security-Re-Review          | GO / keine Blocker |
 
-## Pilot-Szenario
+### Phase-8-Pilot-Szenario
 
 1. Branch und sauberen Repositoryzustand prüfen.
 2. `pnpm install --frozen-lockfile` und `pnpm app` ausführen.
@@ -61,7 +82,7 @@ Policies, Reports oder Zielinformationen eingegeben werden.
     und die Neustart-Anweisung zeigen.
 15. `Ctrl-C` und geschlossene Ports prüfen.
 
-## Sofortige Stopkriterien
+### Phase-8-Sofortige Stopkriterien
 
 Pilot abbrechen, wenn:
 
@@ -75,10 +96,12 @@ Pilot abbrechen, wenn:
 - eine Sicherheitsprüfung deaktiviert, gelockert oder übersprungen werden
   müsste.
 
-## Weiterhin NO-GO
+### Für den Phase-8-Pfad weiterhin NO-GO
 
-- reale Bug-Bounty-Programme, Plattformen und Zielhosts;
-- aktive Tests, Scanner oder Tier-1+-Runner;
+- reale Bug-Bounty-Programme, Plattformen und Zielhosts außerhalb der
+  getrennten Pilot-C-Grenze;
+- aktive Tests, Scanner oder Tier-1+-Runner außerhalb der drei geschlossenen
+  Pilot-C-Einmaltestklassen;
 - reale Registrierung, Login oder Account-Automation;
 - CAPTCHA-, Anti-Bot-, E-Mail-, TOTP- oder rechtliche Automation;
 - AI-/LLM-Verarbeitung;
@@ -86,7 +109,7 @@ Pilot abbrechen, wenn:
 - Multi-User-, Netzwerkdateisystem- oder Remote-Betrieb;
 - dauerhafte Verwendung des Guided-State als produktive Datenbank.
 
-## Freigabeverantwortung
+### Freigabeverantwortung
 
 Der technische Nachweis bestätigt nur Reproduzierbarkeit und lokale
 Sicherheitsgrenzen. Datenschutz, interne Richtlinien, Pilotteilnehmende,

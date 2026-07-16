@@ -1,0 +1,131 @@
+PILOT READINESS C – TATSÄCHLICHE PRÜFERGEBNISSE
+Datum: 2026-07-16
+Branch: codex/pilot-readiness-active-testing
+Ausgangscommit: 4dcc9f322e6b03ac04af06bd466e60948136766d
+
+STATISCHE PRÜFUNGEN UND PRODUKTIONSBUILD
+
+$ git diff --check
+PASS (keine Ausgabe)
+
+$ ./node_modules/.bin/tsc --noEmit
+PASS (keine Ausgabe)
+
+$ ./node_modules/.bin/eslint . --max-warnings 0
+PASS (keine Warnungen, keine Ausgabe)
+
+$ ./node_modules/.bin/prettier --check .
+PASS
+Checking formatting...
+All matched files use Prettier code style!
+
+$ ./node_modules/.bin/tsc -p tsconfig.build.json
+PASS (keine Ausgabe)
+
+$ rg -n "LoopbackActiveTestMockTransport|runLoopbackActiveTestMockRequest|ACTIVE_TEST_LOOPBACK" dist/packages dist/apps
+PASS als Negativprüfung: Exit 1, keine Treffer. Die Test-Loopback-Engine ist
+nicht im Produktionsbuild enthalten.
+
+VOLLSTÄNDIGE UNIT-, PROPERTY-, SECURITY- UND INTEGRATIONSSUITE
+
+$ ./node_modules/.bin/vitest run --maxWorkers=1
+PASS
+Test Files  127 passed (127)
+Tests       1099 passed (1099)
+Duration    71.29s
+
+Die enthaltenen Netzwerk-Integrationstests verwendeten ausschließlich lokale
+Mock-Server auf Loopback-Adressen. Der Produktionstransport wurde nicht gegen
+HackerOne oder ein Programmasset ausgeführt.
+
+$ ./node_modules/.bin/vitest run tests/property --maxWorkers=1
+PASS
+Test Files  20 passed (20)
+Tests       57 passed (57)
+Duration    16.21s
+
+$ ./node_modules/.bin/vitest run tests/security --maxWorkers=1
+PASS
+Test Files  1 passed (1)
+Tests       5 passed (5)
+Duration    465ms
+
+BROWSER-HARNESS
+
+$ PLAYWRIGHT_NO_COPY_PROMPT=1 ./node_modules/.bin/playwright test --config playwright.config.ts
+PASS
+Tests       2 passed (2)
+Duration    3.0s
+
+Der Browser-Harness besuchte ausschließlich die lokale Demo-SaaS-Fixture auf
+Loopback. Der zweite Test belegte, dass bereits ein anderer Loopback-Port vor
+dem Empfang eines Requests blockiert wird.
+
+COVERAGE
+
+$ ./node_modules/.bin/vitest run --coverage --maxWorkers=1
+PASS
+Test Files  127 passed (127)
+Tests       1099 passed (1099)
+Duration    76.04s
+
+Statements  84.96% (9112/10725)
+Branches    82.32% (6564/7973)
+Functions   92.18% (1735/1882)
+Lines       85.96% (8801/10238)
+
+Alle konfigurierten globalen Coverage-Schwellen wurden erfüllt.
+
+NATIVE MACOS-PRÜFUNGEN
+
+$ sh tests/native/macos-core-keychain-helper-contract.sh
+PASS (Exit 0, keine Ausgabe)
+
+$ sh tests/native/macos-keychain-helper-contract.sh
+PASS (Exit 0, keine Ausgabe)
+
+$ sh tests/native/macos-app-wrapper-contract.sh
+PASS (Exit 0, keine Ausgabe)
+
+$ sh tests/native/macos-app-wrapper-integration.sh
+PASS (Exit 0, keine Ausgabe)
+
+$ sh tests/native/macos-keychain-helper-integration.sh
+NICHT REALISTISCH AUSFÜHRBAR IN DIESER SITZUNG (Exit 152, keine Testausgabe)
+
+$ /usr/bin/security show-keychain-info /Users/julian/Library/Keychains/login.keychain-db
+Exit 152:
+security: SecKeychainCopySettings /Users/julian/Library/Keychains/login.keychain-db:
+Unable to obtain authorization for this operation.
+
+Der Login-Schlüsselbund wurde nicht entsperrt, kein Benutzerpasswort
+angefordert und keine Sicherheitsprüfung deaktiviert. Es wurde weder ein
+Klartext-Fallback noch ein alternativer Secretpfad verwendet. Der kombinierte
+Befehl npm run test:native kann deshalb in dieser verwalteten Sitzung nicht
+vollständig grün enden; alle davon unabhängigen nativen Verträge und die
+App-Wrapper-Integration wurden separat erfolgreich ausgeführt.
+
+DEPENDENCY-AUDIT
+
+$ node /Users/julian/.npm/_npx/36898ac2e9783e89/node_modules/pnpm/bin/pnpm.cjs audit --audit-level high
+PASS
+No known vulnerabilities found
+
+Der Audit kontaktierte nur die offizielle npm-Paketquelle. Er kontaktierte
+keinen Plattform-, Programm- oder Bug-Bounty-Zielhost.
+
+ZUSÄTZLICHER UNABHÄNGIGER SECURITY-AUDIT
+
+PASS
+- keine offenen P1-Blocker
+- 229/229 gezielte Unit-, Property- und dateibasierte Integrationstests
+- 18/18 gezielte Loopback-Integrationstests
+- Typecheck, gezieltes ESLint, git diff --check und nativer Helper-Contract
+
+EXTERNE KONTAKTE
+
+Während Implementierung, Security-Audit und Tests wurde kein realer
+HackerOne-, Plattform-, Programm- oder Bug-Bounty-Zielhost kontaktiert.
+Automatisierte Netzwerk- und Browsertests liefen ausschließlich gegen lokale
+Mock-Server auf Loopback-Adressen. Die einzige externe Prüfverbindung war der
+ausdrücklich erlaubte Dependency-Audit zur offiziellen npm-Paketquelle.

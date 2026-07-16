@@ -116,6 +116,24 @@ keine aktive Sicherheitsprüfung aus. Allgemeines persistentes CRUD,
 produktive Browserworker, KI-Provider, reale Adapter und Report-Einreichung
 bleiben deaktiviert.
 
+## Pilot Readiness A–C – begrenzte HackerOne-Pipeline
+
+1. Authentifizierte HackerOne-Programmdaten, Structured Scopes und Exclusions
+   ausschließlich read-only synchronisieren.
+2. Initialen lokalen Security Core über eine ausdrückliche secretfreie
+   Keychain-Aktion provisionieren; laufende Instanz danach restart-locked.
+3. Für exakte aktuelle API-URL-Scopes nur drei niedrig-riskante
+   Einmaltestklassen anbieten: Header-`HEAD`, CORS-`OPTIONS` und Root-
+   `security.txt`-`GET`.
+4. Plan, signierte Freigabe und Start als getrennte Kontrollpunkte erzwingen;
+   persistente Budgets, DNS-/SSRF-/TLS-Pinning, Kill Switch und redigierte
+   lokale Reports verwenden.
+
+Umgesetzt ist Pilot C als standardmäßig deaktivierte, geschlossene
+Capability. Automatische Regelannahme, Accounts, Auth-/Credentialtests,
+Browserautomation gegen reale Ziele, Schreibmethoden, allgemeines Scanning,
+LLM-gesteuerte Requests und Report-Einreichung bleiben deaktiviert.
+
 ## Spätere Phase – Analyse und sichere Verifikation
 
 1. Strukturelle Request-/Response-Normalisierung.

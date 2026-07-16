@@ -38,6 +38,24 @@ den Modus `local_simulation` frei. Der verschlüsselte Event Store wird dann
 nur bei Bedarf sicher geöffnet. Phase 8 fordert keine echten Tokens,
 Passwörter, Cookies, TOTP-, E-Mail- oder Browser-Sessions an.
 
+Auf macOS bietet die Setup-Shell für den initialen Sicherheitskern genau eine
+ausdrückliche lokale Aktion an. Sie ist nur verfügbar, wenn der Kill Switch
+nachweislich aktiv ist, noch kein Event-Store-Verzeichnis und keine lokale
+Operator-Credential existieren und der native Keychain-Status entweder
+vollständig leer oder konservativ `legacy_ready` ist. Der Server wählt den
+zulässigen Modus; der Request enthält ausschließlich Version, feste
+Bestätigung, Nonce und Kontextdigest. Schlüsselmaterial wird mit
+`SecRandomCopyBytes` im nativen Helper erzeugt und weder an den Browser noch
+an die Node-Laufzeitantwort ausgegeben.
+
+Nach erfolgreicher Provisionierung bleibt die laufende Instanz absichtlich
+`local_setup_shell`. App beenden, den nicht geheimen Rollback-Anker
+`BUGBOUNTY_EVENT_KEY_MIN_VERSION=1` ausdrücklich konfigurieren und danach mit
+`pnpm app` neu starten. Beim Neustart werden die festen logischen Referenzen
+und die Operator-Metadaten aus dem validierten Core-Receipt aufgelöst. Event-
+Key-Rotation, Adoption und Recovery bleiben davon getrennte lokale Offline-
+Adminoperationen und können nicht über das Dashboard ausgelöst werden.
+
 ## 3. Guided-Flow starten
 
 Im Dashboard zunächst die drei permanenten Banner prüfen:

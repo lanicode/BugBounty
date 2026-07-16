@@ -13,9 +13,14 @@ write new -> read explicitly activated old
 
 Die Implementierung erzeugt keine Schlüssel, übernimmt keine Secrets aus
 Dateien oder Umgebungsvariablen und besitzt keinen Klartext-Fallback. Im
-Produktpfad werden die 32 Byte langen Event-Schlüssel ausschließlich über
-`MacOSKeychainSecretStore` und Referenzen der Form
-`keychain://bugbounty-copilot/event-store-vN` geladen.
+Produktpfad werden die 32 Byte langen Event-Schlüssel ausschließlich über die
+Core-aware-Keychain-Komposition und Referenzen der Form
+`keychain://bugbounty-copilot/event-store-vN` geladen. Nach
+Fresh-Provisioning stammt v1 nur aus dem validierten Core-Bundle; rotierte
+Versionen v2+ bleiben feste Generic-Keychain-Einträge. Der explizit erkannte,
+nicht provisionierbare Phase-4/5-Direktzustand verwendet weiterhin
+statusgebunden den Generic-Keychain-Adapter. Fehler lösen keinen Adapter-
+Fallback aus.
 
 Phase 5 implementiert bewusst weder automatische Neuverschlüsselung alter
 Hüllen noch automatische Löschung, Archivierung oder Wiederherstellung alter
@@ -330,10 +335,11 @@ Version akzeptiert.
 
 ## Produktkomposition
 
-Dashboard und Phase-2-Simulations-CLI injizieren:
+Dashboard, Phase-2-Simulations-CLI und Event-Key-Admin-CLI injizieren:
 
 - das jeweilige lokale Eventverzeichnis;
-- `MacOSKeychainSecretStore`;
+- die fail-closed Core-aware-Keychain-Komposition beziehungsweise den explizit
+  erkannten statusgebundenen Phase-4/5-Direktadapter;
 - den festen Callback
   `keychain://bugbounty-copilot/event-store-v<version>`;
 - `BUGBOUNTY_EVENT_KEY_MIN_VERSION`.

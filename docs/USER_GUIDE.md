@@ -1,17 +1,20 @@
-# Phase 8 – Benutzerhandbuch
+# Benutzerhandbuch
 
 ## Zweck und Grenzen
 
 Phase 8 verbindet die vorhandenen lokalen Komponenten zu einer bedienbaren
-Loopback-Anwendung. Sie ist kein Scanner und kein Live-Bug-Bounty-Agent. Der
-normale Ablauf benötigt keine Bearbeitung von YAML, JSON, SQLite oder
-Quellcode und keine Terminalparameter nach dem Start.
+Loopback-Anwendung. Sie ist kein allgemeiner Scanner und kein autonomer
+Live-Bug-Bounty-Agent. Der normale Ablauf benötigt keine Bearbeitung von YAML,
+JSON, SQLite oder Quellcode und keine Terminalparameter nach dem Start.
 
 Produktiv lokal sind Start/Shutdown, Loopback-Server, sichere HTTP-Grenzen,
 SQLite-Control-Plane, Kill Switch, Readiness und Statusprojektion. Der
 21-Schritt-Produktablauf ist eine flüchtige lokale Simulation. Browser-Replay
-existiert ausschließlich in der Phase-7-Testsuite. Reale Integrationen, AI,
-Accounts, aktive Tests und Report-Einreichung sind deaktiviert.
+existiert ausschließlich in der Phase-7-Testsuite. AI, reale Accounts und
+Report-Einreichung sind deaktiviert. Die getrennte Pilot-C-Capability kann
+nach expliziter Installation ausschließlich drei niedrig-riskante Einmaltests
+für exakte, API-synchronisierte HTTPS-Assets freischalten; sie gehört nicht
+zum 21-Schritte-Demoablauf.
 
 ## Start und Runtime-Modi
 
@@ -103,6 +106,37 @@ keine externe Zieladresse und lösen keine Submission aus. Queue und lokale
 Freigabe sind getrennte, ausdrückliche Kontrollpunkte. Die persistente
 Core-Review bleibt ein separater signierter Pfad.
 
+## Pilot-C-Active-Testing
+
+Der Active-Testing-Bereich ist standardmäßig serverseitig deaktiviert. Auf
+macOS wird er nur durch einen ausdrücklichen erneuten Installerlauf mit
+`--enable-hackerone-active-testing` verfügbar. Anschließend bleiben sichere
+Core-Provisionierung, globaler Kill Switch, HackerOne-Credential,
+Metadatenaktivierung, API-Synchronisierung, Programmauswahl und lokale Annahme
+des aktuellen Snapshots separate Schritte.
+
+Im Bereich **Aktive Tests** kann der Operator ausschließlich ein vom Server
+projiziertes, exaktes In-Scope-HTTPS-Asset und eine der Klassen
+`http_headers`, `cors_preflight` oder `security_txt` wählen. Freie URL-, Host-,
+Pfad-, Methoden-, Header- oder Bodyfelder existieren nicht. Vier Checkboxen
+erzwingen die manuelle Prüfung von Automationsregeln, Scope-Anweisung,
+Ausschlüssen und Seiteneffekten. **Plan vorbereiten** sendet keinen Request;
+**Plan freigeben** erzeugt eine plan- und snapshotgebundene signierte
+Entscheidung und sendet ebenfalls keinen Request. Erst **separat starten**
+darf exakt einen Request ausführen.
+
+Der Runner nutzt nur Port 443, validiertes TLS 1.2/1.3, vollständig geprüfte
+öffentliche DNS-Antworten und eine an genau eine Adresse gepinnte Verbindung.
+Private, Loopback-, Link-Local-, CGNAT-, Dokumentations-, reservierte und
+Multicast-Adressen blockieren den gesamten Lauf. Redirects, Upgrades,
+Kompression, unbekannte Content-Types, übergroße Responses, Retries und
+gleichzeitige Requests blockieren. Body, Rohheader und Cookie-Werte werden
+nicht persistiert. Der erzeugte Report ist immer
+`local_draft_unsubmitted` mit `externalSubmissionPerformed=false`.
+
+Die vollständige Schrittfolge und Stopkriterien stehen in
+`docs/ACTIVE_TESTING_USER_GUIDE.md`.
+
 ## Status und Drift
 
 Die zentrale Seite zeigt Kill Switch, Secret Store, Event Store, Datenbank,
@@ -120,4 +154,5 @@ Buttons und Vorschauen bleiben gesperrt.
 Freie URLs, Locators, Scripts, Browserbefehle, unbekannte Objekt-IDs, freie
 HTTP-Requests, Roh-HARs, Auth-State-Dateien, echte Accounts, CAPTCHA-/Anti-Bot-
 Umgehung, automatische rechtliche Zustimmung, LLM-gesteuerte Requests und
-externe Report-Einreichung.
+externe Report-Einreichung. Pilot C ist ausschließlich die oben beschriebene
+geschlossene Einmaltest-Pipeline und erweitert diese Verbotsliste nicht.

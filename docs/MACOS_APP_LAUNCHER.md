@@ -50,10 +50,38 @@ anschließende signierte Aktivierung und jeder Verbindungstest bleiben
 getrennte ausdrückliche Frontendaktionen. Ein erneuter Installerlauf ohne den
 Schalter setzt die App wieder auf `local-only`.
 
-Damit ein Finder-Start nach der getrennten lokalen Event-Key- und
-Operator-Einrichtung nicht von einer zufällig geerbten Terminalumgebung
-abhängt, übernimmt der Installer die vier **nicht geheimen** Core-Metadaten
-einmalig in private App-Konfigurationsdateien:
+Für Pilot Readiness C existiert ein dritter, noch enger kontrollierter
+Launcher-Modus:
+
+```bash
+npx --yes pnpm@11.7.0 app:install-macos -- --enable-hackerone-active-testing
+```
+
+Dieser Modus setzt zusätzlich
+`BUGBOUNTY_ACTIVE_TESTING_ENABLED=1` und erzwingt gleichzeitig den
+HackerOne-Read-only-Modus. Er aktiviert weder Credential noch Adapter,
+akzeptiert keine Policy, löscht den Kill Switch nicht und startet keinen
+Zielrequest. Diese Schritte bleiben im Frontend getrennt. Die Active-Testing-
+Capability akzeptiert nur API-synchronisierte exakte HTTPS-Assets,
+geschlossene Testklassen, eine frische signierte Planfreigabe und einen
+separaten Startklick. Ein späterer Installerlauf ohne Flag setzt alle externen
+Schalter wieder auf den sicheren `local-only`-Default.
+
+Bei einem frischen lokalen Core kann die Setup-Shell Event- und Operator-Key
+nach einem ausdrücklichen Klick atomar im macOS-Schlüsselbund erzeugen. Der
+HTTP-Request enthält keine Secretwerte; die laufende Instanz bleibt danach
+absichtlich gesperrt. App beenden und den nicht geheimen Rollback-Anker beim
+erneuten Installerlauf dauerhaft setzen, zum Beispiel für Pilot C:
+
+```bash
+BUGBOUNTY_EVENT_KEY_MIN_VERSION=1 \
+  npx --yes pnpm@11.7.0 app:install-macos -- --enable-hackerone-active-testing
+```
+
+Operatorreferenz, ID und Revision werden bei einem validierten neuen
+Core-Bundle aus dessen Keychain-Receipt aufgelöst. Für separat verwaltete
+Legacy-Credentials kann der Installer weiterhin die vier **nicht geheimen**
+Core-Metadaten in private App-Konfigurationsdateien übernehmen:
 
 ```bash
 BUGBOUNTY_EVENT_KEY_MIN_VERSION=1 \
@@ -88,7 +116,8 @@ BUGBOUNTY_COPILOT_APP_DIR="$HOME/Applications" \
 - Die `.app` speichert nur den kanonischen Repository-Pfad, den beim
   Installieren aus `process.execPath` ermittelten kanonischen, ausführbaren
   und nicht symbolisch verlinkten Node-Pfad, den kanonischen lokalen
-  `tsx`-Pfad, den nicht geheimen Modus `local-only`/`hackerone-readonly` und
+  `tsx`-Pfad, den nicht geheimen Modus `local-only`/`hackerone-readonly`/
+  `hackerone-active-testing` und
   die vier oben beschriebenen nicht geheimen Referenz-/Versionswerte. Alle
   Dateien sind nur für den aktuellen Benutzer lesbar und werden nie als
   Shellcode ausgewertet.
@@ -99,9 +128,9 @@ BUGBOUNTY_COPILOT_APP_DIR="$HOME/Applications" \
 - Vor jedem Start werden alle Konfigurationsdateien erneut auf Eigentümer,
   Modus, Einzeiligkeit und kanonisches Format geprüft. Die Anwendung erhält
   eine neu konstruierte Minimalumgebung; geerbte Werte wie `NODE_OPTIONS`,
-  `DYLD_*` oder fremde Integrationsschalter werden entfernt. Die beiden
+  `DYLD_*` oder fremde Integrationsschalter werden entfernt. Alle drei
   Integrationsschalter werden immer ausdrücklich aus dem installierten Modus
-  gesetzt.
+  gesetzt; Active Testing darf nie ohne den Read-only-Unterbau aktiv sein.
 - Der Launcher verwendet ausschließlich das bereits installierte lokale
   `tsx` und den bestehenden Einstieg `apps/dashboard/index.ts`. Er führt beim
   Start weder `npm`, `npx`, `pnpm install` noch einen anderen Download aus.

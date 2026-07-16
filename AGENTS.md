@@ -16,8 +16,14 @@ deutlich als Simulation beziehungsweise Test-Harness-validierte Darstellung
 gekennzeichnet. Innerhalb des Phase-1-Kerns änderte Phase 5 zwingend den Event
 Store und Phase 6 zwingend das Audit-Log; beide Änderungen sind in ihren
 Security-Core-Berichten dokumentiert. Phase 8 verändert den Phase-1-Kern
-nicht. `legacy/mvp/` ist ausschließlich eine unsichere, nicht produktive
-Audit-Referenz.
+nicht. Pilot Readiness C ergänzt eine separat aktivierbare, standardmäßig
+gesperrte Capability für niedrig-riskante aktive HTTPS-Prüfungen. Sie darf nur
+exakt ausgewählte Assets aus einem aktuellen, authentifizierten und
+ausdrücklich akzeptierten HackerOne-Snapshot verwenden. Jeder Plan bindet
+Schema, Policy, Scope, Budget, Kill Switch, Operatorentscheidung und
+deterministischen Runner; Entwicklung, CI und automatisierte Tests bleiben
+Loopback-only. `legacy/mvp/` ist ausschließlich eine unsichere, nicht
+produktive Audit-Referenz.
 
 ## Nicht verhandelbare Regeln
 
@@ -32,8 +38,19 @@ Audit-Referenz.
   verifizierter vollständiger lokaler Maskierung ohne Dateipfad entstehen,
   als streng validierter Digest freigegeben und anschließend genullt werden.
 - Jede Netzwerkentscheidung erfolgt vor dem Request, deny-by-default und fail-closed.
-- Keine aktiven Sicherheitstests, reale Kontoerstellung, Live-Plattformintegration, Report-Einreichung oder LLM-gesteuerten Requests ergänzen.
-- Phase-2-Quellen, Mock-Adapter, Demo-SaaS, Simulation und Dashboard bleiben vollständig lokal. Externe Adapter sind deaktivierte Platzhalter ohne Transport.
+- Aktive Sicherheitstests sind ausschließlich innerhalb der Pilot-Readiness-C-
+  Capability zulässig: niedrig-riskante HTTPS-`GET`/`HEAD`/`OPTIONS`-Prüfungen,
+  exakter aktueller HackerOne-Snapshot, ausdrückliche lokale Policyannahme,
+  exakte Assetauswahl, frische signierte Planfreigabe, persistentes Budget und
+  standardmäßig deaktivierter Transport. Reale Kontoerstellung,
+  Credential-Angriffe, Exploitation mit Seiteneffekt, Schreibmethoden,
+  automatische Report-Einreichung und LLM-gesteuerte Requests bleiben
+  verboten.
+- Phase-2-Quellen, Mock-Adapter, Demo-SaaS und Simulation bleiben vollständig
+  lokal. Externe Transporte existieren ausschließlich für die feste
+  HackerOne-Metadaten-API und die getrennte Pilot-Readiness-C-Capability;
+  beide bleiben standardmäßig deaktiviert und benötigen ihre jeweils eigene
+  signierte Freigabe. Das Dashboard selbst bleibt loopbackgebunden.
 - Keine Roh-HARs, Rohbodys, Tokens, Cookies, Zugangsdaten oder Identitätsdaten persistieren oder loggen.
 - Persistierung erfolgt erst nach Redaktion und Größenprüfung. Eventdaten werden ausschließlich authentifiziert verschlüsselt gespeichert.
 - Produktionsschlüssel stammen ausschließlich aus dem OS-Keychain-Adapter. Es gibt keinen Klartext-Fallback.
@@ -55,7 +72,20 @@ Audit-Referenz.
   verbliebene Lease oder Event-Temporärdatei blockiert; Recovery ist nur als
   ausdrücklich bestätigter lokaler Offline-Adminschritt erlaubt und darf eine
   nachweislich aktive Eigentümer-PID niemals verdrängen.
-- Private Operator-Schlüssel werden ausschließlich als Ed25519-PKCS#8 über eine `keychain://`-Referenz geladen. Schlüsseldateien, Schlüsselmaterial in Umgebungsvariablen, automatische Provisionierung und Klartext-Fallbacks sind verboten.
+- Private Operator-Schlüssel werden ausschließlich als Ed25519-PKCS#8 über
+  eine `keychain://`-Referenz geladen. Schlüsseldateien, Schlüsselmaterial in
+  Umgebungsvariablen, unbeaufsichtigte Provisionierung und Klartext-Fallbacks
+  sind verboten. Pilot Readiness C darf für einen nachweislich frischen,
+  leeren Core eine ausdrücklich angeklickte lokale Einmal-Provisionierung über
+  einen fest verdrahteten nativen Keychain-Helfer anbieten. Die einzige
+  Legacy-Ausnahme ist ein konservativ validierter `legacy_ready`-Zustand: exakt
+  der lesbare 32-Byte-Eintrag `event-store-v1` ist vorhanden, Operator-Eintrag,
+  lokales Operator-Enrollment und Event-Store-Verzeichnis fehlen. Dann darf
+  ausschließlich die fehlende Operator-Hülle neu angelegt werden; der
+  bestehende Event-Key wird weder verändert noch ausgegeben. Teil- und
+  Konfliktzustände blockieren. Provisionierung darf keine bestehenden
+  Einträge überschreiben, keine Rotation/Recovery auslösen und keine
+  Secretbytes an Browser, argv, Environment, Logs oder Dateien geben.
 - Jede neue persistierte Approval-Entscheidung sowie jeder Kill-Switch-Clear benötigt eine gültige, frische, session-, nonce-, control-plane- und kontextgebundene Operator-Signatur. Freie Actor-Strings sind keine Credential.
 - Signaturprüfung, Replay-Schutz, Decision-Evidence, Approval-Transition, Audit und External-Action-Binding bleiben atomar in `BEGIN IMMEDIATE`. Die store-eigene Uhr und ihr persistenter High-Water-Mark dürfen nicht umgangen werden.
 - Policy-Drift, Redirects, Service Worker, WebSockets, unbekannte Content-Types und Budgetfehler blockieren.
@@ -65,10 +95,17 @@ Audit-Referenz.
 - Positive External-Action-Entscheidungen dürfen ausschließlich aus einem atomaren, aktuellen `ControlPlaneStore`-Snapshot entstehen. Caller-Booleans, Callback-Gates und Freitextsuche sind keine Autorisierung.
 - Proposal, Policy, Kampagnenrevision/-digest, Scope, Accountrolle, Ownership, Payload, Approval, Operator, Budget und Audit müssen exakt gebunden und vor Start sowie Settlement erneut geprüft werden.
 - Proposal-IDs, Attempts und Budgets sind persistent. Abbruch und Fehler erstatten kein Budget; Crash-Reservationen bleiben fail-closed blockierend.
-- Das initiale Operator-Enrollment ist lokales TOFU bei aktivem Kill Switch. Es ist keine rechtliche Zustimmung, keine Hardwarebindung und kein Beweis menschlicher Anwesenheit. Reale Runner bleiben unabhängig von vorhandener Evidence deaktiviert.
+- Das initiale Operator-Enrollment ist lokales TOFU bei aktivem Kill Switch.
+  Es ist keine rechtliche Zustimmung, keine Hardwarebindung und kein Beweis
+  menschlicher Anwesenheit. Enrollment oder Core-Provisionierung allein
+  aktivieren niemals einen realen Runner; dafür bleiben separate Runtime-,
+  Snapshot-, Policy-, Plan-, Budget- und Freigabegrenzen verpflichtend.
 - Event-Key-Adoption, -Rotation und -Recovery sind lokale Offline-
   Adminoperationen bei beendetem Dashboard. Kein Dashboard-, HTTP-, Browser-,
-  LLM- oder External-Action-Pfad darf sie auslösen.
+  LLM- oder External-Action-Pfad darf sie auslösen. Davon getrennt ist nur die
+  ausdrücklich bestätigte Einmal-Provisionierung eines nachweislich leeren
+  Event Stores beziehungsweise der oben exakt begrenzte `legacy_ready`-
+  Abschluss nach der Pilot-Readiness-C-Grenze zulässig.
 - Das dateibasierte Audit-Log rehydriert und verifiziert den vollständigen
   kanonischen Head unter einer privaten prozessübergreifenden Mutation-Lease.
   Teilzeilen werden niemals still ignoriert oder gekürzt. Lease-Recovery ist
@@ -89,6 +126,8 @@ Audit-Referenz.
 - `packages/egress-guard`: einzige Freigabestelle des Phase-1-Kerns für HTTP-/Browser-Egress.
 - `packages/redaction`: einzige Transformation vor Eventpersistierung.
 - `packages/secret-store`: Keychain-Produktion und In-Memory nur für Tests.
+- `packages/active-testing`: geschlossene Pilot-C-Plan-, Approval-, Budget-,
+  DNS-/TLS-, Evidence- und lokale Reportgrenze; kein allgemeiner HTTP-Client.
 - `packages/event-store`: versionierte AES-256-GCM-Hüllen, explizit aktivierte
   Leseversionen, write-once-Dateien, enge Größengrenzen sowie Datei- und
   Verzeichnis-Durability; zwingende Phase-5-Security-Core-Änderung.
@@ -101,7 +140,12 @@ Audit-Referenz.
   expliziter lokaler stale-Lease-Recovery.
 - `packages/platform-source`: lokale, strikt validierte Plattform-Snapshots ohne HTTP-Client.
 - `packages/control-plane`: lokale SQLite-Datenmodelle, Migrationen und Zustandsmaschinen.
-- `packages/external-actions`: einzige Registry und Gate-Pipeline für künftige externe Wirkungen.
+- `packages/external-actions`: einzige trusted Registry und allgemeine
+  Simulations-/Gate-Pipeline für externe Wirkungen. Ein spezialisierter Runner
+  wie Pilot C darf eine engere eigene Zustandsmaschine besitzen, muss aber die
+  passende tief unveränderliche Registrydefinition und deren kanonischen
+  Digest vor Vorbereitung, Reservation, Start und Abschluss konsumieren und
+  erneut prüfen; er darf keine zweite Registry erfinden.
 - `packages/operator-auth`: einzige lokale Ed25519-Signaturgrenze für Enrollment, Approval-Entscheidungen und Kill-Switch-Clear.
 - `packages/dashboard` und `packages/demo-saas`: ausschließlich `127.0.0.1`, feste Routen und lokale Mocks.
 - `packages/local-runtime`: reine, redigierte Readiness-Ableitung ohne I/O oder
