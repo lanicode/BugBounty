@@ -1212,7 +1212,7 @@ describe("local dashboard browser UI", () => {
       await simulationBanner.waitFor();
       expect(await simulationBanner.isVisible()).toBe(true);
       const externalBanner = page.getByText(
-        "EXTERNE INTEGRATIONEN DEAKTIVIERT",
+        "ALLGEMEINE EXTERNE INTEGRATIONEN DEAKTIVIERT",
         { exact: true },
       );
       await externalBanner.waitFor();

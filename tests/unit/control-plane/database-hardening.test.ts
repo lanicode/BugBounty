@@ -34,6 +34,7 @@ describe("ControlPlaneDatabase hardening", () => {
     try {
       expect(pragmaValue(database, "PRAGMA foreign_keys")).toBe(1);
       expect(pragmaValue(database, "PRAGMA trusted_schema")).toBe(0);
+      expect(pragmaValue(database, "PRAGMA recursive_triggers")).toBe(1);
       expect(pragmaValue(database, "PRAGMA journal_mode")).toBe("delete");
       expect(pragmaValue(database, "PRAGMA synchronous")).toBe(2);
       expect(pragmaValue(database, "PRAGMA fullfsync")).toBe(1);
@@ -42,6 +43,34 @@ describe("ControlPlaneDatabase hardening", () => {
       expect(pragmaValue(database, "PRAGMA temp_store")).toBe(2);
       expect((await lstat(await realpath(root))).mode & 0o7777).toBe(0o700);
       expect((await lstat(path)).mode & 0o7777).toBe(0o600);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("keeps delete guards effective for INSERT OR REPLACE conflict deletes", () => {
+    const database = ControlPlaneDatabase.memory();
+    try {
+      database.run(
+        "CREATE TABLE append_only_guard(id TEXT PRIMARY KEY,value TEXT NOT NULL) STRICT",
+      );
+      database.run(
+        `CREATE TRIGGER append_only_guard_no_delete
+         BEFORE DELETE ON append_only_guard
+         BEGIN SELECT RAISE(ABORT,'APPEND_ONLY_DELETE_BLOCKED'); END`,
+      );
+      database.run(
+        "INSERT INTO append_only_guard(id,value) VALUES('row','original')",
+      );
+
+      expect(() =>
+        database.run(
+          "INSERT OR REPLACE INTO append_only_guard(id,value) VALUES('row','forged')",
+        ),
+      ).toThrow("APPEND_ONLY_DELETE_BLOCKED");
+      expect(
+        database.get("SELECT id,value FROM append_only_guard WHERE id='row'"),
+      ).toEqual({ id: "row", value: "original" });
     } finally {
       database.close();
     }

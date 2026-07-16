@@ -11,8 +11,12 @@ import {
   type ExternalActionProposal,
 } from "../../packages/external-actions/pipeline.js";
 import {
+  assertHackerOneActiveTestRegistryPlanBinding,
+  assertTrustedExternalActionDefinition,
   getExternalActionDefinition,
+  hackerOneActiveTestRegistryDefinitionDigest,
   listExternalActionDefinitions,
+  trustedExternalActionDefinitionDigest,
 } from "../../packages/external-actions/registry.js";
 import {
   resolvePhase2Runtime,
@@ -61,6 +65,7 @@ describe("trusted external action registry", () => {
   it("contains every known action as a deeply immutable blocked definition", () => {
     const definitions = listExternalActionDefinitions();
     expect(definitions.map(({ actionId }) => actionId)).toEqual([
+      "hackerone_active_test",
       "hackerone_metadata_read",
       "platform_api_read",
       "test_account_register",
@@ -82,6 +87,98 @@ describe("trusted external action registry", () => {
       expect(Object.isFrozen(definition)).toBe(true);
       expect(Object.isFrozen(definition.fixedTargetPolicy)).toBe(true);
       expect(Object.isFrozen(definition.budget)).toBe(true);
+      if (
+        definition.fixedTargetPolicy.kind ===
+        "hackerone_active_test_exact_scope"
+      ) {
+        expect(Object.isFrozen(definition.fixedTargetPolicy.testClasses)).toBe(
+          true,
+        );
+        for (const testClass of definition.fixedTargetPolicy.testClasses)
+          expect(Object.isFrozen(testClass)).toBe(true);
+      }
+    }
+  });
+
+  it("pins Pilot-C to its dedicated exact-scope HTTPS action definition", () => {
+    const definition = getExternalActionDefinition("hackerone_active_test");
+    expect(definition).toEqual({
+      actionId: "hackerone_active_test",
+      category: "target",
+      triggerComponent: "pilot_c_active_testing_gate",
+      targetClass: "program_target",
+      fixedTargetPolicy: {
+        kind: "hackerone_active_test_exact_scope",
+        scheme: "https",
+        port: 443,
+        snapshotRequirement: "current_hackerone_api_authenticated",
+        scopeRequirement: "exact_selected_structured_scope",
+        ownershipRequirement: "selected_scope_asset_digest",
+        testClasses: [
+          { id: "http_headers", method: "HEAD" },
+          { id: "cors_preflight", method: "OPTIONS" },
+          { id: "security_txt", method: "GET" },
+        ],
+      },
+      requiredSecretKind: "operator_signing_key",
+      policyDecision: "required",
+      scopeCheck: "required",
+      ownershipCheck: "object",
+      budget: { kind: "action_units", units: 1 },
+      humanCheckpoint: "signed_active_test_plan",
+      simulationSupported: false,
+      defaultState: "blocked",
+      killSwitchBehavior: "block_before_and_after_runner",
+    });
+    expect(hackerOneActiveTestRegistryDefinitionDigest()).toBe(
+      trustedExternalActionDefinitionDigest("hackerone_active_test"),
+    );
+    expect(hackerOneActiveTestRegistryDefinitionDigest()).toMatch(
+      /^[a-f0-9]{64}$/u,
+    );
+  });
+
+  it("rejects absent and structurally identical untrusted registry definitions", () => {
+    const definition = getExternalActionDefinition("hackerone_active_test");
+    expect(() => {
+      assertTrustedExternalActionDefinition(undefined, "hackerone_active_test");
+    }).toThrow("ACTION_REGISTRY_DEFINITION_UNTRUSTED");
+    expect(() => {
+      assertTrustedExternalActionDefinition(
+        Object.freeze({ ...definition }),
+        "hackerone_active_test",
+      );
+    }).toThrow("ACTION_REGISTRY_DEFINITION_UNTRUSTED");
+  });
+
+  it("rejects method, class, scheme and port drift from the active-test registry", () => {
+    expect(
+      assertHackerOneActiveTestRegistryPlanBinding(
+        "http_headers",
+        "HEAD",
+        "https",
+        443,
+      ),
+    ).toBe(hackerOneActiveTestRegistryDefinitionDigest());
+    for (const binding of [
+      { testClass: "http_headers", method: "GET", scheme: "https", port: 443 },
+      { testClass: "unknown", method: "HEAD", scheme: "https", port: 443 },
+      { testClass: "http_headers", method: "HEAD", scheme: "http", port: 443 },
+      {
+        testClass: "http_headers",
+        method: "HEAD",
+        scheme: "https",
+        port: 8443,
+      },
+    ]) {
+      expect(() => {
+        assertHackerOneActiveTestRegistryPlanBinding(
+          binding.testClass,
+          binding.method,
+          binding.scheme,
+          binding.port,
+        );
+      }).toThrow("ACTIVE_TEST_ACTION_REGISTRY_PLAN_MISMATCH");
     }
   });
 

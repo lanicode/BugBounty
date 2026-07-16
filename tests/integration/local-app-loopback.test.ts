@@ -1,4 +1,4 @@
-import { mkdtemp, stat } from "node:fs/promises";
+import { mkdtemp, realpath, stat } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,7 @@ import {
   startLocalApplication,
   type RunningLocalApplication,
 } from "../../apps/dashboard/runtime.js";
+import { TestCoreKeychainRunner } from "../fixtures/core-keychain.factory.js";
 
 const running: RunningLocalApplication[] = [];
 
@@ -25,6 +26,7 @@ describe("Phase-8 local application loopback runtime", () => {
       demoPort: 0,
       environment: {},
       platform: "darwin",
+      coreKeychainRunner: new TestCoreKeychainRunner("absent"),
       now: () => new Date(Date.UTC(2026, 6, 14, 12, 0, tick++)),
     });
     running.push(application);
@@ -57,6 +59,14 @@ describe("Phase-8 local application loopback runtime", () => {
       readonly simulationAvailable: boolean;
       readonly simulationStatus: string;
       readonly killSwitch: { readonly active: boolean };
+      readonly activeTesting: {
+        readonly capability: {
+          readonly available: boolean;
+          readonly configured: boolean;
+          readonly enabled: boolean;
+          readonly reasonCodes: readonly string[];
+        };
+      };
       readonly localProduct: {
         readonly nextAction: string;
         readonly progress: { readonly completedSteps: number };
@@ -73,6 +83,13 @@ describe("Phase-8 local application loopback runtime", () => {
       simulationAvailable: false,
       simulationStatus: "setup_required",
       killSwitch: { active: true },
+      activeTesting: {
+        capability: {
+          available: true,
+          configured: false,
+          enabled: false,
+        },
+      },
       localProduct: {
         nextAction: "onboarding_system_check",
         progress: { completedSteps: 0 },
@@ -86,6 +103,15 @@ describe("Phase-8 local application loopback runtime", () => {
     });
     expect(dashboard.localProduct.runtimeContext.demoSnapshotDigest).toMatch(
       /^[a-f0-9]{64}$/u,
+    );
+    expect(dashboard.activeTesting.capability.reasonCodes).toEqual(
+      expect.arrayContaining([
+        "ACTIVE_TESTING_EXTERNAL_INTEGRATIONS_DISABLED",
+        "ACTIVE_TESTING_CAPABILITY_DISABLED",
+        "ACTIVE_TESTING_SECURE_CORE_REQUIRED",
+        "ACTIVE_TESTING_KILL_SWITCH_ACTIVE",
+        "ACTIVE_TESTING_API_PROGRAM_SELECTION_REQUIRED",
+      ]),
     );
 
     const demoResponse = await fetch(`${application.demo.origin}/health`);
@@ -114,6 +140,7 @@ describe("Phase-8 local application loopback runtime", () => {
         operatorId: "partial-local-operator",
       },
       platform: "darwin",
+      coreKeychainRunner: new TestCoreKeychainRunner("absent"),
       now: () => new Date("2026-07-14T12:00:00.000Z"),
     });
     running.push(application);
@@ -147,6 +174,104 @@ describe("Phase-8 local application loopback runtime", () => {
     });
   });
 
+  it("resolves a complete Core bundle to fixed logical references and signer metadata", async () => {
+    const runtimeRoot = await realpath(
+      await mkdtemp(join(tmpdir(), "phase8-core-runtime-")),
+    );
+    const coreKeychainRunner = new TestCoreKeychainRunner(
+      "fresh_bundle",
+      "bundle-operator",
+    );
+    const application = await startLocalApplication({
+      runtimeRoot,
+      dashboardPort: 0,
+      demoPort: 0,
+      environment: { eventKeyMinimumVersion: "1" },
+      platform: "darwin",
+      coreKeychainRunner,
+      now: () => new Date("2026-07-14T12:00:00.000Z"),
+    });
+    running.push(application);
+
+    expect(application).toMatchObject({
+      runtimeMode: "local_simulation",
+      readiness: {
+        status: "ready",
+        ready: true,
+        eventKeyMinimumVersionStatus: "ready",
+        operatorStatus: "ready",
+        secretStoreStatus: "ready",
+      },
+    });
+    expect(coreKeychainRunner.operations).toContain("read-operator");
+    expect(coreKeychainRunner.operations).toContain("read-event");
+
+    const dashboard = (await (
+      await fetch(`${application.dashboard.origin}/api/state`)
+    ).json()) as {
+      readonly operatorAuthentication: {
+        readonly signerConfigured: boolean;
+        readonly operatorId: string | null;
+      };
+      readonly coreProvisioning: {
+        readonly status: string;
+        readonly keychainStatus: string;
+        readonly canProvision: boolean;
+      };
+    };
+    expect(dashboard).toMatchObject({
+      operatorAuthentication: {
+        signerConfigured: true,
+        operatorId: "bundle-operator",
+      },
+      coreProvisioning: {
+        status: "configured",
+        keychainStatus: "fresh_bundle",
+        canProvision: false,
+      },
+    });
+  });
+
+  it.each(["legacy_ready", "conflict"] as const)(
+    "keeps the %s Core state fail-closed even with structurally complete runtime metadata",
+    async (coreStatus) => {
+      const runtimeRoot = await realpath(
+        await mkdtemp(join(tmpdir(), `phase8-core-${coreStatus}-`)),
+      );
+      const coreKeychainRunner = new TestCoreKeychainRunner(coreStatus);
+      const application = await startLocalApplication({
+        runtimeRoot,
+        dashboardPort: 0,
+        demoPort: 0,
+        environment: {
+          eventKeyMinimumVersion: "1",
+          operatorKeyReference:
+            "keychain://bugbounty-copilot/operator-ed25519-v1",
+          operatorId: "local-operator",
+          operatorKeyRevision: "1",
+        },
+        platform: "darwin",
+        coreKeychainRunner,
+        now: () => new Date("2026-07-14T12:00:00.000Z"),
+      });
+      running.push(application);
+
+      expect(application).toMatchObject({
+        runtimeMode: "local_setup_shell",
+        readiness: {
+          status: "blocked",
+          ready: false,
+          secretStoreStatus: "blocked",
+        },
+      });
+      expect(application.readiness.reasonCodes).toContain(
+        "RUNTIME_SECRET_STORE_ERROR",
+      );
+      expect(coreKeychainRunner.operations).not.toContain("read-event");
+      expect(coreKeychainRunner.operations).not.toContain("read-operator");
+    },
+  );
+
   it("falls back to an ephemeral loopback dashboard port when the preferred port is occupied", async () => {
     const blocker = createServer((_request, response) => response.end());
     await listen(blocker, 0);
@@ -159,6 +284,7 @@ describe("Phase-8 local application loopback runtime", () => {
         demoPort: 0,
         environment: {},
         platform: "darwin",
+        coreKeychainRunner: new TestCoreKeychainRunner("absent"),
         now: () => new Date("2026-07-14T12:00:00.000Z"),
       });
       running.push(application);
@@ -188,6 +314,7 @@ describe("Phase-8 local application loopback runtime", () => {
         demoPort,
         environment: {},
         platform: "darwin",
+        coreKeychainRunner: new TestCoreKeychainRunner("absent"),
         now: () => new Date("2026-07-14T12:00:00.000Z"),
       }),
     ).rejects.toThrow("DASHBOARD_PORT_INVALID");

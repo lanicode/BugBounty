@@ -97,14 +97,22 @@ describe("macOS app launcher", () => {
 
   it("loads only private single-line absolute configuration paths", async () => {
     const fixture = await launcherFixture();
-    await expect(
-      loadMacOSLaunchConfiguration(fixture.resources),
-    ).resolves.toEqual({
+    const defaultConfiguration = await loadMacOSLaunchConfiguration(
+      fixture.resources,
+    );
+    expect(defaultConfiguration).toEqual({
       repositoryRoot: fixture.repository,
       nodeExecutable: "/usr/bin/true",
       tsxEntry: join(fixture.repository, "node_modules/tsx/dist/cli.mjs"),
       dashboardEntry: join(fixture.repository, "apps/dashboard/index.ts"),
       hackerOneReadonlyEnabled: false,
+      activeTestingEnabled: false,
+    });
+    expect(buildMacOSDashboardEnvironment(defaultConfiguration)).toEqual({
+      PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+      BUGBOUNTY_EXTERNAL_INTEGRATIONS_ENABLED: "false",
+      BUGBOUNTY_HACKERONE_READONLY_ENABLED: "false",
+      BUGBOUNTY_ACTIVE_TESTING_ENABLED: "0",
     });
 
     await writeFile(
@@ -180,12 +188,14 @@ describe("macOS app launcher", () => {
       operatorId: "local.admin",
       operatorKeyRevision: "1",
       hackerOneReadonlyEnabled: true,
+      activeTestingEnabled: false,
     });
     const environment = buildMacOSDashboardEnvironment(configuration);
     expect(environment).toEqual({
       PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
       BUGBOUNTY_EXTERNAL_INTEGRATIONS_ENABLED: "true",
       BUGBOUNTY_HACKERONE_READONLY_ENABLED: "true",
+      BUGBOUNTY_ACTIVE_TESTING_ENABLED: "0",
       BUGBOUNTY_EVENT_KEY_MIN_VERSION: "1",
       BUGBOUNTY_OPERATOR_KEY_REFERENCE:
         "keychain://bugbounty-copilot/operator-ed25519-v1",
@@ -220,6 +230,36 @@ describe("macOS app launcher", () => {
     await expect(
       loadMacOSLaunchConfiguration(fixture.resources),
     ).rejects.toMatchObject({ code: "MACOS_LAUNCHER_CONFIG_INVALID" });
+  });
+
+  it("enables active testing only through the exact explicit integration mode", async () => {
+    const fixture = await launcherFixture();
+    await writeFile(
+      join(fixture.resources, "integration-mode"),
+      "hackerone-active-testing\n",
+      { mode: 0o600 },
+    );
+
+    const configuration = await loadMacOSLaunchConfiguration(fixture.resources);
+    expect(configuration).toMatchObject({
+      hackerOneReadonlyEnabled: true,
+      activeTestingEnabled: true,
+    });
+    expect(buildMacOSDashboardEnvironment(configuration)).toEqual({
+      PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+      BUGBOUNTY_EXTERNAL_INTEGRATIONS_ENABLED: "true",
+      BUGBOUNTY_HACKERONE_READONLY_ENABLED: "true",
+      BUGBOUNTY_ACTIVE_TESTING_ENABLED: "1",
+    });
+
+    expect(() =>
+      buildMacOSDashboardEnvironment({
+        ...configuration,
+        hackerOneReadonlyEnabled: false,
+      }),
+    ).toThrow(
+      expect.objectContaining({ code: "MACOS_LAUNCHER_CONFIG_INVALID" }),
+    );
   });
 
   it("holds a single-instance lease only on loopback and releases it", async () => {
@@ -463,20 +503,28 @@ describe("macOS app launcher", () => {
       expect(second.code).toBe(0);
       expect(second.stderr).toBe("");
 
-      const hostileToolchainEnvironment = await runInstaller(target, false, {
-        DEVELOPER_DIR: "/private/tmp/untrusted-developer-directory",
-        SDKROOT: "/private/tmp/untrusted-sdk",
-      });
+      const hostileToolchainEnvironment = await runInstaller(
+        target,
+        "local-only",
+        {
+          DEVELOPER_DIR: "/private/tmp/untrusted-developer-directory",
+          SDKROOT: "/private/tmp/untrusted-sdk",
+        },
+      );
       expect(hostileToolchainEnvironment.code).toBe(0);
       expect(hostileToolchainEnvironment.stderr).toBe("");
 
-      const explicitHackerOne = await runInstaller(target, true, {
-        BUGBOUNTY_EVENT_KEY_MIN_VERSION: "1",
-        BUGBOUNTY_OPERATOR_KEY_REFERENCE:
-          "keychain://bugbounty-copilot/operator-ed25519-v1",
-        BUGBOUNTY_OPERATOR_ID: "local.admin",
-        BUGBOUNTY_OPERATOR_KEY_REVISION: "1",
-      });
+      const explicitHackerOne = await runInstaller(
+        target,
+        "hackerone-readonly",
+        {
+          BUGBOUNTY_EVENT_KEY_MIN_VERSION: "1",
+          BUGBOUNTY_OPERATOR_KEY_REFERENCE:
+            "keychain://bugbounty-copilot/operator-ed25519-v1",
+          BUGBOUNTY_OPERATOR_ID: "local.admin",
+          BUGBOUNTY_OPERATOR_KEY_REVISION: "1",
+        },
+      );
       expect(explicitHackerOne.code).toBe(0);
       expect(explicitHackerOne.stderr).toBe("");
       expect(await readFile(join(resources, "integration-mode"), "utf8")).toBe(
@@ -496,9 +544,52 @@ describe("macOS app launcher", () => {
       ).toBe("1\n");
       await expect(
         loadMacOSLaunchConfiguration(await realpath(resources)),
-      ).resolves.toMatchObject({ hackerOneReadonlyEnabled: true });
+      ).resolves.toMatchObject({
+        hackerOneReadonlyEnabled: true,
+        activeTestingEnabled: false,
+      });
 
-      const partialOperator = await runInstaller(target, true, {
+      const explicitActiveTesting = await runInstaller(
+        target,
+        "hackerone-active-testing",
+        {
+          BUGBOUNTY_EVENT_KEY_MIN_VERSION: "1",
+          BUGBOUNTY_OPERATOR_KEY_REFERENCE:
+            "keychain://bugbounty-copilot/operator-ed25519-v1",
+          BUGBOUNTY_OPERATOR_ID: "local.admin",
+          BUGBOUNTY_OPERATOR_KEY_REVISION: "1",
+        },
+      );
+      expect(explicitActiveTesting.code).toBe(0);
+      expect(explicitActiveTesting.stderr).toBe("");
+      expect(await readFile(join(resources, "integration-mode"), "utf8")).toBe(
+        "hackerone-active-testing\n",
+      );
+      const activeConfiguration = await loadMacOSLaunchConfiguration(
+        await realpath(resources),
+      );
+      expect(activeConfiguration).toMatchObject({
+        hackerOneReadonlyEnabled: true,
+        activeTestingEnabled: true,
+      });
+      expect(buildMacOSDashboardEnvironment(activeConfiguration)).toMatchObject(
+        {
+          BUGBOUNTY_EXTERNAL_INTEGRATIONS_ENABLED: "true",
+          BUGBOUNTY_HACKERONE_READONLY_ENABLED: "true",
+          BUGBOUNTY_ACTIVE_TESTING_ENABLED: "1",
+        },
+      );
+
+      const conflictingModes = await runCommand("/bin/bash", [
+        "apps/macos-launcher/install.sh",
+        "--enable-hackerone-active-testing",
+        "--enable-hackerone-readonly",
+        target,
+      ]);
+      expect(conflictingModes.code).toBe(1);
+      expect(conflictingModes.stderr).toContain("Verwendung:");
+
+      const partialOperator = await runInstaller(target, "hackerone-readonly", {
         BUGBOUNTY_OPERATOR_ID: "local.admin",
       });
       expect(partialOperator.code).toBe(1);
@@ -506,12 +597,16 @@ describe("macOS app launcher", () => {
         "MACOS_LAUNCHER_INSTALL_CORE_METADATA_INVALID",
       );
 
-      const sentinelCollision = await runInstaller(target, true, {
-        BUGBOUNTY_OPERATOR_KEY_REFERENCE:
-          "keychain://bugbounty-copilot/operator-ed25519-v1",
-        BUGBOUNTY_OPERATOR_ID: "unset",
-        BUGBOUNTY_OPERATOR_KEY_REVISION: "1",
-      });
+      const sentinelCollision = await runInstaller(
+        target,
+        "hackerone-readonly",
+        {
+          BUGBOUNTY_OPERATOR_KEY_REFERENCE:
+            "keychain://bugbounty-copilot/operator-ed25519-v1",
+          BUGBOUNTY_OPERATOR_ID: "unset",
+          BUGBOUNTY_OPERATOR_KEY_REVISION: "1",
+        },
+      );
       expect(sentinelCollision.code).toBe(1);
       expect(sentinelCollision.stderr).toContain(
         "MACOS_LAUNCHER_INSTALL_CORE_METADATA_INVALID",
@@ -587,7 +682,7 @@ describe("macOS app launcher", () => {
       );
       await writeFile(join(app, "sentinel"), "preserve me\n", { mode: 0o600 });
 
-      const result = await runInstaller(target, false, {}, fixture);
+      const result = await runInstaller(target, "local-only", {}, fixture);
       expect(result.code).toBe(1);
       expect(result.stderr).toContain("MACOS_LAUNCHER_INSTALL_COMPILE_FAILED");
       expect(await readFile(join(app, "sentinel"), "utf8")).toBe(
@@ -641,7 +736,10 @@ async function launcherFixture(): Promise<{
 
 function runInstaller(
   target: string,
-  enableHackerOne = false,
+  integrationMode:
+    | "local-only"
+    | "hackerone-readonly"
+    | "hackerone-active-testing" = "local-only",
   coreMetadata: Readonly<Record<string, string>> = {},
   repositoryRoot = ROOT,
 ): Promise<{
@@ -664,7 +762,11 @@ function runInstaller(
       "/bin/bash",
       [
         "apps/macos-launcher/install.sh",
-        ...(enableHackerOne ? ["--enable-hackerone-readonly"] : []),
+        ...(integrationMode === "hackerone-readonly"
+          ? ["--enable-hackerone-readonly"]
+          : integrationMode === "hackerone-active-testing"
+            ? ["--enable-hackerone-active-testing"]
+            : []),
         target,
       ],
       {
