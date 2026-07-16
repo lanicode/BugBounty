@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { sha256 } from "../../../packages/shared/canonical.js";
+import { evaluateHackerOneProgram } from "../../../packages/hackerone-readonly/snapshot.js";
 import {
   validateProgramDocument,
   validateProgramPage,
@@ -162,6 +163,77 @@ describe("HackerOne program response validation", () => {
     expect(JSON.stringify(normalized)).not.toContain("EXTENSION_CANARY");
   });
 
+  it("maps absent or null catalog summary fields to conservative blocked defaults", () => {
+    const absent = validateProgramPage(
+      {
+        data: [
+          {
+            id: "synthetic-minimal-program",
+            type: "program",
+            attributes: { handle: "synthetic_minimal" },
+          },
+        ],
+      },
+      SYNCHRONIZED_AT,
+    ).records[0];
+    const nullable = validateProgramPage(
+      {
+        data: [
+          {
+            id: "synthetic-nullable-program",
+            type: "program",
+            attributes: {
+              handle: "synthetic_nullable",
+              name: null,
+              currency: null,
+              policy: null,
+              submission_state: null,
+              state: null,
+              offers_bounties: null,
+              open_scope: null,
+              gold_standard_safe_harbor: null,
+              bookmarked: null,
+              number_of_reports_for_user: null,
+              number_of_valid_reports_for_user: null,
+            },
+          },
+        ],
+      },
+      SYNCHRONIZED_AT,
+    ).records[0];
+
+    for (const [program, handle] of [
+      [absent, "synthetic_minimal"],
+      [nullable, "synthetic_nullable"],
+    ] as const)
+      expect(program).toMatchObject({
+        name: handle,
+        currency: "UNKNOWN",
+        policy: "",
+        submissionState: "unknown",
+        programState: "unknown",
+        offersBounties: false,
+        openScope: false,
+        goldStandardSafeHarbor: false,
+        bookmarked: false,
+        ownReportCount: 0,
+        ownValidReportCount: 0,
+      });
+
+    if (absent === undefined) throw new Error("TEST_PROGRAM_REQUIRED");
+    const suitability = evaluateHackerOneProgram(absent, [], []);
+    expect(suitability).toMatchObject({
+      automationPermission: "unknown_requires_human_review",
+    });
+    for (const reason of [
+      "BOUNTIES_UNAVAILABLE",
+      "POLICY_MISSING",
+      "STRUCTURED_SCOPE_MISSING",
+    ] as const)
+      expect(suitability.reasons).toContain(reason);
+    expect(suitability.reasons).not.toContain("OPEN_SUBMISSIONS");
+  });
+
   it("rejects hostile response objects without invoking accessors", () => {
     let getterInvocations = 0;
     const accessorPage = Object.defineProperty({}, "data", {
@@ -199,7 +271,7 @@ describe("HackerOne program response validation", () => {
 
   it.each([
     [
-      "missing required attribute",
+      "missing required handle",
       () => {
         const resource = programResource();
         const attributes = {

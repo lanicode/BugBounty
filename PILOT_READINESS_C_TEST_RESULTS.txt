@@ -198,3 +198,46 @@ keinen realen Plattform- oder Zielrequest aus. Vor diesem Nachtrag hatte der
 Benutzer im Dashboard ausdrücklich genau einen HackerOne-Read-only-
 Verbindungstest ausgelöst; dieser Kontakt ist kein automatisierter Testlauf
 und wird hier zur vollständigen Nachvollziehbarkeit offengelegt.
+
+======================================================================
+KATALOG-ZUSAMMENFASSUNGS-REGRESSION 2026-07-16
+======================================================================
+
+$ ./node_modules/.bin/vitest run --maxWorkers=1 tests/unit/hackerone-readonly/validation.test.ts tests/unit/hackerone-readonly/client.test.ts tests/property/hackerone-readonly-validation.property.test.ts
+PASS
+Test Files  3 passed (3)
+Tests       60 passed (60)
+Duration    1.68s
+
+$ ./node_modules/.bin/vitest run --maxWorkers=1 tests/integration/hackerone-loopback.test.ts
+PASS
+Test Files  1 passed (1)
+Tests       20 passed (20)
+Duration    1.03s
+
+$ ./node_modules/.bin/tsc --noEmit
+PASS
+
+$ ./node_modules/.bin/tsc -p tsconfig.build.json
+PASS
+
+$ ./node_modules/.bin/eslint . --max-warnings 0
+PASS
+
+$ ./node_modules/.bin/prettier --check .
+PASS
+
+$ ./node_modules/.bin/vitest run --coverage --maxWorkers=1
+PASS
+Test Files  128 passed (128)
+Tests       1104 passed (1104)
+Duration    76.76s
+Statements  85.04% (9198/10816)
+Branches    82.43% (6630/8043)
+Functions   92.27% (1756/1903)
+Lines       86.05% (8883/10322)
+
+Der kombinierte letzte Befehl war zugleich der einzige vollständige
+Regressionstest- und Coverage-Lauf dieses Nachtrags. Alle Netzwerkanteile
+liefen ausschließlich gegen lokale Loopback-Mocks. Codex kontaktierte weder
+HackerOne noch einen Plattform- oder Bug-Bounty-Zielhost.

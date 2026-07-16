@@ -20,17 +20,17 @@ interface ApiLinks {
 
 interface ApiProgramAttributes {
   readonly handle: string;
-  readonly name: string;
-  readonly currency: string;
-  readonly policy: string;
-  readonly submission_state: string;
-  readonly state: string;
-  readonly offers_bounties: boolean;
-  readonly open_scope: boolean;
-  readonly gold_standard_safe_harbor: boolean;
-  readonly bookmarked: boolean;
-  readonly number_of_reports_for_user: number;
-  readonly number_of_valid_reports_for_user: number;
+  readonly name?: string | null;
+  readonly currency?: string | null;
+  readonly policy?: string | null;
+  readonly submission_state?: string | null;
+  readonly state?: string | null;
+  readonly offers_bounties?: boolean | null;
+  readonly open_scope?: boolean | null;
+  readonly gold_standard_safe_harbor?: boolean | null;
+  readonly bookmarked?: boolean | null;
+  readonly number_of_reports_for_user?: number | null;
+  readonly number_of_valid_reports_for_user?: number | null;
   readonly started_accepting_at?: string | null;
   readonly created_at?: string | null;
   readonly updated_at?: string | null;
@@ -128,6 +128,18 @@ const nullableTimestamp = {
   ],
 };
 
+const nullableText = (maximum: number, minimum = 0) => ({
+  anyOf: [text(maximum, minimum), { type: "null" }],
+});
+
+const nullableBoolean = {
+  anyOf: [{ type: "boolean" }, { type: "null" }],
+};
+
+const nullableNonNegativeInteger = {
+  anyOf: [{ type: "integer", minimum: 0 }, { type: "null" }],
+};
+
 const linksSchema = {
   type: "object",
   additionalProperties: false,
@@ -153,36 +165,27 @@ const metaSchema = {
 const programAttributesSchema = {
   type: "object",
   additionalProperties: false,
-  required: [
-    "bookmarked",
-    "currency",
-    "gold_standard_safe_harbor",
-    "handle",
-    "name",
-    "number_of_reports_for_user",
-    "number_of_valid_reports_for_user",
-    "offers_bounties",
-    "open_scope",
-    "policy",
-    "state",
-    "submission_state",
-  ],
+  // Catalog summaries are not guaranteed to include every detail attribute.
+  // Only the server-bound handle is required. Missing or explicit null values
+  // are normalized below to values that reduce authority: unknown state,
+  // empty policy, no bounty, no open scope and no safe-harbor assertion.
+  required: ["handle"],
   properties: {
     handle: {
       type: "string",
       pattern: "^[a-z0-9](?:[a-z0-9_-]{0,126}[a-z0-9])?$",
     },
-    name: text(512, 1),
-    currency: text(16, 1),
-    policy: text(262_144),
-    submission_state: text(128, 1),
-    state: text(128, 1),
-    offers_bounties: { type: "boolean" },
-    open_scope: { type: "boolean" },
-    gold_standard_safe_harbor: { type: "boolean" },
-    bookmarked: { type: "boolean" },
-    number_of_reports_for_user: { type: "integer", minimum: 0 },
-    number_of_valid_reports_for_user: { type: "integer", minimum: 0 },
+    name: nullableText(512, 1),
+    currency: nullableText(16, 1),
+    policy: nullableText(262_144),
+    submission_state: nullableText(128, 1),
+    state: nullableText(128, 1),
+    offers_bounties: nullableBoolean,
+    open_scope: nullableBoolean,
+    gold_standard_safe_harbor: nullableBoolean,
+    bookmarked: nullableBoolean,
+    number_of_reports_for_user: nullableNonNegativeInteger,
+    number_of_valid_reports_for_user: nullableNonNegativeInteger,
     started_accepting_at: nullableTimestamp,
     created_at: nullableTimestamp,
     updated_at: nullableTimestamp,
@@ -609,17 +612,17 @@ function normalizeProgram(
   return Object.freeze({
     hackerOneId: resource.id,
     handle: attributes.handle,
-    name: attributes.name.trim(),
-    currency: attributes.currency,
-    policy: attributes.policy,
-    submissionState: attributes.submission_state,
-    programState: attributes.state,
-    offersBounties: attributes.offers_bounties,
-    openScope: attributes.open_scope,
-    goldStandardSafeHarbor: attributes.gold_standard_safe_harbor,
-    bookmarked: attributes.bookmarked,
-    ownReportCount: attributes.number_of_reports_for_user,
-    ownValidReportCount: attributes.number_of_valid_reports_for_user,
+    name: (attributes.name ?? attributes.handle).trim(),
+    currency: attributes.currency ?? "UNKNOWN",
+    policy: attributes.policy ?? "",
+    submissionState: attributes.submission_state ?? "unknown",
+    programState: attributes.state ?? "unknown",
+    offersBounties: attributes.offers_bounties ?? false,
+    openScope: attributes.open_scope ?? false,
+    goldStandardSafeHarbor: attributes.gold_standard_safe_harbor ?? false,
+    bookmarked: attributes.bookmarked ?? false,
+    ownReportCount: attributes.number_of_reports_for_user ?? 0,
+    ownValidReportCount: attributes.number_of_valid_reports_for_user ?? 0,
     startedAcceptingAt: normalizedTimestamp(attributes.started_accepting_at),
     createdAt: normalizedTimestamp(attributes.created_at),
     updatedAt: normalizedTimestamp(attributes.updated_at),

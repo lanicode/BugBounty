@@ -626,6 +626,55 @@ describe("HackerOne read-only client over test-only loopback transport", () => {
     expect(secondary.requests).toHaveLength(0);
   });
 
+  it("imports incomplete catalog summaries with conservative blocked defaults", async () => {
+    primary.enqueueJson(200, {
+      data: [
+        {
+          id: "synthetic-minimal-id",
+          type: "program",
+          attributes: { handle: "synthetic-minimal" },
+        },
+        {
+          id: "synthetic-nullable-id",
+          type: "program",
+          attributes: {
+            handle: "synthetic-nullable",
+            name: null,
+            currency: null,
+            policy: null,
+            submission_state: null,
+            state: null,
+            offers_bounties: null,
+            open_scope: null,
+            gold_standard_safe_harbor: null,
+            bookmarked: null,
+            number_of_reports_for_user: null,
+            number_of_valid_reports_for_user: null,
+          },
+        },
+      ],
+      links: { next: null },
+    });
+
+    const programs = await client(primary).listPrograms(
+      new AbortController().signal,
+    );
+
+    expect(programs).toHaveLength(2);
+    for (const program of programs)
+      expect(program).toMatchObject({
+        currency: "UNKNOWN",
+        policy: "",
+        submissionState: "unknown",
+        programState: "unknown",
+        offersBounties: false,
+        openScope: false,
+        goldStandardSafeHarbor: false,
+      });
+    expect(primary.requests).toHaveLength(1);
+    expect(secondary.requests).toHaveLength(0);
+  });
+
   it("follows only a canonical serial pagination chain", async () => {
     primary.enqueueJson(200, {
       data: [programResource("synthetic-id-1", "synthetic-one")],

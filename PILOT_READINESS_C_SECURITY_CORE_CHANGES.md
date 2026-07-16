@@ -303,3 +303,19 @@ zurückgegeben. Direkte Unit-, Property- und Loopback-Regressionstests prüfen
 Extension-Verwerfen ohne Persistenz, Accessor-/Proxy-Abwehr, weiterhin
 ungültige bekannte Felder, genau einen Request und die korrekte lokale
 Fehlerdarstellung.
+
+### Katalog-Zusammenfassungen mit reduzierter Autorität
+
+Der Folgefix verändert ebenfalls nicht den Phase-1-Sicherheitskern. Er
+unterscheidet an der HackerOne-Read-only-Eingabegrenze zwischen zwingender
+Katalogidentität und optionalen Zusammenfassungsattributen. ID, Resource-Typ,
+Attributobjekt und Handle bleiben zwingend und strikt. Fehlende oder `null`
+gesetzte optionale Werte werden ausschließlich auf autoritätsreduzierende
+Defaults abgebildet: `unknown`, leere Policy, `false`, `0` beziehungsweise
+`UNKNOWN`. String-, Boolean- und Integer-Falschtypen werden nicht konvertiert.
+
+Direkte Regressionen belegen, dass unvollständige Katalogeinträge importiert
+werden können, ohne Policy-, Submission-, Bounty-, Scope-, Safe-Harbor- oder
+Automationsfreigaben zu erzeugen. Ein vollständiger aktueller Detailsnapshot,
+Scope-Sync, menschliche Annahme und alle bestehenden Active-Testing-Gates
+bleiben erforderlich.

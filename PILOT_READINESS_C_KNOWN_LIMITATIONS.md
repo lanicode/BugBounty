@@ -290,3 +290,14 @@ Read-only-Verbindungstest genau einmal bewusst auslösen und das Ergebnis im
 Dashboard prüfen. Ein Fehlschlag erscheint nun als lokaler HTTP-Fehler statt
 als grüne Erfolgsmeldung. Programm-Synchronisierung, aktive Tests und andere
 externe Aktionen werden dadurch nicht automatisch gestartet.
+
+### Katalogwerte können konservative Platzhalter enthalten
+
+Katalog-Zusammenfassungen dürfen optionale Attribute auslassen oder `null`
+liefern. Die lokale Liste zeigt dann bewusst `UNKNOWN`, `unknown`, leere
+Policy, `false` oder `0`. Diese Werte sind keine Behauptung über das Programm,
+sondern blockierende Platzhalter. Vor jeder Eignungsbewertung oder aktiven
+Planung muss das ausgewählte Programm samt Policy, Structured Scopes und
+Scope Exclusions separat synchronisiert und menschlich geprüft werden. Bleibt
+ein sicherheitsrelevantes Detail auch dort unbekannt, kann kein aktiver Plan
+freigegeben werden.

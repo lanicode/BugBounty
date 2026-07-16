@@ -309,3 +309,31 @@ Implementierung und automatisierten Tests dieses Nachtrags wurde kein
 HackerOne-, Plattform- oder Bug-Bounty-Zielhost kontaktiert. Der oben genannte
 einmalige reale Read-only-Kontakt wurde zuvor ausschließlich durch den
 Benutzer im Dashboard ausgelöst; Codex löste keinen weiteren Live-Test aus.
+
+## Nachtrag 2026-07-16: Katalog-Zusammenfassungen
+
+Der reale, vom Benutzer ausgelöste Verbindungstest war nach dem ersten
+Kompatibilitätsfix erfolgreich. Der anschließend ebenfalls ausdrücklich vom
+Benutzer ausgelöste Programmkatalog-Sync scheiterte jedoch atomar mit
+`HACKERONE_RESPONSE_SCHEMA_INVALID`, weil nicht jeder Katalogeintrag alle
+Detailattribute enthält beziehungsweise einzelne optionale Attribute `null`
+sein können.
+
+Die API-Grenze verlangt für einen Katalogeintrag weiterhin zwingend eine
+kanonische JSON:API-ID, den festen Resource-Typ `program`, ein
+Plain-Object-Attributobjekt und einen kanonischen Handle. Fehlende oder
+explizit `null` gesetzte Zusammenfassungsattribute werden konservativ
+normalisiert: Status wird `unknown`, Policy leer, Bounty/Open-Scope/
+Safe-Harbor/Bookmark `false`, persönliche Zähler `0`, Währung `UNKNOWN` und
+der Anzeigename fällt auf den Handle zurück. Falsche Typen, ungültige Werte,
+unsichere Strukturen und Größenüberschreitungen bleiben blockiert. Diese
+Defaults können weder eine offene Einreichung noch Bounty-, Policy-, Scope-
+oder Automationsfreigabe erzeugen; für aktive Tests bleibt ein vollständiger,
+ausdrücklich synchronisierter Detailsnapshot erforderlich.
+
+Der optimierte Abschlusslauf kombinierte Vollsuite und Coverage: 128/128
+Dateien und 1104/1104 Tests waren erfolgreich. Coverage: 85,04 % Statements,
+82,43 % Branches, 92,27 % Funktionen und 86,05 % Zeilen. Während
+Implementierung und Tests wurde kein realer HackerOne-, Plattform- oder
+Zielhost kontaktiert; alle Netzwerkprüfungen verwendeten lokale
+Loopback-Mocks.

@@ -515,6 +515,60 @@ describe("HackerOne connection test", () => {
 });
 
 describe("HackerOne pagination, retry, and serialization", () => {
+  it("keeps incomplete catalog summaries conservative without blocking the catalog", async () => {
+    const wire = response(200, {
+      data: [
+        {
+          id: "synthetic-minimal-id",
+          type: "program",
+          attributes: { handle: "synthetic-minimal" },
+        },
+        {
+          id: "synthetic-nullable-id",
+          type: "program",
+          attributes: {
+            handle: "synthetic-nullable",
+            name: null,
+            currency: null,
+            policy: null,
+            submission_state: null,
+            state: null,
+            offers_bounties: null,
+            open_scope: null,
+            gold_standard_safe_harbor: null,
+            bookmarked: null,
+            number_of_reports_for_user: null,
+            number_of_valid_reports_for_user: null,
+          },
+        },
+      ],
+      links: { next: null },
+    });
+    const context = harness([wire]);
+
+    const programs = await context.client.listPrograms(
+      new AbortController().signal,
+    );
+
+    expect(programs).toHaveLength(2);
+    for (const program of programs)
+      expect(program).toMatchObject({
+        currency: "UNKNOWN",
+        policy: "",
+        submissionState: "unknown",
+        programState: "unknown",
+        offersBounties: false,
+        openScope: false,
+        goldStandardSafeHarbor: false,
+        bookmarked: false,
+        ownReportCount: 0,
+        ownValidReportCount: 0,
+      });
+    expect(context.transport.calls).toHaveLength(1);
+    expect(wire.body.every((byte) => byte === 0)).toBe(true);
+    expectCredentialBuffersZeroed(context.credentials);
+  });
+
   it("loads safe pages serially and follows only the validated next link", async () => {
     const first = response(200, {
       data: [programResource("synthetic-id-1", "synthetic-one")],
