@@ -156,7 +156,10 @@ function response(
   };
 }
 
-function programResource(id: string, handle: string): Record<string, unknown> {
+function programResource(
+  id: string | number,
+  handle: string,
+): Record<string, unknown> {
   return {
     id,
     type: "program",

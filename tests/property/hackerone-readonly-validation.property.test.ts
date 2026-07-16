@@ -1,6 +1,9 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { validateProgramPage } from "../../packages/hackerone-readonly/validation.js";
+import {
+  validateProgramDocument,
+  validateProgramPage,
+} from "../../packages/hackerone-readonly/validation.js";
 
 const SYNCHRONIZED_AT = "2026-07-14T12:00:00.000Z";
 
@@ -35,6 +38,23 @@ function programResource(): Record<string, unknown> {
 }
 
 describe("HackerOne response extension projection properties", () => {
+  it("canonicalizes every positive safe-integer program ID exactly", () => {
+    fc.assert(
+      fc.property(
+        fc.maxSafeNat().filter((id) => id > 0),
+        (id) => {
+          const resource = programResource();
+          const normalized = validateProgramDocument(
+            { data: { ...resource, id } },
+            SYNCHRONIZED_AT,
+          );
+          expect(normalized.hackerOneId).toBe(String(id));
+        },
+      ),
+      { numRuns: 200 },
+    );
+  });
+
   it("discards arbitrary bounded JSON extensions while preserving the trusted projection", () => {
     const baseline = validateProgramPage(
       {

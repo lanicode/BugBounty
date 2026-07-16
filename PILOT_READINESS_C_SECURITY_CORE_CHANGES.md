@@ -356,3 +356,21 @@ Auswahl nicht übereinstimmen, bleiben Detailsynchronisierung und
 Kampagnenbindung im Browser gesperrt. Direkte Asset- und
 Loopback-Regressionen prüfen den Platzhalter, die Draft-/Persistenztrennung
 und die serverseitige Konfliktsperre.
+
+### Kanonische numerische Programm-IDs
+
+Der Detailantwort-Folgefix verändert den Phase-1-Sicherheitskern nicht. Die
+offizielle HackerOne-Hacker-API dokumentiert im aktuellen `Get Program`-
+Antwortbeispiel eine positive numerische Programm-ID, obwohl andere
+Programmansichten dieselbe JSON:API-ID als String liefern können. Die
+Read-only-Eingabegrenze akzeptiert deshalb für Programmressourcen weiterhin
+nichtleere, begrenzte Strings oder neu ausschließlich positive Ganzzahlen bis
+`Number.MAX_SAFE_INTEGER`.
+
+Eine akzeptierte Ganzzahl wird unmittelbar und verlustfrei in ihre kanonische
+Dezimalzeichenfolge überführt. Null, negative Werte, Brüche, unsichere
+Ganzzahlen, numerische Strings mit freier Konvertierung und alle anderen Typen
+bleiben blockiert. Additive Attribute und `relationships` werden weiterhin
+verworfen; Host-, Pfad-, Methoden-, Pagination-, Scope-, Policy- und
+Aktivierungsgates ändern sich nicht. Unit-, Property- und Loopbacktests prüfen
+den gesamten erlaubten Zahlenbereich sowie die blockierten Randfälle.

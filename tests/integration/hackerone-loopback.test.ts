@@ -383,7 +383,10 @@ function synchronizedProgram(id: string, handle: string): HackerOneProgram {
   });
 }
 
-function programResource(id: string, handle: string): Record<string, unknown> {
+function programResource(
+  id: string | number,
+  handle: string,
+): Record<string, unknown> {
   return {
     id,
     type: "program",
@@ -749,7 +752,7 @@ describe("HackerOne read-only client over test-only loopback transport", () => {
   it("treats scope asset identifiers as metadata and uses GET only", async () => {
     const assetIdentifier = `${secondary.origin}/must-never-be-requested`;
     primary.enqueueJson(200, {
-      data: programResource("synthetic-id-1", "synthetic-one"),
+      data: programResource(9, "synthetic-one"),
     });
     primary.enqueueJson(200, {
       data: [
@@ -795,6 +798,7 @@ describe("HackerOne read-only client over test-only loopback transport", () => {
     );
 
     expect(selected.structuredScopes[0]?.assetIdentifier).toBe(assetIdentifier);
+    expect(selected.program.hackerOneId).toBe("9");
     expect(secondary.requests).toHaveLength(0);
     expect(primary.requests.map(({ method }) => method)).toEqual([
       "GET",

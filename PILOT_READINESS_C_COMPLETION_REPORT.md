@@ -387,3 +387,30 @@ einen HackerOne-Read-only-Detailsync ausgelöst, der aufgrund der fehlerhaft
 persistierten Auswahl nur die HackerOne-Metadaten-API für `1password`
 ansprach und mit Schemafehler blockierte. Es wurde dabei kein 1Password- oder
 anderer Programmzielhost kontaktiert und keine aktive Testaktion ausgeführt.
+
+## Nachtrag 2026-07-16: Numerische Detail-ID
+
+Der Benutzer löste nach korrekter Auswahl von `1win_com` ausdrücklich einen
+Read-only-Detailsync aus. Das lokale append-only Request-Audit belegte, dass
+der HTTP-200-Programmdetaildatensatz am Antwortschema blockierte, bevor
+Structured-Scopes- oder Scope-Exclusion-Endpunkte angefragt wurden. Der
+aktuelle offizielle `Get Program`-Antwortvertrag zeigt die Programm-ID als
+JSON-Zahl; der lokale Parser verlangte bislang ausschließlich einen String.
+
+Programmressourcen akzeptieren nun weiterhin begrenzte nichtleere String-IDs
+oder positive sichere Ganzzahlen. Zahlen werden unmittelbar verlustfrei als
+kanonische Dezimalstrings normalisiert. Null, negative Werte, Brüche,
+unsichere Ganzzahlen und andere Typen blockieren unverändert. Unbekannte
+Felder einschließlich `relationships` werden nicht persistiert oder als
+Scope verwendet. Der Phase-1-Sicherheitskern und alle Egress-, Policy-,
+Scope-, Budget-, Approval- und Kill-Switch-Gates bleiben unverändert.
+
+Gezielt bestanden 80/80 Unit-/Loopbacktests und 2/2 Property-Tests. Der
+einzige vollständige kombinierte Regressionstest-/Coverage-Lauf bestand
+128/128 Dateien und 1110/1110 Tests. Coverage: 85,06 % Statements, 82,47 %
+Branches, 92,27 % Funktionen und 86,07 % Zeilen.
+
+Codex führte keinen authentifizierten HackerOne-Request aus und kontaktierte
+keinen Plattform- oder Bug-Bounty-Zielhost. Der Benutzerrequest vor dem Fix
+kontaktierte ausschließlich den HackerOne-Programmdetail-Metadatenendpunkt;
+kein `1win_com`-Asset und keine aktive Testfunktion wurden angefragt.

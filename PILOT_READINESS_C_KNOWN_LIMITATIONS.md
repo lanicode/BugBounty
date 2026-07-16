@@ -322,3 +322,13 @@ Vor einer Detailsynchronisierung muss deshalb der im Metadatenbereich
 angezeigte persistierte Handle geprüft werden. Alte Tabs sollten geschlossen
 werden, um Bedienfehler zu vermeiden; die serverseitige Exaktprüfung bleibt
 unabhängig davon fail-closed.
+
+### API-ID-Repräsentation
+
+Programmressourcen können ihre JSON:API-ID laut aktuellem HackerOne-
+Antwortvertrag als positive Zahl oder als String darstellen. Die Anwendung
+kanonisiert nur sichere positive Ganzzahlen; andere numerische Darstellungen
+blockieren. Diese Kompatibilität sagt nichts über Policy, Scope, Eignung oder
+Testfreigabe aus. Erst ein vollständig synchronisierter Snapshot mit
+strukturierten Scopes und menschlicher Policy-Annahme kann die nachgelagerten
+Gates erfüllen.

@@ -128,6 +128,20 @@ describe("HackerOne program response validation", () => {
     expect(Object.isFrozen(program)).toBe(true);
   });
 
+  it("canonicalizes documented positive integer program IDs without coercing other numeric values", () => {
+    const resource = programResource();
+    const program = validateProgramDocument(
+      { data: { ...resource, id: 9 } },
+      SYNCHRONIZED_AT,
+    );
+    expect(program.hackerOneId).toBe("9");
+
+    for (const id of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])
+      expect(() =>
+        validateProgramDocument({ data: { ...resource, id } }, SYNCHRONIZED_AT),
+      ).toThrow("HACKERONE_RESPONSE_SCHEMA_INVALID");
+  });
+
   it("discards bounded additive API extensions without persisting their values", () => {
     const page = programPage();
     const resource = (page["data"] as Record<string, unknown>[])[0] ?? {};

@@ -37,7 +37,7 @@ interface ApiProgramAttributes {
 }
 
 interface ApiProgramResource {
-  readonly id: string;
+  readonly id: string | number;
   readonly type: "program";
   readonly attributes: ApiProgramAttributes;
 }
@@ -197,7 +197,16 @@ const programResourceSchema = {
   additionalProperties: false,
   required: ["attributes", "id", "type"],
   properties: {
-    id: text(128, 1),
+    id: {
+      anyOf: [
+        text(128, 1),
+        {
+          type: "integer",
+          minimum: 1,
+          maximum: Number.MAX_SAFE_INTEGER,
+        },
+      ],
+    },
     type: { const: "program" },
     attributes: programAttributesSchema,
   },
@@ -610,7 +619,7 @@ function normalizeProgram(
 ): HackerOneProgram {
   const attributes = resource.attributes;
   return Object.freeze({
-    hackerOneId: resource.id,
+    hackerOneId: String(resource.id),
     handle: attributes.handle,
     name: (attributes.name ?? attributes.handle).trim(),
     currency: attributes.currency ?? "UNKNOWN",
