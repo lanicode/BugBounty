@@ -316,7 +316,20 @@ function runPinnedRequest(
       maxVersion: "TLSv1.3",
       maxHeaderSize: MAX_HEADER_BYTES,
       servername: plan.target.host,
-      lookup: (_hostname, _options, callback) => {
+      // Node 24 requests the array lookup contract (`all: true`) while older
+      // runtimes may request the scalar contract. Both branches return only
+      // the one address already selected by the trusted egress authorization;
+      // no caller-controlled fallback address or retry is introduced.
+      lookup: (_hostname, options, callback) => {
+        if (options.all === true) {
+          callback(null, [
+            {
+              address: resolved.selectedAddress,
+              family: resolved.family,
+            },
+          ]);
+          return;
+        }
         callback(null, resolved.selectedAddress, resolved.family);
       },
     });

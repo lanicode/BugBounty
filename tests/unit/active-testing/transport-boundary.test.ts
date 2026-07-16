@@ -1,5 +1,10 @@
 import { readFile } from "node:fs/promises";
-import { Socket } from "node:net";
+import { request } from "node:https";
+import {
+  createServer as createNetServer,
+  type AddressInfo,
+  Socket,
+} from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   activeTestBoundedDurationMs,
@@ -137,6 +142,9 @@ describe("active testing transport boundary", () => {
     expect(transport).toContain("rejectUnauthorized: true");
     expect(transport).toContain('minVersion: "TLSv1.2"');
     expect(transport).toContain("agent: false");
+    expect(transport).toContain("if (options.all === true)");
+    expect(transport).toContain("address: resolved.selectedAddress");
+    expect(transport).toContain("family: resolved.family");
     expect(transport).toContain("ACTIVE_TEST_REDIRECT_BLOCKED");
     expect(
       (transport ?? "").indexOf("canonicalizeActiveTestDnsHost(host)"),
@@ -150,6 +158,51 @@ describe("active testing transport boundary", () => {
     expect(transport).not.toMatch(
       /\b(?:POST|PUT|PATCH|DELETE|CONNECT|TRACE)\b/u,
     );
+  });
+
+  it("satisfies Node 24 array lookup with exactly one pinned address", async () => {
+    const server = createNetServer((socket) => {
+      socket.destroy();
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    try {
+      const address = server.address() as AddressInfo;
+      let allAddressesRequested = false;
+      await new Promise<void>((resolve) => {
+        const client = request({
+          hostname: "pinned-transport.invalid",
+          port: address.port,
+          method: "HEAD",
+          rejectUnauthorized: true,
+          lookup: (_hostname, options, callback) => {
+            allAddressesRequested = options.all === true;
+            if (options.all === true) {
+              callback(null, [{ address: "127.0.0.1", family: 4 }]);
+              return;
+            }
+            callback(null, "127.0.0.1", 4);
+          },
+        });
+        client.once("socket", (socket) => {
+          socket.once("error", () => undefined);
+        });
+        client.once("error", () => {
+          resolve();
+        });
+        client.end();
+      });
+      expect(allAddressesRequested).toBe(true);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error === undefined) resolve();
+          else reject(error);
+        });
+      });
+    }
   });
 
   it("places a pending DNS-like prerequisite under timeout and kill-switch polling", async () => {
